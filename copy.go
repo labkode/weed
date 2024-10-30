@@ -1,11 +1,17 @@
 package main
 
 import (
+	"crypto/md5"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"hash/adler32"
 	"io"
+	"log"
+	"math/rand"
 	"net/http"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -111,6 +117,7 @@ func doTPCPull(fs webdav.FileSystem, w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprintf(w, "error: source %q is invalid", source)
 	}
+	copyTransferHeaders(r, getReq)
 
 	client := &http.Client{
 		Transport: http.DefaultTransport,
@@ -170,38 +177,126 @@ func doTPCPull(fs webdav.FileSystem, w http.ResponseWriter, r *http.Request) {
 	}
 
 write:
-
 	// at this point we need to write the destination file from the data
 	// obtained from the source.
 	// If a digest is provided, we need to compute it
 
 	// if sent digest is not in the list of valid checksum types
 	// we send back a 412.
-	clientDigests := getClientDigest(r)
+	clientDigests := getClientDigests(r)
 	if len(clientDigests) == 0 {
 		w.WriteHeader(http.StatusPreconditionFailed)
 		fmt.Fprintf(w, "error: digest not present in the request")
 		return
 	}
 
-	for _, clientDigest := range clientDigests {
-		if !clientDigest.isSupported() {
-			w.WriteHeader(http.StatusPreconditionFailed)
-			fmt.Fprintf(w, "error: digest not present in the request")
-			return
+	if ok := areClientDigestsSupported(clientDigests); !ok {
+		w.WriteHeader(http.StatusPreconditionFailed)
+		fmt.Fprintf(w, "error: server does not accept supplied client digests: %v", clientDigests)
+		return
+	}
+
+	// we need to write the file into a temporary location,
+	// calculate the digests and validate them againt the client supplied ones
+	tmpfn := getTemporaryFilename(file)
+	flags := getOpenFlags(overwrite)
+	fd, err := fs.OpenFile(r.Context(), tmpfn, flags, os.FileMode(0700))
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "error: cannot open for write destination file: %s", tmpfn)
+		return
+	}
+	defer fd.Close()
+
+	// calculate digest while we write into the temporary file
+	md5 := md5.New()
+	adler32 := adler32.New()
+	mw := io.MultiWriter(md5, adler32, fd)
+	n, err := io.Copy(mw, r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "error: cannot copy request body into destination file: %v", err)
+		return
+	}
+	log.Default().Printf("written %d bytes into %s", n, tmpfn)
+	md5Digest := &digest{
+		Algo:  string(digestMD5),
+		Value: digestFromRaw(md5.Sum(nil)),
+	}
+	adler32Digest := &digest{
+		Algo:  string(digestAdler),
+		Value: digestFromRaw(adler32.Sum(nil)),
+	}
+
+	serverDigests := map[digestAlgo]*digest{
+		digestAdler: adler32Digest,
+		digestMD5:   md5Digest,
+	}
+
+	log.Default().Printf("%s md5 is %s", tmpfn, md5Digest.Value)
+	log.Default().Printf("%s adler32 is %s", tmpfn, adler32Digest.Value)
+
+	match := compareDigests(clientDigests, serverDigests)
+	if !match {
+		w.WriteHeader(http.StatusPreconditionFailed)
+		fmt.Fprintf(w, "error: expected digest does not match")
+		return
+	}
+
+	// we can rename the final to it's original location
+	if err := fs.Rename(r.Context(), tmpfn, file); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "error: cannot rename %s to original location %s", tmpfn, file)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// compareDigets compares the client supplied digets with the server
+// computed ones.
+// If the client sent a digest that is not computed by the server
+// it returns false.
+func compareDigests(client, server map[digestAlgo]*digest) bool {
+	for algo, digest := range client {
+		d, ok := server[algo]
+		if !ok {
+			return false
+		}
+		if digest.Value != d.Value {
+			return false
 		}
 	}
+	return true
 }
 
-func getClientDigest(r *http.Request) []*digest {
+// digestFromRaw returns a base64 encoded value of the
+// sum of the hash
+func digestFromRaw(input []byte) string {
+	return base64.StdEncoding.EncodeToString(input)
+}
+
+func getOpenFlags(overwrite bool) int {
+	if !overwrite {
+		return os.O_WRONLY
+	}
+	return os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+}
+
+// returns true if all provided digests are supported by the server
+// if a digest is not supported, it returns false
+func areClientDigestsSupported(digests map[digestAlgo]*digest) bool {
+	for _, digest := range digests {
+		if !digest.isSupported() {
+			return false
+		}
+	}
+	return true
+}
+
+func getClientDigests(r *http.Request) map[digestAlgo]*digest {
 	reprDigest := r.Header.Get("Repr-Digest")
-	digests := newDigestFromHTTP(reprDigest)
-	return digests
-}
-
-func newDigestFromHTTP(reprDigest string) []*digest {
-	// Repr-Digest contains a dictionary as specified in https://www.rfc-editor.org/rfc/rfc8941#section-3.2
-	return nil
+	return parseReprDigest(reprDigest)
 }
 
 func (h *handler) copyHandler(w http.ResponseWriter, r *http.Request) {
@@ -220,7 +315,7 @@ func (h *handler) copyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // input is an HTTP dictionary defined in https://www.rfc-editor.org/rfc/rfc8941#name-byte-sequences
-// "adler=:123=:,md5=:333=:"
+// example:  "adler=:123=:,md5=:333=:"
 func parseReprDigest(input string) map[digestAlgo]*digest {
 	var base64regexp = regexp.MustCompile(`^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)?$`)
 	digests := map[digestAlgo]*digest{}
@@ -253,4 +348,19 @@ func parseReprDigest(input string) map[digestAlgo]*digest {
 		digests[digestAlgo(d.Algo)] = d
 	}
 	return digests
+}
+
+// getTemporaryFilename returns a temporary filename
+// generated from the base of the input and some randomness
+func getTemporaryFilename(input string) string {
+	dir, base := path.Split(input)
+	base = strings.Trim(base, "/")
+	random := getRandomNumber()
+	filename := fmt.Sprintf(".tmp-%d-%s", random, base) // ".tmp-12331313133-myfile.txt"
+	filename = path.Join(dir, filename)
+	return filename
+}
+
+func getRandomNumber() int {
+	return rand.Intn(1024)
 }
