@@ -106,11 +106,9 @@ func getOverwrite(r *http.Request) bool {
 func doTPCPull(fs webdav.FileSystem, w http.ResponseWriter, r *http.Request) {
 	file := r.PathValue("file")
 	source := r.Header.Get("source")
-	reprDigest := r.Header.Get("Repr-Digest")
-	contentDigest := r.Header.Get("Content-Digest")
 	overwrite := getOverwrite(r)
 
-	fmt.Printf("destination=%s source=%s reprDigest=%s contentDigest=%s overwrite=%t", file, source, reprDigest, contentDigest, overwrite)
+	fmt.Printf("destination=%s source=%s overwrite=%t", file, source, overwrite)
 
 	getReq, err := http.NewRequest("GET", source, nil)
 	if err != nil {
