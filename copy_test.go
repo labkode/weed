@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"reflect"
 	"testing"
 )
 
@@ -50,5 +51,33 @@ func TestGetTCPMode(t *testing.T) {
 	_, err = getTPCMode(r)
 	if err == nil {
 		t.Fatal("expecting error when setting both Source and Destination headers")
+	}
+}
+
+func TestParsingReprDigest(t *testing.T) {
+	inputs := map[string]map[digestAlgo]*digest{
+		"adler=:123=:": {
+			digestAdler: &digest{Algo: string(digestAdler), Value: "123="},
+		},
+		"adler=:123=:,md5=:333=:": {
+			digestAdler: &digest{Algo: string(digestAdler), Value: "123="},
+			digestMD5:   &digest{Algo: string(digestMD5), Value: "333="},
+		},
+		"md5=:333=:,adler=:123=:": {
+			digestAdler: &digest{Algo: string(digestAdler), Value: "123="},
+			digestMD5:   &digest{Algo: string(digestMD5), Value: "333="},
+		},
+		"malformed":              {},
+		"malformed=abc":          {},
+		"malformed=:zzz=":        {}, // missing trailing colon
+		"md5=:!notvalidbase64-:": {},
+		"":                       {},
+	}
+
+	for input, expected := range inputs {
+		got := parseReprDigest(input)
+		if !reflect.DeepEqual(expected, got) {
+			t.Fatalf("error: expected=%v got=%v", expected, got)
+		}
 	}
 }
