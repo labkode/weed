@@ -1,13 +1,18 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net/http"
 
 	"golang.org/x/net/webdav"
 )
 
+var portFlag = flag.Int("port", 9000, "tcp port")
+
 func main() {
+	flag.Parse()
+
 	fs := webdav.NewMemFS()
 	lock := webdav.NewMemLS()
 	davHandler := &webdav.Handler{
@@ -31,12 +36,11 @@ func main() {
 	router.HandleFunc("COPY /{file...}", h.copyHandler)
 
 	err := http.ListenAndServe(
-		":9000",
+		fmt.Sprintf(":%d", *portFlag),
 		router,
 	)
 
 	fmt.Println(err)
-
 }
 
 /*
