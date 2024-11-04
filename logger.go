@@ -1,10 +1,10 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"net/http"
 )
 
 func logger(r *http.Request, err error) {
-	fmt.Println(*r, err)
+	log.Default().Println(*r, err)
 }

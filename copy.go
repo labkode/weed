@@ -108,7 +108,7 @@ func doTPCPull(fs webdav.FileSystem, w http.ResponseWriter, r *http.Request) {
 	source := r.Header.Get("source")
 	overwrite := getOverwrite(r)
 
-	fmt.Printf("destination=%s source=%s overwrite=%t", file, source, overwrite)
+	log.Default().Printf("destination=%s source=%s overwrite=%t", file, source, overwrite)
 
 	getReq, err := http.NewRequest("GET", source, nil)
 	if err != nil {
@@ -128,6 +128,9 @@ func doTPCPull(fs webdav.FileSystem, w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "error: cannot do GET request: %v", err)
 		return
 	}
+	defer getRes.Body.Close()
+
+	log.Default().Println(*getRes)
 
 	// if source endpoints gives back an http status code >=400,
 	// we assume is an error and the body of the response may contain
@@ -168,7 +171,7 @@ func doTPCPull(fs webdav.FileSystem, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if os.IsNotExist(err) { // error is different from not found
+	if !os.IsNotExist(err) { // error is different from not found
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "error: destination cannot be stat: %v", err)
 		return
@@ -210,7 +213,7 @@ write:
 	md5 := md5.New()
 	adler32 := adler32.New()
 	mw := io.MultiWriter(md5, adler32, fd)
-	n, err := io.Copy(mw, r.Body)
+	n, err := io.Copy(mw, getRes.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "error: cannot copy request body into destination file: %v", err)
