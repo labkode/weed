@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 )
 
 var portFlag = flag.Int("port", 9000, "tcp port")
+var tlsFlag = flag.Bool("tls", false, "enable tls")
 
 func main() {
 	flag.Parse()
@@ -33,14 +35,39 @@ func main() {
 	}
 
 	router := http.NewServeMux()
-	router.Handle("/", h)
+	router.Handle("/{file...}", h.checkMacaroons(h))
 	router.HandleFunc("COPY /{file...}", h.copyHandler)
 	router.HandleFunc("GET /proc/x509", h.procX509Handler)
 
-	err := http.ListenAndServe(
-		fmt.Sprintf(":%d", *portFlag),
-		router,
-	)
+	var err error
+	if *tlsFlag {
+
+		cert, err := tls.LoadX509KeyPair("server.crt", "server.key")
+		if err != nil {
+			log.Fatalf("server loadkeys: %s", err)
+
+		}
+
+		tlsConfig := &tls.Config{
+			ClientAuth: tls.RequestClientCert,
+			//ClientCAs:             _rootCAs, // this comes from /etc/grid-security/certificate
+			//RootCAs:               _rootCAs,
+			Certificates: []tls.Certificate{cert},
+		}
+
+		s := http.Server{
+			Addr:      fmt.Sprintf(":%d", *portFlag),
+			TLSConfig: tlsConfig,
+			Handler:   router,
+		}
+		s.ListenAndServeTLS("server.crt", "server.key")
+
+	} else {
+		err = http.ListenAndServe(
+			fmt.Sprintf(":%d", *portFlag),
+			router,
+		)
+	}
 
 	log.Default().Println(err)
 }
@@ -52,6 +79,5 @@ type handler struct {
 func (h *handler) procX509Handler(w http.ResponseWriter, r *http.Request) {
 	// obtain TLS client certificate information and dump it back to
 	// the user.
-	cert := r.TLS.PeerCertificates[0]
-	fmt.Fprintf(w, "%+v", cert)
+	getUserData(r)
 }
