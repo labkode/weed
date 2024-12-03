@@ -55,15 +55,19 @@ func main() {
 			Certificates: []tls.Certificate{cert},
 		}
 
+		addr := fmt.Sprintf(":%d", *portFlag)
+		log.Default().Printf("Listening on %s", addr)
 		s := http.Server{
-			Addr:      fmt.Sprintf(":%d", *portFlag),
+			Addr:      addr,
 			TLSConfig: tlsConfig,
 			Handler:   router,
 		}
 		s.ListenAndServeTLS("server.crt", "server.key")
 
 	} else {
-		err = http.ListenAndServe(
+		addr := fmt.Sprintf(":%d", *portFlag)
+		log.Default().Printf("Listening on %s", addr)
+		http.ListenAndServe(
 			fmt.Sprintf(":%d", *portFlag),
 			router,
 		)

@@ -28,6 +28,6 @@ func (h *handler) doMacaroons(w http.ResponseWriter, r *http.Request) {
 }
 
 type macaroonRequest struct {
-	caveats  []string `json:"caveats"`
-	validity string   `json:"validity"`
+	Caveats  []string `json:"caveats"`
+	Validity string   `json:"validity"`
 }
