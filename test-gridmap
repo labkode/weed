@@ -1,0 +1,4 @@
+# Test gridmap file
+# Format: "DN" username
+"/C=US/CN=Test Client/O=Test Org/OU=Test Unit" testuser
+"/DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=gonzalhu/CN=756361/CN=Hugo Gonzalez Labrador" gonzalhu

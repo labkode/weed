@@ -3,13 +3,13 @@ package main
 import (
 	"crypto/md5"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"hash/adler32"
 	"io"
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"regexp"
@@ -47,26 +47,77 @@ func (d *digest) String() string {
 type TPCMode string
 
 const (
-	TPCModePull    TPCMode = "tpcpull"
-	TPCModePush    TPCMode = "tpcpush"
-	TPCModeInvalid TPCMode = "tpcinvalid"
+	PullTPC TPCMode = "pull"
+	PushTPC TPCMode = "push"
+	NoTPC   TPCMode = "none"
 )
 
-func getTPCMode(r *http.Request) (TPCMode, error) {
-	// TODO(labkode): limit lenght of header values
-	source, destination := r.Header.Get("source"), r.Header.Get("destination")
+// determineTPCMode checks if we are in TPC mode based on headers
+// TPC for now is triggered if either of these conditions are met:
+// a) there is no Destination header and there is a Source header
+// b) there is Destination header and the host is different from the Host header.
+func determineTPCMode(r *http.Request) TPCMode {
+	source := r.Header.Get("Source")
+	destination := r.Header.Get("Destination")
+	hostHeader := r.Header.Get("Host")
+
+	// No headers at all - regular WebDAV operation
 	if source == "" && destination == "" {
-		return TPCModeInvalid, errors.New("error: no Source or Destination headers")
+		log.Printf("[TPC] No TPC headers present - regular WebDAV operation")
+		return NoTPC
 	}
 
-	if source != "" && destination != "" {
-		return TPCModeInvalid, errors.New("error: Source and Destination headers cannot be defined simultaneously")
+	// Condition a) Source header present, no Destination - TPC Pull
+	if destination == "" && source != "" {
+		log.Printf("[TPC] Mode: Pull (Source header present, no Destination)")
+		return PullTPC
 	}
 
-	if source != "" {
-		return TPCModePull, nil
+	// No destination header from this point on, so it must be regular WebDAV
+	if destination == "" {
+		log.Printf("[TPC] No destination header - regular WebDAV operation")
+		return NoTPC
 	}
-	return TPCModePush, nil
+
+	// Destination is relative path - regular WebDAV COPY
+	if !strings.HasPrefix(destination, "http://") && !strings.HasPrefix(destination, "https://") {
+		log.Printf("[TPC] Regular WebDAV COPY (relative destination path)")
+		return NoTPC
+	}
+
+	// Extract host from absolute destination URL
+	destHost := extractHostFromURL(destination)
+	if destHost == "" {
+		log.Printf("[TPC] Invalid destination URL - regular WebDAV operation")
+		return NoTPC
+	}
+
+	// Compare hosts - different host means TPC Push
+	if destHost != hostHeader {
+		log.Printf("[TPC] Mode: Push (Destination host %s differs from request host %s)", destHost, hostHeader)
+		return PushTPC
+	}
+
+	// Same host - regular WebDAV COPY
+	log.Printf("[TPC] Regular WebDAV COPY (same host)")
+	return NoTPC
+}
+
+// extractHostFromURL extracts the host part from an HTTP(S) URL using standard library
+func extractHostFromURL(urlStr string) string {
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		log.Printf("[TPC] Error parsing URL %s: %v", urlStr, err)
+		return ""
+	}
+
+	// Ensure it's HTTP or HTTPS
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		log.Printf("[TPC] Invalid URL scheme %s, expected http or https", parsedURL.Scheme)
+		return ""
+	}
+
+	return parsedURL.Host
 }
 
 func copyTransferHeaders(from, to *http.Request) {
@@ -108,10 +159,11 @@ func doTPCPull(fs webdav.FileSystem, w http.ResponseWriter, r *http.Request) {
 	source := r.Header.Get("source")
 	overwrite := getOverwrite(r)
 
-	log.Default().Printf("destination=%s source=%s overwrite=%t", file, source, overwrite)
+	log.Printf("[TPC-PULL] Starting pull operation - destination=%s source=%s overwrite=%t", file, source, overwrite)
 
 	getReq, err := http.NewRequest("GET", source, nil)
 	if err != nil {
+		log.Printf("[TPC-PULL] Error creating GET request to source %s: %v", source, err)
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprintf(w, "error: source %q is invalid", source)
 	}
@@ -122,31 +174,36 @@ func doTPCPull(fs webdav.FileSystem, w http.ResponseWriter, r *http.Request) {
 		Timeout:   10 * time.Second,
 	}
 
+	log.Printf("[TPC-PULL] Making GET request to source: %s", source)
 	getRes, err := client.Do(getReq)
 	if err != nil {
+		log.Printf("[TPC-PULL] Error making GET request to source %s: %v", source, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "error: cannot do GET request: %v", err)
 		return
 	}
 	defer getRes.Body.Close()
 
-	log.Default().Println(*getRes)
+	log.Printf("[TPC-PULL] Source response status: %d", getRes.StatusCode)
 
 	// if source endpoints gives back an http status code >=400,
 	// we assume is an error and the body of the response may contain
 	// some additional information about it, so we'll try to read as much as 1K to provide
 	// that information in the response.
 	if getRes.StatusCode >= http.StatusBadRequest {
+		log.Printf("[TPC-PULL] Source returned error status: %d", getRes.StatusCode)
 		var errBuffer = []byte{}
 
 		_, err := io.LimitReader(getRes.Body, 1024).Read(errBuffer)
 		if err != nil && err != io.EOF {
+			log.Printf("[TPC-PULL] Error reading error response body: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintf(w, "error: cannot read error response from source %q", source)
 			return
 		}
 
 		// we proxy the http error code obtained from the source to the client
+		log.Printf("[TPC-PULL] Proxying error response from source: %d", getRes.StatusCode)
 		w.WriteHeader(getRes.StatusCode)
 		fmt.Fprintf(w, "error: http(%d) source(%q) source-error(%q)", getRes.StatusCode, source, string(errBuffer))
 		return
@@ -219,7 +276,7 @@ write:
 		fmt.Fprintf(w, "error: cannot copy request body into destination file: %v", err)
 		return
 	}
-	log.Default().Printf("written %d bytes into %s", n, tmpfn)
+	log.Printf("[TPC-PULL] Successfully written %d bytes into temporary file %s", n, tmpfn)
 	md5Digest := &digest{
 		Algo:  string(digestMD5),
 		Value: digestFromRaw(md5.Sum(nil)),
@@ -234,23 +291,27 @@ write:
 		digestMD5:   md5Digest,
 	}
 
-	log.Default().Printf("%s md5 is %s", tmpfn, md5Digest.Value)
-	log.Default().Printf("%s adler32 is %s", tmpfn, adler32Digest.Value)
+	log.Printf("[TPC-PULL] Computed digests for %s - MD5: %s, Adler32: %s", tmpfn, md5Digest.Value, adler32Digest.Value)
 
 	match := compareDigests(clientDigests, serverDigests)
 	if !match {
+		log.Printf("[TPC-PULL] Digest verification failed for %s", tmpfn)
 		w.WriteHeader(http.StatusPreconditionFailed)
 		fmt.Fprintf(w, "error: expected digest does not match")
 		return
 	}
 
+	log.Printf("[TPC-PULL] Digest verification successful for %s", tmpfn)
+
 	// we can rename the final to it's original location
 	if err := fs.Rename(r.Context(), tmpfn, file); err != nil {
+		log.Printf("[TPC-PULL] Error renaming temporary file %s to final location %s: %v", tmpfn, file, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "error: cannot rename %s to original location %s", tmpfn, file)
 		return
 	}
 
+	log.Printf("[TPC-PULL] Successfully completed copy operation - %d bytes written to %s", n, file)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -301,17 +362,25 @@ func getClientDigests(r *http.Request) map[digestAlgo]*digest {
 }
 
 func (h *handler) copyHandler(w http.ResponseWriter, r *http.Request) {
-	tpcMode, err := getTPCMode(r)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(err.Error()))
+	log.Printf("[COPY] Starting copy operation from %s", r.RemoteAddr)
+
+	// Determine TPC mode based on headers
+	tpcMode := determineTPCMode(r)
+
+	// If not TPC mode, handle as regular WebDAV COPY
+	if tpcMode == NoTPC {
+		h.Handler.ServeHTTP(w, r)
 		return
 	}
 
-	if tpcMode == TPCModePull {
+	log.Printf("[COPY] TPC mode determined: %s", tpcMode)
+
+	if tpcMode == PullTPC {
+		log.Printf("[COPY] Performing TPC Pull operation")
 		doTPCPull(h.FileSystem, w, r)
 		return
 	}
+	log.Printf("[COPY] Performing TPC Push operation")
 	doTPCPush(h.FileSystem, w, r)
 }
 

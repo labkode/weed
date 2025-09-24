@@ -1,50 +1,15 @@
-package main
+package x509utils
 
 import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"log"
-	"net/http"
 	"sort"
 	"strings"
 )
 
-func getUserData(r *http.Request) []string {
-	if r.TLS == nil {
-		log.Printf("HTTP request does not support TLS, %+v", r)
-		return []string{}
-	}
-
-	certs := r.TLS.PeerCertificates
-	log.Printf("found %d peer certificates in HTTP request", len(certs))
-	log.Printf("HTTP request %+v", r)
-	log.Printf("HTTP request TLS %+v", r.TLS)
-
-	for _, asn1Data := range certs {
-		cert, err := x509.ParseCertificate(asn1Data.Raw)
-		if err != nil {
-			log.Println("x509RequestHandler tls: failed to parse certificate from server: " + err.Error())
-			continue
-		}
-
-		if len(cert.UnhandledCriticalExtensions) > 0 {
-			log.Println("cert.UnhandledCriticalExtensions equal to", len(cert.UnhandledCriticalExtensions))
-			continue
-		}
-
-		dnParts := getDNParts(cert)
-		log.Printf("cert exp: %v", cert.NotAfter.Unix())
-		log.Printf("cerm email: %v", cert.EmailAddresses)
-		log.Printf("cert subject name: %v", cert.Subject.CommonName)
-		log.Printf("cert dump: %+v", *cert)
-		log.Printf("dn parts: %+v", dnParts)
-		continue
-	}
-	return []string{}
-}
-
-func getDNParts(cert *x509.Certificate) string {
+// GetDNParts extracts Distinguished Name parts from an X.509 certificate
+func GetDNParts(cert *x509.Certificate) string {
 	dnParts := []string{}
 	parts := []string{}
 
@@ -93,10 +58,6 @@ func contains(list []string, value string) bool {
 }
 
 // helper function to convert attr ANS.1 to human readable form
-// https://cs.opensource.google/go/go/+/master:src/crypto/x509/pkix/pkix.go;l=26
-// crypto/x509/pkix/pkix.go
-// https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2003/cc772812(v=ws.10)?redirectedfrom=MSDN
-// https://stackoverflow.com/questions/6465454/table-of-oids-for-certificates-subject
 func attrDN(attr string) string {
 	switch attr {
 	case "2.5.4.3": // CN (Common Name)
@@ -129,11 +90,10 @@ func attrDN(attr string) string {
 		return "EMail" // EMail
 	}
 	return attr
-
 }
 
-// helper function to extract CN from given subject
-func findCN(subject string) (string, error) {
+// FindCN extracts CN from given subject
+func FindCN(subject string) (string, error) {
 	parts := strings.Split(subject, " ")
 	for i, s := range parts {
 		if strings.HasPrefix(s, "CN=") && len(parts) > i {
