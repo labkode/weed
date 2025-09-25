@@ -46,6 +46,14 @@ type OIDCSession struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// SetAuthInfoInContext stores authentication information in the context
+func SetAuthInfoInContext(ctx context.Context, authInfo *AuthInfo) context.Context {
+	// Store both username (for backward compatibility) and auth info
+	ctx = context.WithValue(ctx, usernameContextKey, authInfo.Username)
+	ctx = context.WithValue(ctx, authInfoContextKey, authInfo)
+	return ctx
+}
+
 // GetUsernameFromContext retrieves the authenticated username from the request context
 func GetUsernameFromContext(ctx context.Context) (string, bool) {
 	username, ok := ctx.Value(usernameContextKey).(string)
@@ -56,14 +64,6 @@ func GetUsernameFromContext(ctx context.Context) (string, bool) {
 func GetAuthInfoFromContext(ctx context.Context) (*AuthInfo, bool) {
 	authInfo, ok := ctx.Value(authInfoContextKey).(*AuthInfo)
 	return authInfo, ok
-}
-
-// SetAuthInfoInContext stores authentication information in the context
-func SetAuthInfoInContext(ctx context.Context, authInfo *AuthInfo) context.Context {
-	// Store both username (for backward compatibility) and auth info
-	ctx = context.WithValue(ctx, usernameContextKey, authInfo.Username)
-	ctx = context.WithValue(ctx, authInfoContextKey, authInfo)
-	return ctx
 }
 
 // AuthStore holds authentication data
@@ -386,7 +386,7 @@ func (as *AuthStore) InitializeMacaroon(secretKey, location string) error {
 	if len(secretKey) < 32 {
 		return fmt.Errorf("macaroon secret key must be at least 32 characters long")
 	}
-	
+
 	as.MacaroonSecretKey = []byte(secretKey)
 	as.MacaroonLocation = location
 	return nil
@@ -423,7 +423,7 @@ func (as *AuthStore) OIDCAuthMiddleware(next http.Handler) http.Handler {
 }
 
 // VerifyMacaroon verifies a macaroon token and extracts information
-func (as *AuthStore) VerifyMacaroon(tokenString, requestPath string) (*AuthInfo, error) {
+func (as *AuthStore) VerifyMacaroon(tokenString, requestPath, httpMethod string) (*AuthInfo, error) {
 	// Decode the base64-encoded macaroon
 	macBytes, err := base64.StdEncoding.DecodeString(tokenString)
 	if err != nil {
@@ -437,8 +437,9 @@ func (as *AuthStore) VerifyMacaroon(tokenString, requestPath string) (*AuthInfo,
 	}
 
 	// Verify the macaroon signature and caveats
+	// Pass the HTTP method to caveat verification for activity enforcement
 	verifyCaveatWithPath := func(caveat string) error {
-		return as.verifyCaveat(caveat, requestPath)
+		return as.verifyCaveatWithMethod(caveat, requestPath, httpMethod)
 	}
 	if err := receivedMac.Verify(as.MacaroonSecretKey, verifyCaveatWithPath, nil); err != nil {
 		return nil, fmt.Errorf("macaroon verification failed: %w", err)
@@ -453,8 +454,8 @@ func (as *AuthStore) VerifyMacaroon(tokenString, requestPath string) (*AuthInfo,
 	return authInfo, nil
 }
 
-// verifyCaveat validates individual macaroon caveats
-func (as *AuthStore) verifyCaveat(caveat string, requestPath string) error {
+// verifyCaveatWithMethod validates individual macaroon caveats, enforcing activity mapping to HTTP method
+func (as *AuthStore) verifyCaveatWithMethod(caveat string, requestPath string, httpMethod string) error {
 	parts := strings.SplitN(caveat, ":", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("invalid caveat format: %s", caveat)
@@ -478,13 +479,21 @@ func (as *AuthStore) verifyCaveat(caveat string, requestPath string) error {
 			return fmt.Errorf("empty id caveat")
 		}
 	case "activity":
-		// Activity restrictions - validate against supported activities
+		// Activity restrictions - validate that the activity matches the HTTP method
 		activities := strings.Split(value, ",")
+		requiredActivity := getActivityForMethod(httpMethod)
+		found := false
 		for _, activity := range activities {
 			activity = strings.TrimSpace(activity)
+			if strings.EqualFold(activity, requiredActivity) {
+				found = true
+			}
 			if !isValidActivity(activity) {
 				return fmt.Errorf("invalid activity: %s", activity)
 			}
+		}
+		if !found {
+			return fmt.Errorf("activity caveat %s does not match required activity %s for method %s", value, requiredActivity, httpMethod)
 		}
 	case "path":
 		// Path restrictions - ensure the request path matches or is under the allowed path
@@ -508,6 +517,28 @@ func (as *AuthStore) verifyCaveat(caveat string, requestPath string) error {
 	return nil
 }
 
+// getActivityForMethod maps HTTP methods to activity strings per FTS3/dCache standards
+func getActivityForMethod(method string) string {
+	switch strings.ToUpper(method) {
+	case "GET":
+		return "DOWNLOAD"
+	case "PUT":
+		return "UPLOAD"
+	case "PROPFIND":
+		return "LIST"
+	case "DELETE":
+		return "DELETE"
+	case "MKCOL":
+		return "MANAGE"
+	case "HEAD":
+		return "READ"
+	case "POST":
+		return "WRITE"
+	default:
+		return ""
+	}
+}
+
 // pathMatches checks if a request path is allowed by a path caveat
 // The caveat path can be:
 // - An exact path: /webdav/file.txt
@@ -517,12 +548,12 @@ func pathMatches(requestPath, caveatPath string) bool {
 	if requestPath == caveatPath {
 		return true
 	}
-	
+
 	// If caveat path ends with '/', it allows access to subdirectories
 	if strings.HasSuffix(caveatPath, "/") {
 		return strings.HasPrefix(requestPath, caveatPath)
 	}
-	
+
 	// If caveat path doesn't end with '/', it only allows exact match or subdirectories if it's a directory
 	// Check if request path is a subdirectory of the caveat path
 	return strings.HasPrefix(requestPath, caveatPath+"/")
@@ -603,7 +634,7 @@ func (as *AuthStore) MacaroonAuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Verify the macaroon
-		authInfo, err := as.VerifyMacaroon(token, r.URL.Path)
+		authInfo, err := as.VerifyMacaroon(token, r.URL.Path, r.Method)
 		if err != nil {
 			log.Printf("[MACAROON-AUTH] [%s] Macaroon verification failed: %v", reqID, err)
 			http.Error(w, "Invalid macaroon token", http.StatusUnauthorized)
@@ -631,10 +662,10 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 
 		// Track authentication attempts for logging
 		// SKIP = not provided, FAIL = error/invalid, OK = success
-		x509Status := "SKIP"  // SKIP = not provided
-		oidcStatus := "SKIP"  // SKIP = not provided
+		x509Status := "SKIP"     // SKIP = not provided
+		oidcStatus := "SKIP"     // SKIP = not provided
 		macaroonStatus := "SKIP" // SKIP = not provided
-		basicStatus := "SKIP" // SKIP = not provided
+		basicStatus := "SKIP"    // SKIP = not provided
 
 		// 1. Try X.509 Client Certificate Authentication first (if TLS enabled)
 		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
@@ -714,7 +745,7 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 		if auth := r.Header.Get("Authorization"); auth != "" && strings.HasPrefix(auth, "Bearer ") {
 			// Bearer token provided, validate it
 			token := auth[7:] // Remove "Bearer " prefix
-			if authInfo, err := as.VerifyMacaroon(token, r.URL.Path); err == nil && authInfo != nil {
+			if authInfo, err := as.VerifyMacaroon(token, r.URL.Path, r.Method); err == nil && authInfo != nil {
 				macaroonStatus = "OK"
 				log.Printf("[MACAROON-AUTH] [%s] Valid macaroon for user: %s", reqID, authInfo.Username)
 

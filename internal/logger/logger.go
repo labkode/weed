@@ -83,7 +83,7 @@ func Middleware(next http.Handler) http.Handler {
 		if userAgent == "" {
 			userAgent = "-"
 		}
-		
+
 		// Get username from context
 		username := getUsernameFromContext(r.Context())
 

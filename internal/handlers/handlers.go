@@ -28,7 +28,7 @@ type WebDAVHandler struct {
 // NewWebDAVHandler creates a new WebDAV handler
 func NewWebDAVHandler(directory string, cfg *config.Config, authStore *auth.AuthStore) *WebDAVHandler {
 	webdavHandler := &webdav.Handler{
-		Prefix:     "/webdav",  // Set prefix to /webdav so hrefs are generated correctly
+		Prefix:     "/webdav", // Set prefix to /webdav so hrefs are generated correctly
 		FileSystem: webdav.Dir(directory),
 		LockSystem: webdav.NewMemLS(),
 		Logger: func(r *http.Request, err error) {
@@ -57,7 +57,7 @@ func NewWebDAVHandler(directory string, cfg *config.Config, authStore *auth.Auth
 // ServeHTTP handles requests and demonstrates context usage
 func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	reqID := logger.GetRequestID(r.Context())
-	
+
 	// For the root path, serve our index page that shows the authenticated user
 	if r.URL.Path == "/" && r.Method == "GET" {
 		h.IndexHandler(w, r)

@@ -16,8 +16,6 @@ import (
 	"github.com/labkode/weed/internal/logger"
 )
 
-
-
 // Server represents the WebDAV server
 type Server struct {
 	Config    *config.Config
@@ -250,7 +248,7 @@ func (w *customLogWriter) Write(p []byte) (n int, err error) {
 	msg := string(p)
 	// Remove trailing newline if present
 	msg = strings.TrimSuffix(msg, "\n")
-	
+
 	// Format TLS handshake errors consistently
 	if strings.Contains(msg, "TLS handshake error") {
 		log.Printf("[TLS] %s", msg)
@@ -258,7 +256,7 @@ func (w *customLogWriter) Write(p []byte) (n int, err error) {
 		// Format other HTTP server errors
 		log.Printf("[HTTP-SERVER] %s", msg)
 	}
-	
+
 	return len(p), nil
 }
 
@@ -268,9 +266,9 @@ func (s *Server) Start() error {
 	mux := s.SetupRoutes()
 
 	s.server = &http.Server{
-		Addr:      address,
-		Handler:   mux,
-		ErrorLog:  s.createCustomErrorLogger(),
+		Addr:     address,
+		Handler:  mux,
+		ErrorLog: s.createCustomErrorLogger(),
 	}
 
 	if s.Config.TLS {
