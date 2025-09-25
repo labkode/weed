@@ -2,9 +2,12 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/labkode/weed/internal/auth"
@@ -19,10 +22,11 @@ type WebDAVHandler struct {
 	*webdav.Handler
 	Directory string
 	Config    *config.Config
+	AuthStore *auth.AuthStore
 }
 
 // NewWebDAVHandler creates a new WebDAV handler
-func NewWebDAVHandler(directory string, cfg *config.Config) *WebDAVHandler {
+func NewWebDAVHandler(directory string, cfg *config.Config, authStore *auth.AuthStore) *WebDAVHandler {
 	webdavHandler := &webdav.Handler{
 		Prefix:     "/webdav",  // Set prefix to /webdav so hrefs are generated correctly
 		FileSystem: webdav.Dir(directory),
@@ -46,14 +50,25 @@ func NewWebDAVHandler(directory string, cfg *config.Config) *WebDAVHandler {
 		Handler:   webdavHandler,
 		Directory: directory,
 		Config:    cfg,
+		AuthStore: authStore,
 	}
 }
 
 // ServeHTTP handles requests and demonstrates context usage
 func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	reqID := logger.GetRequestID(r.Context())
+	
 	// For the root path, serve our index page that shows the authenticated user
 	if r.URL.Path == "/" && r.Method == "GET" {
 		h.IndexHandler(w, r)
+		return
+	}
+
+	// Check for macaroon minting requests (POST with application/macaroon-request content-type)
+	// This happens AFTER authentication middleware has run
+	if r.Method == "POST" && r.Header.Get("Content-Type") == "application/macaroon-request" {
+		log.Printf("[MACAROON-MINTING] [%s] Processing authenticated macaroon minting request to %s", reqID, r.URL.Path)
+		h.handleMacaroonRequest(w, r)
 		return
 	}
 
@@ -61,7 +76,6 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "PROPFIND" {
 		depth := r.Header.Get("Depth")
 		if depth == "infinity" {
-			reqID := logger.GetRequestID(r.Context())
 			log.Printf("[SECURITY] [%s] Infinite depth PROPFIND request denied from %s", reqID, r.RemoteAddr)
 			http.Error(w, "Infinite depth PROPFIND requests are not allowed", http.StatusForbidden)
 			return
@@ -465,4 +479,128 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 		// Redirect to root path
 		http.Redirect(w, r, "/", http.StatusFound)
 	}
+}
+
+// handleMacaroonRequest handles POST requests with application/macaroon-request content-type
+func (h *WebDAVHandler) handleMacaroonRequest(w http.ResponseWriter, r *http.Request) {
+	reqID := logger.GetRequestID(r.Context())
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse the JSON request body
+	var req struct {
+		Caveats  []string `json:"caveats"`
+		Validity string   `json:"validity,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("[MACAROON-REQUEST] [%s] Failed to parse request body: %v", reqID, err)
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Process caveats
+	caveats := req.Caveats
+
+	// Handle validity field (ISO 8601 duration)
+	if req.Validity != "" {
+		expiryTime, err := parseISODuration(req.Validity)
+		if err != nil {
+			log.Printf("[MACAROON-REQUEST] [%s] Failed to parse validity duration: %v", reqID, err)
+			http.Error(w, "Invalid validity duration", http.StatusBadRequest)
+			return
+		}
+		caveats = append(caveats, fmt.Sprintf("before:%s", expiryTime.Format(time.RFC3339)))
+	}
+
+	// Get auth store from context or create one
+	// For now, we'll need to pass it somehow - let's modify the handler to accept auth store
+	// This is a temporary solution - in a real implementation, the auth store would be available
+	authStore := h.AuthStore
+	if authStore == nil {
+		log.Printf("[MACAROON-REQUEST] [%s] AuthStore not available", reqID)
+		http.Error(w, "Macaroon authentication not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Get the authenticated user from the context
+	var authenticatedUser string
+	if authInfo, authenticated := auth.GetAuthInfoFromContext(r.Context()); authenticated {
+		authenticatedUser = authInfo.Username
+		log.Printf("[MACAROON-REQUEST] [%s] Found authenticated user via AuthInfo: %s", reqID, authenticatedUser)
+	} else if username, hasUsername := auth.GetUsernameFromContext(r.Context()); hasUsername {
+		authenticatedUser = username
+		log.Printf("[MACAROON-REQUEST] [%s] Found authenticated user via username context: %s", reqID, authenticatedUser)
+	} else {
+		log.Printf("[MACAROON-REQUEST] [%s] No authenticated user found in context", reqID)
+		http.Error(w, "Authentication required for macaroon creation", http.StatusUnauthorized)
+		return
+	}
+
+	// Add the authenticated user's ID as a caveat
+	caveats = append(caveats, fmt.Sprintf("id:%s", authenticatedUser))
+
+	// Create macaroon with the provided caveats
+	macaroon, err := authStore.CreateMacaroon(caveats)
+	if err != nil {
+		log.Printf("[MACAROON-REQUEST] [%s] Failed to create macaroon: %v", reqID, err)
+		http.Error(w, "Failed to create macaroon", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[MACAROON-REQUEST] [%s] Created macaroon for user: %s", reqID, authenticatedUser)
+
+	// Return the macaroon as JSON
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"macaroon": macaroon,
+	})
+
+	log.Printf("[MACAROON-REQUEST] [%s] Macaroon created successfully", reqID)
+}
+
+// MacaroonMintingMiddleware is no longer needed as macaroon handling is done in ServeHTTP after authentication
+// This middleware is kept for backward compatibility but just passes through to the next handler
+func (h *WebDAVHandler) MacaroonMintingMiddleware(next http.Handler) http.Handler {
+	return next
+}
+
+// parseISODuration parses an ISO 8601 duration string and returns the expiry time
+func parseISODuration(durationStr string) (time.Time, error) {
+	// Simple implementation for ISO 8601 duration like "PT60M" (60 minutes)
+	// This is a basic implementation - a full ISO 8601 parser would be more comprehensive
+	if !strings.HasPrefix(durationStr, "PT") {
+		return time.Time{}, fmt.Errorf("invalid ISO duration format: %s", durationStr)
+	}
+
+	duration := durationStr[2:] // Remove "PT" prefix
+	var hours, minutes, seconds int
+
+	// Parse duration components (basic implementation)
+	parts := strings.FieldsFunc(duration, func(r rune) bool {
+		return r == 'H' || r == 'M' || r == 'S'
+	})
+
+	for i, part := range parts {
+		if strings.HasSuffix(duration, "H") && i == len(parts)-1 {
+			if h, err := strconv.Atoi(part); err == nil {
+				hours = h
+			}
+		} else if strings.HasSuffix(duration, "M") && i == len(parts)-1 {
+			if m, err := strconv.Atoi(part); err == nil {
+				minutes = m
+			}
+		} else if strings.HasSuffix(duration, "S") && i == len(parts)-1 {
+			if s, err := strconv.Atoi(part); err == nil {
+				seconds = s
+			}
+		}
+	}
+
+	// Calculate expiry time
+	durationTime := time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute + time.Duration(seconds)*time.Second
+	return time.Now().Add(durationTime), nil
 }

@@ -28,10 +28,11 @@ type Server struct {
 
 // New creates a new server instance
 func New(cfg *config.Config) *Server {
+	authStore := auth.NewAuthStore()
 	return &Server{
 		Config:    cfg,
-		AuthStore: auth.NewAuthStore(),
-		Handler:   handlers.NewWebDAVHandler(cfg.Directory, cfg),
+		AuthStore: authStore,
+		Handler:   handlers.NewWebDAVHandler(cfg.Directory, cfg, authStore),
 	}
 }
 
@@ -78,6 +79,14 @@ func (s *Server) Initialize() error {
 		log.Printf("[OIDC] Successfully initialized OIDC authentication")
 	}
 
+	// Initialize Macaroon if enabled
+	if s.Config.MacaroonAuth {
+		if err := s.AuthStore.InitializeMacaroon(s.Config.MacaroonSecretKey, s.Config.MacaroonLocation); err != nil {
+			return fmt.Errorf("failed to initialize macaroon: %w", err)
+		}
+		log.Printf("[MACAROON] Successfully initialized macaroon authentication")
+	}
+
 	return nil
 }
 
@@ -110,8 +119,13 @@ func (s *Server) createWebDAVHandler(handler http.Handler) http.Handler {
 
 // applyAuthMiddleware applies the unified authentication middleware to a handler
 func (s *Server) applyAuthMiddleware(handler http.Handler) http.Handler {
-	// Use unified authentication middleware that tries X.509 -> OIDC -> Basic Auth in order
+	// First apply unified authentication middleware that tries X.509 -> OIDC -> Macaroon -> Basic Auth in order
 	handler = s.AuthStore.UnifiedAuthMiddleware(handler)
+
+	// After authentication, apply macaroon minting middleware (if macaroon auth is enabled)
+	if s.Config.MacaroonAuth {
+		handler = s.Handler.MacaroonMintingMiddleware(handler)
+	}
 
 	// Apply logging middleware
 	handler = logger.Middleware(handler)
@@ -166,11 +180,16 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 		log.Printf("[OIDC] Added OIDC routes: /auth/oidc and /oidc_redirect")
 	}
 
+	// Macaroon routes if macaroon auth is enabled
+	if s.Config.MacaroonAuth {
+		log.Printf("[MACAROON] Macaroon requests handled via WebDAV POST with application/macaroon-request content-type")
+	}
+
 	// Utility routes
 	mux.HandleFunc("/proc/x509", s.Handler.ProcX509Handler)
 
 	// Add whoami route at /proc/whoami - apply auth middleware if any auth is enabled
-	if s.Config.BasicAuth || s.Config.X509Auth || s.Config.OIDCAuth {
+	if s.Config.BasicAuth || s.Config.X509Auth || s.Config.OIDCAuth || s.Config.MacaroonAuth {
 		// Create a whoami handler with authentication middleware
 		whoamiHandler := s.applyAuthMiddleware(http.HandlerFunc(s.Handler.WhoAmIHandler))
 		mux.Handle("/proc/whoami", whoamiHandler)

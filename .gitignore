@@ -1,1 +1,26 @@
 weed
+
+# Log files
+*.log
+
+# Process ID files
+*.pid
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*.new
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Editor temporary files
+.*.swp
+.*.swo
+*~

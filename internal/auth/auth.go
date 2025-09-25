@@ -20,6 +20,7 @@ import (
 	"github.com/labkode/weed/internal/x509utils"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
+	"gopkg.in/macaroon.v2"
 )
 
 // Context key for storing authentication information
@@ -78,6 +79,9 @@ type AuthStore struct {
 	OIDCVerifier *oidc.IDTokenVerifier
 	// Session store for OIDC state
 	Sessions map[string]*OIDCSession
+	// Macaroon configuration
+	MacaroonSecretKey []byte
+	MacaroonLocation  string
 }
 
 // NewAuthStore creates a new authentication store
@@ -377,20 +381,232 @@ func (as *AuthStore) InitializeOIDC(ctx context.Context, issuer, clientID, clien
 	return nil
 }
 
+// InitializeMacaroon initializes the macaroon configuration
+func (as *AuthStore) InitializeMacaroon(secretKey, location string) error {
+	if len(secretKey) < 32 {
+		return fmt.Errorf("macaroon secret key must be at least 32 characters long")
+	}
+	
+	as.MacaroonSecretKey = []byte(secretKey)
+	as.MacaroonLocation = location
+	return nil
+}
+
+// CreateMacaroon creates a new macaroon with the specified caveats
+func (as *AuthStore) CreateMacaroon(caveats []string) (string, error) {
+	// Create a new macaroon
+	mac, err := macaroon.New(as.MacaroonSecretKey, []byte("random-id"), as.MacaroonLocation, macaroon.LatestVersion)
+	if err != nil {
+		return "", fmt.Errorf("failed to create macaroon: %w", err)
+	}
+
+	// Add caveats
+	for _, caveat := range caveats {
+		if err := mac.AddFirstPartyCaveat([]byte(caveat)); err != nil {
+			return "", fmt.Errorf("failed to add caveat %s: %w", caveat, err)
+		}
+	}
+
+	// Serialize the macaroon
+	macBytes, err := mac.MarshalBinary()
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal macaroon: %w", err)
+	}
+
+	// Encode as base64
+	return base64.StdEncoding.EncodeToString(macBytes), nil
+}
+
 // OIDCAuthMiddleware provides OIDC authentication middleware (placeholder)
 func (as *AuthStore) OIDCAuthMiddleware(next http.Handler) http.Handler {
 	return next
 }
 
-// UnifiedAuthMiddleware provides authentication in the specified order: X.509 -> OIDC -> Basic Auth
+// VerifyMacaroon verifies a macaroon token and extracts information
+func (as *AuthStore) VerifyMacaroon(tokenString string) (*AuthInfo, error) {
+	// Decode the base64-encoded macaroon
+	macBytes, err := base64.StdEncoding.DecodeString(tokenString)
+	if err != nil {
+		return nil, fmt.Errorf("invalid macaroon encoding: %w", err)
+	}
+
+	// Deserialize the received macaroon
+	receivedMac := &macaroon.Macaroon{}
+	if err := receivedMac.UnmarshalBinary(macBytes); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal macaroon: %w", err)
+	}
+
+	// Verify the macaroon signature and caveats
+	if err := receivedMac.Verify(as.MacaroonSecretKey, as.verifyCaveat, nil); err != nil {
+		return nil, fmt.Errorf("macaroon verification failed: %w", err)
+	}
+
+	// Extract authentication information from caveats
+	authInfo, err := as.extractAuthInfoFromMacaroon(receivedMac)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract auth info: %w", err)
+	}
+
+	return authInfo, nil
+}
+
+// verifyCaveat validates individual macaroon caveats
+func (as *AuthStore) verifyCaveat(caveat string) error {
+	parts := strings.SplitN(caveat, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid caveat format: %s", caveat)
+	}
+
+	key, value := parts[0], parts[1]
+
+	switch key {
+	case "before":
+		// Parse the timestamp and check if it's still valid
+		expiry, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return fmt.Errorf("invalid before caveat timestamp: %s", value)
+		}
+		if time.Now().After(expiry) {
+			return fmt.Errorf("macaroon expired at %s", value)
+		}
+	case "id":
+		// Identity caveat - will be used for username extraction
+		if value == "" {
+			return fmt.Errorf("empty id caveat")
+		}
+	case "activity":
+		// Activity restrictions - validate against supported activities
+		activities := strings.Split(value, ",")
+		for _, activity := range activities {
+			activity = strings.TrimSpace(activity)
+			if !isValidActivity(activity) {
+				return fmt.Errorf("invalid activity: %s", activity)
+			}
+		}
+	case "path":
+		// Path restrictions - ensure valid path format
+		if !strings.HasPrefix(value, "/") {
+			return fmt.Errorf("invalid path caveat: %s", value)
+		}
+	case "ip":
+		// IP restrictions - basic validation that it's not empty
+		if value == "" {
+			return fmt.Errorf("empty ip caveat")
+		}
+	default:
+		// Unknown caveat - log but don't fail (forward compatibility)
+		log.Printf("[MACAROON] Unknown caveat: %s:%s", key, value)
+	}
+
+	return nil
+}
+
+// extractAuthInfoFromMacaroon extracts authentication information from macaroon caveats
+func (as *AuthStore) extractAuthInfoFromMacaroon(mac *macaroon.Macaroon) (*AuthInfo, error) {
+	authInfo := &AuthInfo{
+		Method:  "macaroon",
+		Details: make(map[string]interface{}),
+	}
+
+	// Look for caveats to extract identity and other information
+	for _, cav := range mac.Caveats() {
+		caveatStr := string(cav.Id)
+		parts := strings.SplitN(caveatStr, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key, value := parts[0], parts[1]
+		switch key {
+		case "id":
+			authInfo.Username = value
+		case "activity":
+			authInfo.Details["activities"] = strings.Split(value, ",")
+		case "path":
+			authInfo.Details["path"] = value
+		case "before":
+			authInfo.Details["expires"] = value
+		case "ip":
+			authInfo.Details["allowed_ips"] = value
+		default:
+			authInfo.Details[key] = value
+		}
+	}
+
+	// If no username found in caveats, use a default
+	if authInfo.Username == "" {
+		return nil, fmt.Errorf("no id caveat found in macaroon")
+	}
+
+	return authInfo, nil
+}
+
+// isValidActivity checks if an activity is supported
+func isValidActivity(activity string) bool {
+	validActivities := map[string]bool{
+		"DOWNLOAD": true,
+		"UPLOAD":   true,
+		"LIST":     true,
+		"MANAGE":   true,
+		"DELETE":   true,
+		"READ":     true,
+		"WRITE":    true,
+	}
+	return validActivities[strings.ToUpper(activity)]
+}
+
+// MacaroonAuthMiddleware provides macaroon bearer token authentication
+func (as *AuthStore) MacaroonAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := logger.GetRequestID(r.Context())
+
+		// Check for Bearer token in Authorization header
+		auth := r.Header.Get("Authorization")
+		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+			log.Printf("[MACAROON-AUTH] [%s] No Bearer token provided", reqID)
+			http.Error(w, "Bearer token required", http.StatusUnauthorized)
+			return
+		}
+
+		token := auth[7:] // Remove "Bearer " prefix
+		if token == "" {
+			log.Printf("[MACAROON-AUTH] [%s] Empty Bearer token", reqID)
+			http.Error(w, "Invalid Bearer token", http.StatusUnauthorized)
+			return
+		}
+
+		// Verify the macaroon
+		authInfo, err := as.VerifyMacaroon(token)
+		if err != nil {
+			log.Printf("[MACAROON-AUTH] [%s] Macaroon verification failed: %v", reqID, err)
+			http.Error(w, "Invalid macaroon token", http.StatusUnauthorized)
+			return
+		}
+
+		log.Printf("[MACAROON-AUTH] [%s] User authenticated: %s", reqID, authInfo.Username)
+
+		// Store authentication info in context
+		ctx := SetAuthInfoInContext(r.Context(), authInfo)
+		r = r.WithContext(ctx)
+
+		// Call next handler
+		next.ServeHTTP(w, r)
+	})
+}
+
+// UnifiedAuthMiddleware provides authentication in the specified order: X.509 -> OIDC -> Macaroon -> Basic Auth
 func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := logger.GetRequestID(r.Context())
+
+		// Debug: Log every request entering the unified auth middleware
+		log.Printf("[UNIFIED-AUTH] [%s] Processing request %s %s, Content-Type: %s", reqID, r.Method, r.URL.Path, r.Header.Get("Content-Type"))
 
 		// Track authentication attempts for logging
 		// SKIP = not provided, FAIL = error/invalid, OK = success
 		x509Status := "SKIP"  // SKIP = not provided
 		oidcStatus := "SKIP"  // SKIP = not provided
+		macaroonStatus := "SKIP" // SKIP = not provided
 		basicStatus := "SKIP" // SKIP = not provided
 
 		// 1. Try X.509 Client Certificate Authentication first (if TLS enabled)
@@ -429,7 +645,7 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 				r = r.WithContext(ctx)
 
 				// Log authentication summary and proceed
-				log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s BASIC=%s -> SUCCESS (X.509)", reqID, x509Status, oidcStatus, basicStatus)
+				log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s MACAROON=%s BASIC=%s -> SUCCESS (X.509)", reqID, x509Status, oidcStatus, macaroonStatus, basicStatus)
 				next.ServeHTTP(w, r)
 				return
 			} else {
@@ -458,7 +674,7 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 
 				log.Printf("[OIDC-AUTH] [%s] Valid OIDC session for user: %s", reqID, session.Username)
 				// Log authentication summary and proceed
-				log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s BASIC=%s -> SUCCESS (OIDC)", reqID, x509Status, oidcStatus, basicStatus)
+				log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s MACAROON=%s BASIC=%s -> SUCCESS (OIDC)", reqID, x509Status, oidcStatus, macaroonStatus, basicStatus)
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -467,7 +683,30 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 			log.Printf("[OIDC-AUTH] [%s] Invalid/expired OIDC session - trying next auth method", reqID)
 		}
 
-		// 3. Try Basic Authentication (includes app tokens)
+		// 3. Try Macaroon Bearer Token Authentication
+		if auth := r.Header.Get("Authorization"); auth != "" && strings.HasPrefix(auth, "Bearer ") {
+			// Bearer token provided, validate it
+			token := auth[7:] // Remove "Bearer " prefix
+			if authInfo, err := as.VerifyMacaroon(token); err == nil && authInfo != nil {
+				macaroonStatus = "OK"
+				log.Printf("[MACAROON-AUTH] [%s] Valid macaroon for user: %s", reqID, authInfo.Username)
+
+				// Store authentication info in request context
+				ctx := SetAuthInfoInContext(r.Context(), authInfo)
+				r = r.WithContext(ctx)
+
+				// Log authentication summary and proceed
+				log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s MACAROON=%s BASIC=%s -> SUCCESS (MACAROON)", reqID, x509Status, oidcStatus, macaroonStatus, basicStatus)
+				next.ServeHTTP(w, r)
+				return
+			} else {
+				// Macaroon provided but verification failed
+				macaroonStatus = "FAIL"
+				log.Printf("[MACAROON-AUTH] [%s] Macaroon verification failed: %v - trying next auth method", reqID, err)
+			}
+		}
+
+		// 4. Try Basic Authentication (includes app tokens)
 		auth := r.Header.Get("Authorization")
 		if auth != "" && strings.HasPrefix(auth, "Basic ") {
 			// Basic auth header provided, validate it
@@ -502,7 +741,7 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 						r = r.WithContext(ctx)
 
 						// Log authentication summary and proceed
-						log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s BASIC=%s -> SUCCESS (BASIC)", reqID, x509Status, oidcStatus, basicStatus)
+						log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s MACAROON=%s BASIC=%s -> SUCCESS (BASIC)", reqID, x509Status, oidcStatus, macaroonStatus, basicStatus)
 						next.ServeHTTP(w, r)
 						return
 					}
@@ -522,7 +761,7 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		// 4. All authentication methods failed - log summary and return 401
-		log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s BASIC=%s -> DENIED (401)", reqID, x509Status, oidcStatus, basicStatus)
+		log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s MACAROON=%s BASIC=%s -> DENIED (401)", reqID, x509Status, oidcStatus, macaroonStatus, basicStatus)
 		log.Printf("[AUTH] [%s] No valid authentication provided - requesting Basic Auth", reqID)
 		w.Header().Set("WWW-Authenticate", `Basic realm="WebDAV Server"`)
 		http.Error(w, "Authorization required", http.StatusUnauthorized)
