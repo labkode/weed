@@ -57,6 +57,17 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check for infinite depth PROPFIND requests and reject them
+	if r.Method == "PROPFIND" {
+		depth := r.Header.Get("Depth")
+		if depth == "infinity" {
+			reqID := logger.GetRequestID(r.Context())
+			log.Printf("[SECURITY] [%s] Infinite depth PROPFIND request denied from %s", reqID, r.RemoteAddr)
+			http.Error(w, "Infinite depth PROPFIND requests are not allowed", http.StatusForbidden)
+			return
+		}
+	}
+
 	// For all other paths, serve WebDAV
 	h.Handler.ServeHTTP(w, r)
 }
