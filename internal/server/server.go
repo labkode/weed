@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/labkode/weed/internal/auth"
 	"github.com/labkode/weed/internal/config"
@@ -218,14 +219,39 @@ func (s *Server) SetupTLS() *tls.Config {
 	return tlsConfig
 }
 
+// createCustomErrorLogger creates a custom logger for HTTP server errors
+func (s *Server) createCustomErrorLogger() *log.Logger {
+	return log.New(&customLogWriter{}, "", 0)
+}
+
+// customLogWriter formats HTTP server errors to match our logging style
+type customLogWriter struct{}
+
+func (w *customLogWriter) Write(p []byte) (n int, err error) {
+	msg := string(p)
+	// Remove trailing newline if present
+	msg = strings.TrimSuffix(msg, "\n")
+	
+	// Format TLS handshake errors consistently
+	if strings.Contains(msg, "TLS handshake error") {
+		log.Printf("[TLS] %s", msg)
+	} else {
+		// Format other HTTP server errors
+		log.Printf("[HTTP-SERVER] %s", msg)
+	}
+	
+	return len(p), nil
+}
+
 // Start starts the server
 func (s *Server) Start() error {
 	address := fmt.Sprintf("%s:%d", s.Config.Address, s.Config.Port)
 	mux := s.SetupRoutes()
 
 	s.server = &http.Server{
-		Addr:    address,
-		Handler: mux,
+		Addr:      address,
+		Handler:   mux,
+		ErrorLog:  s.createCustomErrorLogger(),
 	}
 
 	if s.Config.TLS {

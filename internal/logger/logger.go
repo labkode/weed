@@ -13,6 +13,7 @@ import (
 type contextKey string
 
 const requestIDKey contextKey = "requestID"
+const usernameContextKey contextKey = "username"
 
 // GenerateRequestID creates a short unique identifier for the request
 func GenerateRequestID() string {
@@ -27,6 +28,14 @@ func GetRequestID(ctx context.Context) string {
 		return reqID
 	}
 	return "unknown"
+}
+
+// getUsernameFromContext extracts the username from context
+func getUsernameFromContext(ctx context.Context) string {
+	if username, ok := ctx.Value(usernameContextKey).(string); ok {
+		return username
+	}
+	return "-"
 }
 
 // Logger logs a request with optional error information
@@ -74,9 +83,12 @@ func Middleware(next http.Handler) http.Handler {
 		if userAgent == "" {
 			userAgent = "-"
 		}
+		
+		// Get username from context
+		username := getUsernameFromContext(r.Context())
 
-		log.Printf("[HTTP] [%s] %s %s %s %s -> %d (%v) [%s]",
-			requestID, remoteAddr, r.Method, r.URL.Path, r.Proto, lrw.statusCode, duration, userAgent)
+		log.Printf("[HTTP] [%s] %s %s %s %s %s -> %d (%v) [%s]",
+			requestID, username, remoteAddr, r.Method, r.URL.Path, r.Proto, lrw.statusCode, duration, userAgent)
 	})
 }
 
