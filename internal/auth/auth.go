@@ -423,7 +423,7 @@ func (as *AuthStore) OIDCAuthMiddleware(next http.Handler) http.Handler {
 }
 
 // VerifyMacaroon verifies a macaroon token and extracts information
-func (as *AuthStore) VerifyMacaroon(tokenString string) (*AuthInfo, error) {
+func (as *AuthStore) VerifyMacaroon(tokenString, requestPath string) (*AuthInfo, error) {
 	// Decode the base64-encoded macaroon
 	macBytes, err := base64.StdEncoding.DecodeString(tokenString)
 	if err != nil {
@@ -437,7 +437,10 @@ func (as *AuthStore) VerifyMacaroon(tokenString string) (*AuthInfo, error) {
 	}
 
 	// Verify the macaroon signature and caveats
-	if err := receivedMac.Verify(as.MacaroonSecretKey, as.verifyCaveat, nil); err != nil {
+	verifyCaveatWithPath := func(caveat string) error {
+		return as.verifyCaveat(caveat, requestPath)
+	}
+	if err := receivedMac.Verify(as.MacaroonSecretKey, verifyCaveatWithPath, nil); err != nil {
 		return nil, fmt.Errorf("macaroon verification failed: %w", err)
 	}
 
@@ -451,7 +454,7 @@ func (as *AuthStore) VerifyMacaroon(tokenString string) (*AuthInfo, error) {
 }
 
 // verifyCaveat validates individual macaroon caveats
-func (as *AuthStore) verifyCaveat(caveat string) error {
+func (as *AuthStore) verifyCaveat(caveat string, requestPath string) error {
 	parts := strings.SplitN(caveat, ":", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("invalid caveat format: %s", caveat)
@@ -484,9 +487,13 @@ func (as *AuthStore) verifyCaveat(caveat string) error {
 			}
 		}
 	case "path":
-		// Path restrictions - ensure valid path format
+		// Path restrictions - ensure the request path matches or is under the allowed path
 		if !strings.HasPrefix(value, "/") {
 			return fmt.Errorf("invalid path caveat: %s", value)
+		}
+		// Check if the request path is allowed by this caveat
+		if !pathMatches(requestPath, value) {
+			return fmt.Errorf("path %s not allowed by caveat path:%s", requestPath, value)
 		}
 	case "ip":
 		// IP restrictions - basic validation that it's not empty
@@ -499,6 +506,26 @@ func (as *AuthStore) verifyCaveat(caveat string) error {
 	}
 
 	return nil
+}
+
+// pathMatches checks if a request path is allowed by a path caveat
+// The caveat path can be:
+// - An exact path: /webdav/file.txt
+// - A directory path: /webdav/ (allows access to /webdav/ and all subdirectories)
+func pathMatches(requestPath, caveatPath string) bool {
+	// Exact match
+	if requestPath == caveatPath {
+		return true
+	}
+	
+	// If caveat path ends with '/', it allows access to subdirectories
+	if strings.HasSuffix(caveatPath, "/") {
+		return strings.HasPrefix(requestPath, caveatPath)
+	}
+	
+	// If caveat path doesn't end with '/', it only allows exact match or subdirectories if it's a directory
+	// Check if request path is a subdirectory of the caveat path
+	return strings.HasPrefix(requestPath, caveatPath+"/")
 }
 
 // extractAuthInfoFromMacaroon extracts authentication information from macaroon caveats
@@ -576,7 +603,7 @@ func (as *AuthStore) MacaroonAuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Verify the macaroon
-		authInfo, err := as.VerifyMacaroon(token)
+		authInfo, err := as.VerifyMacaroon(token, r.URL.Path)
 		if err != nil {
 			log.Printf("[MACAROON-AUTH] [%s] Macaroon verification failed: %v", reqID, err)
 			http.Error(w, "Invalid macaroon token", http.StatusUnauthorized)
@@ -687,7 +714,7 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 		if auth := r.Header.Get("Authorization"); auth != "" && strings.HasPrefix(auth, "Bearer ") {
 			// Bearer token provided, validate it
 			token := auth[7:] // Remove "Bearer " prefix
-			if authInfo, err := as.VerifyMacaroon(token); err == nil && authInfo != nil {
+			if authInfo, err := as.VerifyMacaroon(token, r.URL.Path); err == nil && authInfo != nil {
 				macaroonStatus = "OK"
 				log.Printf("[MACAROON-AUTH] [%s] Valid macaroon for user: %s", reqID, authInfo.Username)
 

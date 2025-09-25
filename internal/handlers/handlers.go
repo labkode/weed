@@ -543,6 +543,11 @@ func (h *WebDAVHandler) handleMacaroonRequest(w http.ResponseWriter, r *http.Req
 	// Add the authenticated user's ID as a caveat
 	caveats = append(caveats, fmt.Sprintf("id:%s", authenticatedUser))
 
+	// Always add a path caveat based on the URL path component
+	requestPath := r.URL.Path
+	caveats = append(caveats, fmt.Sprintf("path:%s", requestPath))
+	log.Printf("[MACAROON-REQUEST] [%s] Added path caveat: path:%s", reqID, requestPath)
+
 	// Create macaroon with the provided caveats
 	macaroon, err := authStore.CreateMacaroon(caveats)
 	if err != nil {
