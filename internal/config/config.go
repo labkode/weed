@@ -17,6 +17,7 @@ type Config struct {
 	BasicAuth     bool
 	HtpasswdFile  string
 	AppTokensFile string
+	LogFile       string
 	// OIDC configuration
 	OIDCAuth         bool
 	OIDCIssuer       string
@@ -43,6 +44,7 @@ func ParseFlags() *Config {
 	flag.BoolVar(&cfg.BasicAuth, "basic-auth", false, "enable HTTP Basic Authentication")
 	flag.StringVar(&cfg.HtpasswdFile, "htpasswd-file", ".htpasswd", "path to htpasswd file for basic authentication")
 	flag.StringVar(&cfg.AppTokensFile, "app-tokens-file", ".app-tokens", "path to app tokens file for application password authentication")
+	flag.StringVar(&cfg.LogFile, "log-file", "", "path to log file (default: stdout)")
 
 	// OIDC flags
 	flag.BoolVar(&cfg.OIDCAuth, "oidc-auth", false, "enable OIDC authentication")

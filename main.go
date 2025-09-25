@@ -19,6 +19,15 @@ func main() {
 	// Parse configuration
 	cfg := config.ParseFlags()
 
+	// Set up logging
+	if cfg.LogFile != "" {
+		logFile, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err != nil {
+			log.Fatalf("Failed to open log file %s: %v", cfg.LogFile, err)
+		}
+		log.SetOutput(logFile)
+	}
+
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Configuration validation failed: %v", err)
