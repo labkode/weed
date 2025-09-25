@@ -75,7 +75,7 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Check for infinite depth PROPFIND requests and reject them
 	if r.Method == "PROPFIND" {
 		depth := r.Header.Get("Depth")
-		if depth == "infinity" {
+		if depth == "infinity" || depth == "" {
 			log.Printf("[SECURITY] [%s] Infinite depth PROPFIND request denied from %s", reqID, r.RemoteAddr)
 			http.Error(w, "Infinite depth PROPFIND requests are not allowed", http.StatusForbidden)
 			return
@@ -549,6 +549,7 @@ func (h *WebDAVHandler) handleMacaroonRequest(w http.ResponseWriter, r *http.Req
 	log.Printf("[MACAROON-REQUEST] [%s] Added path caveat: path:%s", reqID, requestPath)
 
 	// Create macaroon with the provided caveats
+	log.Printf("[MACAROON-REQUEST] [%s] Creating macaroon with caveats: %v", reqID, caveats)
 	macaroon, err := authStore.CreateMacaroon(caveats)
 	if err != nil {
 		log.Printf("[MACAROON-REQUEST] [%s] Failed to create macaroon: %v", reqID, err)
