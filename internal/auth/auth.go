@@ -3,20 +3,47 @@ package auth
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
-	"golang.org/x/crypto/bcrypt"
+	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/x509utils"
+	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
 )
 
-// Context key for storing the authenticated username
+// Context key for storing authentication information
 type contextKey string
 
-const usernameContextKey contextKey = "username"
+const (
+	usernameContextKey contextKey = "username"
+	authInfoContextKey contextKey = "authInfo"
+)
+
+// AuthInfo represents detailed authentication information stored in context
+type AuthInfo struct {
+	Username string                 `json:"username"`
+	Method   string                 `json:"method"`
+	Details  map[string]interface{} `json:"details"`
+}
+
+// OIDCSession represents an OIDC session
+type OIDCSession struct {
+	Username  string    `json:"username"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
 
 // GetUsernameFromContext retrieves the authenticated username from the request context
 func GetUsernameFromContext(ctx context.Context) (string, bool) {
@@ -24,11 +51,33 @@ func GetUsernameFromContext(ctx context.Context) (string, bool) {
 	return username, ok
 }
 
+// GetAuthInfoFromContext retrieves the authentication information from the request context
+func GetAuthInfoFromContext(ctx context.Context) (*AuthInfo, bool) {
+	authInfo, ok := ctx.Value(authInfoContextKey).(*AuthInfo)
+	return authInfo, ok
+}
+
+// SetAuthInfoInContext stores authentication information in the context
+func SetAuthInfoInContext(ctx context.Context, authInfo *AuthInfo) context.Context {
+	// Store both username (for backward compatibility) and auth info
+	ctx = context.WithValue(ctx, usernameContextKey, authInfo.Username)
+	ctx = context.WithValue(ctx, authInfoContextKey, authInfo)
+	return ctx
+}
+
 // AuthStore holds authentication data
 type AuthStore struct {
 	Gridmap   map[string]string
 	Htpasswd  map[string]string
 	AppTokens map[string]string
+	// X.509 certificate verification
+	CACertPool *x509.CertPool
+	// OIDC configuration
+	OIDCProvider *oidc.Provider
+	OAuth2Config *oauth2.Config
+	OIDCVerifier *oidc.IDTokenVerifier
+	// Session store for OIDC state
+	Sessions map[string]*OIDCSession
 }
 
 // NewAuthStore creates a new authentication store
@@ -37,6 +86,7 @@ func NewAuthStore() *AuthStore {
 		Gridmap:   make(map[string]string),
 		Htpasswd:  make(map[string]string),
 		AppTokens: make(map[string]string),
+		Sessions:  make(map[string]*OIDCSession),
 	}
 }
 
@@ -139,10 +189,53 @@ func (as *AuthStore) LoadAppTokens(filename string) error {
 	return nil
 }
 
+// LoadCACert loads and parses the CA certificate for X.509 verification
+func (as *AuthStore) LoadCACert(filename string) error {
+	caCert, err := os.ReadFile(filename)
+	if err != nil {
+		return fmt.Errorf("failed to read CA certificate file %s: %w", filename, err)
+	}
+
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		return fmt.Errorf("failed to parse CA certificate from %s", filename)
+	}
+
+	as.CACertPool = caCertPool
+	return nil
+}
+
 // VerifyPassword checks if the provided password matches the stored hash
 func (as *AuthStore) VerifyPassword(storedHash, password string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(password))
 	return err == nil
+}
+
+// VerifyClientCertificate manually verifies a client certificate against the CA
+func (as *AuthStore) VerifyClientCertificate(cert *x509.Certificate) error {
+	if as.CACertPool == nil {
+		return errors.New("no CA certificate pool available for verification")
+	}
+
+	// Check certificate validity period
+	now := time.Now()
+	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+		return fmt.Errorf("certificate expired or not yet valid: valid from %v to %v", 
+			cert.NotBefore, cert.NotAfter)
+	}
+
+	// Verify certificate against CA
+	opts := x509.VerifyOptions{
+		Roots:     as.CACertPool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	_, err := cert.Verify(opts)
+	if err != nil {
+		return fmt.Errorf("certificate verification failed: %w", err)
+	}
+
+	return nil
 }
 
 // VerifyCredentialsWithMethod verifies username/password and returns authentication method and additional info
@@ -169,7 +262,7 @@ func (as *AuthStore) VerifyCredentialsWithMethod(username, password string) (boo
 // BasicAuthMiddleware provides HTTP Basic Authentication and stores username in context
 func (as *AuthStore) BasicAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqID := getRequestID(r.Context())
+		reqID := logger.GetRequestID(r.Context())
 		
 		// Get the Authorization header
 		auth := r.Header.Get("Authorization")
@@ -222,24 +315,222 @@ func (as *AuthStore) BasicAuthMiddleware(next http.Handler) http.Handler {
 		
 		// Enhanced logging with authentication details
 		if authMethod == "app-token" {
-			log.Printf("[BASIC-AUTH] [%s] User authenticated: %s (method: %s, token: %s)", reqID, username, authMethod, authInfo)
-		} else {
-			log.Printf("[BASIC-AUTH] [%s] User authenticated: %s (method: %s)", reqID, username, authMethod)
-		}
-		
-		// Store username in request context for downstream handlers
-		ctx := context.WithValue(r.Context(), usernameContextKey, username)
-		r = r.WithContext(ctx)
-		
-		// Call next handler
-		next.ServeHTTP(w, r)
-	})
+		log.Printf("[BASIC-AUTH] [%s] User authenticated: %s (method: %s, token: %s)", reqID, username, authMethod, authInfo)
+	} else {
+		log.Printf("[BASIC-AUTH] [%s] User authenticated: %s (method: %s)", reqID, username, authMethod)
+	}
+	
+	// Store authentication info in request context
+	userAuthInfo := &AuthInfo{
+		Username: username,
+		Method:   "Basic Authentication",
+		Details: map[string]interface{}{
+			"auth_type": authMethod,
+		},
+	}
+	if authMethod == "app-token" {
+		userAuthInfo.Details["app_token"] = authInfo
+	}
+	ctx := SetAuthInfoInContext(r.Context(), userAuthInfo)
+	r = r.WithContext(ctx)
+	
+	// Call next handler
+	next.ServeHTTP(w, r)
+})
 }
 
-// X509AuthMiddleware provides X.509 client certificate authentication and stores username in context
+// GenerateState generates a random state string for OIDC
+func (as *AuthStore) GenerateState() string {
+	bytes := make([]byte, 16)
+	rand.Read(bytes)
+	return hex.EncodeToString(bytes)
+}
+
+// StoreOIDCSession stores an OIDC session
+func (as *AuthStore) StoreOIDCSession(state string, session *OIDCSession) {
+	as.Sessions[state] = session
+}
+
+// GetOIDCSession retrieves an OIDC session by state
+func (as *AuthStore) GetOIDCSession(state string) (*OIDCSession, bool) {
+	session, exists := as.Sessions[state]
+	return session, exists
+}
+
+// InitializeOIDC initializes the OIDC configuration
+func (as *AuthStore) InitializeOIDC(ctx context.Context, issuer, clientID, clientSecret, redirectURL string) error {
+	provider, err := oidc.NewProvider(ctx, issuer)
+	if err != nil {
+		return err
+	}
+	
+	as.OIDCProvider = provider
+	as.OAuth2Config = &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
+		Endpoint:     provider.Endpoint(),
+		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
+	}
+	
+	as.OIDCVerifier = provider.Verifier(&oidc.Config{ClientID: clientID})
+	return nil
+}
+
+// OIDCAuthMiddleware provides OIDC authentication middleware (placeholder)
+func (as *AuthStore) OIDCAuthMiddleware(next http.Handler) http.Handler {
+	return next
+}
+
+// UnifiedAuthMiddleware provides authentication in the specified order: X.509 -> OIDC -> Basic Auth
+func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := logger.GetRequestID(r.Context())
+
+		// Track authentication attempts for logging
+		// SKIP = not provided, FAIL = error/invalid, OK = success
+		x509Status := "SKIP"  // SKIP = not provided
+		oidcStatus := "SKIP"  // SKIP = not provided  
+		basicStatus := "SKIP" // SKIP = not provided
+
+		// 1. Try X.509 Client Certificate Authentication first (if TLS enabled)
+		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			cert := r.TLS.PeerCertificates[0]
+			
+			// Manually verify the certificate against our CA
+			if err := as.VerifyClientCertificate(cert); err == nil {
+				x509Status = "OK"
+				dn := x509utils.GetDNParts(cert)
+
+				// Map DN to username using gridmap if available
+				var username string
+				if mappedUser, exists := as.Gridmap[dn]; exists {
+					username = mappedUser
+					log.Printf("[X509-AUTH] [%s] Certificate authenticated and CA verified - DN: %s -> Username: %s", reqID, dn, username)
+				} else {
+					username = dn
+					log.Printf("[X509-AUTH] [%s] Certificate authenticated and CA verified - DN: %s (no mapping)", reqID, dn)
+				}
+
+				// Store authentication info in request context
+				userAuthInfo := &AuthInfo{
+					Username: username,
+					Method:   "X.509 Certificate",
+					Details: map[string]interface{}{
+						"distinguished_name":  dn,
+						"certificate_subject": cert.Subject.String(),
+						"certificate_serial":  cert.SerialNumber.String(),
+					},
+				}
+				if mappedUser, exists := as.Gridmap[dn]; exists {
+					userAuthInfo.Details["gridmap_mapping"] = mappedUser
+				}
+				ctx := SetAuthInfoInContext(r.Context(), userAuthInfo)
+				r = r.WithContext(ctx)
+
+				// Log authentication summary and proceed
+				log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s BASIC=%s -> SUCCESS (X.509)", reqID, x509Status, oidcStatus, basicStatus)
+				next.ServeHTTP(w, r)
+				return
+			} else {
+				// Certificate provided but verification failed
+				x509Status = "FAIL"
+				log.Printf("[X509-AUTH] [%s] Client certificate verification failed: %v - trying next auth method", reqID, err)
+			}
+		}
+
+		// 2. Try OIDC Session Cookie Authentication
+		if cookie, err := r.Cookie("oidc_session"); err == nil {
+			// OIDC session cookie provided, validate it
+			if session, exists := as.GetOIDCSession(cookie.Value); exists && session.Username != "" {
+				oidcStatus = "OK"
+				// Valid session, add username to context
+				authInfo := &AuthInfo{
+					Username: session.Username,
+					Method:   "OIDC",
+					Details: map[string]interface{}{
+						"session_state": session.State,
+						"expires_at":    session.ExpiresAt,
+					},
+				}
+				ctx := SetAuthInfoInContext(r.Context(), authInfo)
+				r = r.WithContext(ctx)
+				
+				log.Printf("[OIDC-AUTH] [%s] Valid OIDC session for user: %s", reqID, session.Username)
+				// Log authentication summary and proceed
+				log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s BASIC=%s -> SUCCESS (OIDC)", reqID, x509Status, oidcStatus, basicStatus)
+				next.ServeHTTP(w, r)
+				return
+			}
+			// Invalid or expired session - this is a failure
+			oidcStatus = "FAIL"
+			log.Printf("[OIDC-AUTH] [%s] Invalid/expired OIDC session - trying next auth method", reqID)
+		}
+
+		// 3. Try Basic Authentication (includes app tokens)
+		auth := r.Header.Get("Authorization")
+		if auth != "" && strings.HasPrefix(auth, "Basic ") {
+			// Basic auth header provided, validate it
+			encoded := auth[6:] // Remove "Basic " prefix
+			decoded, err := base64.StdEncoding.DecodeString(encoded)
+			if err == nil {
+				// Split username:password
+				credentials := string(decoded)
+				parts := strings.SplitN(credentials, ":", 2)
+				if len(parts) == 2 {
+					username := parts[0]
+					password := parts[1]
+
+					// Verify credentials and get authentication method and additional info
+					authenticated, authMethod, authInfo := as.VerifyCredentialsWithMethod(username, password)
+					if authenticated {
+						basicStatus = "OK"
+						log.Printf("[BASIC-AUTH] [%s] Authentication successful for user: %s (method: %s)", reqID, username, authMethod)
+
+						// Store authentication info in request context
+						userAuthInfo := &AuthInfo{
+							Username: username,
+							Method:   "Basic Authentication",
+							Details: map[string]interface{}{
+								"auth_type": authMethod,
+							},
+						}
+						if authMethod == "app-token" {
+							userAuthInfo.Details["app_token"] = authInfo
+						}
+						ctx := SetAuthInfoInContext(r.Context(), userAuthInfo)
+						r = r.WithContext(ctx)
+
+						// Log authentication summary and proceed
+						log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s BASIC=%s -> SUCCESS (BASIC)", reqID, x509Status, oidcStatus, basicStatus)
+						next.ServeHTTP(w, r)
+						return
+					}
+					// Invalid credentials - this is a failure
+					basicStatus = "FAIL"
+					log.Printf("[BASIC-AUTH] [%s] Authentication failed for user: %s", reqID, username)
+				} else {
+					// Malformed credentials - this is a failure
+					basicStatus = "FAIL" 
+					log.Printf("[BASIC-AUTH] [%s] Malformed Basic auth credentials", reqID)
+				}
+			} else {
+				// Base64 decode error - this is a failure
+				basicStatus = "FAIL"
+				log.Printf("[BASIC-AUTH] [%s] Invalid Base64 in Basic auth header", reqID)
+			}
+		}
+
+		// 4. All authentication methods failed - log summary and return 401
+		log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s BASIC=%s -> DENIED (401)", reqID, x509Status, oidcStatus, basicStatus)
+		log.Printf("[AUTH] [%s] No valid authentication provided - requesting Basic Auth", reqID)
+		w.Header().Set("WWW-Authenticate", `Basic realm="WebDAV Server"`)
+		http.Error(w, "Authorization required", http.StatusUnauthorized)
+	})
+}// X509AuthMiddleware provides X.509 client certificate authentication and stores username in context
 func (as *AuthStore) X509AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqID := getRequestID(r.Context())
+		reqID := logger.GetRequestID(r.Context())
 		
 		if r.TLS == nil {
 			log.Printf("[X509-AUTH] [%s] Request over non-TLS connection - denying access", reqID)
@@ -273,10 +564,4 @@ func (as *AuthStore) X509AuthMiddleware(next http.Handler) http.Handler {
 		// Call next handler
 		next.ServeHTTP(w, r)
 	})
-}
-
-// TODO: This function should be imported from logger package
-func getRequestID(ctx context.Context) string {
-	// Temporary implementation - this should be imported from logger package
-	return "temp-id"
 }

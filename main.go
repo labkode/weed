@@ -19,6 +19,11 @@ func main() {
 	// Parse configuration
 	cfg := config.ParseFlags()
 
+	// Validate configuration
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Configuration validation failed: %v", err)
+	}
+
 	// Create and configure server
 	srv := server.New(cfg)
 

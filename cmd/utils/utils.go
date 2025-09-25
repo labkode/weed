@@ -120,7 +120,7 @@ func HandleTokenGenerate(cfg *config.Config) {
 
 	username := os.Args[4]
 	token := utils.GenerateAppToken()
-	
+
 	if err := utils.AddTokenToFile(cfg.AppTokensFile, username, token); err != nil {
 		fmt.Printf("Error generating token: %v\n", err)
 		os.Exit(1)

@@ -1,12 +1,13 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/labkode/weed/internal/auth"
 	"github.com/labkode/weed/internal/config"
@@ -27,7 +28,7 @@ func New(cfg *config.Config) *Server {
 	return &Server{
 		Config:    cfg,
 		AuthStore: auth.NewAuthStore(),
-		Handler:   handlers.NewWebDAVHandler(cfg.Directory),
+		Handler:   handlers.NewWebDAVHandler(cfg.Directory, cfg),
 	}
 }
 
@@ -50,11 +51,28 @@ func (s *Server) Initialize() error {
 	}
 
 	if s.Config.X509Auth {
+		// Load CA certificate for manual verification
+		if s.Config.CACert != "" {
+			if err := s.AuthStore.LoadCACert(s.Config.CACert); err != nil {
+				return fmt.Errorf("failed to load CA certificate: %w", err)
+			}
+			log.Printf("[CA-CERT] Successfully loaded CA certificate from %s", s.Config.CACert)
+		}
+
 		if err := s.AuthStore.LoadGridmap(s.Config.GridmapFile); err != nil {
 			log.Printf("[GRIDMAP] Warning: Failed to load gridmap file %s: %v", s.Config.GridmapFile, err)
 		} else {
 			log.Printf("[GRIDMAP] Successfully loaded %d DN mappings from %s", len(s.AuthStore.Gridmap), s.Config.GridmapFile)
 		}
+	}
+
+	// Initialize OIDC if enabled
+	if s.Config.OIDCAuth {
+		ctx := context.Background()
+		if err := s.AuthStore.InitializeOIDC(ctx, s.Config.OIDCIssuer, s.Config.OIDCClientID, s.Config.OIDCClientSecret, s.Config.OIDCRedirectURL); err != nil {
+			return fmt.Errorf("failed to initialize OIDC: %w", err)
+		}
+		log.Printf("[OIDC] Successfully initialized OIDC authentication")
 	}
 
 	return nil
@@ -71,6 +89,9 @@ func (s *Server) SetupMiddleware() http.Handler {
 	if s.Config.X509Auth {
 		middlewareChain = s.AuthStore.X509AuthMiddleware(middlewareChain)
 	}
+	if s.Config.OIDCAuth {
+		middlewareChain = s.AuthStore.OIDCAuthMiddleware(middlewareChain)
+	}
 
 	// Add logging middleware
 	middlewareChain = logger.Middleware(middlewareChain)
@@ -78,14 +99,77 @@ func (s *Server) SetupMiddleware() http.Handler {
 	return middlewareChain
 }
 
+// applyAuthMiddleware applies the unified authentication middleware to a handler
+func (s *Server) applyAuthMiddleware(handler http.Handler) http.Handler {
+	// Use unified authentication middleware that tries X.509 -> OIDC -> Basic Auth in order
+	handler = s.AuthStore.UnifiedAuthMiddleware(handler)
+
+	// Apply logging middleware
+	handler = logger.Middleware(handler)
+
+	return handler
+}
+
+// applyBasicAuthMiddleware applies only basic authentication middleware
+func (s *Server) applyBasicAuthMiddleware(handler http.Handler) http.Handler {
+	handler = s.AuthStore.BasicAuthMiddleware(handler)
+	handler = logger.Middleware(handler)
+	return handler
+}
+
+// applyX509AuthMiddleware applies only X.509 authentication middleware
+func (s *Server) applyX509AuthMiddleware(handler http.Handler) http.Handler {
+	handler = s.AuthStore.X509AuthMiddleware(handler)
+	handler = logger.Middleware(handler)
+	return handler
+}
+
 // SetupRoutes sets up the HTTP routes
 func (s *Server) SetupRoutes() *http.ServeMux {
 	middlewareChain := s.SetupMiddleware()
-	
+
 	mux := http.NewServeMux()
-	mux.Handle("/", middlewareChain)
+
+	// Index page is publicly accessible (no auth required)
+	mux.HandleFunc("/", s.Handler.IndexHandler)
+
+	// WebDAV content requires authentication
+	mux.Handle("/webdav/", http.StripPrefix("/webdav", middlewareChain))
+
+	// Authentication trigger routes - only create routes for enabled methods
+	if s.Config.BasicAuth {
+		// Basic auth trigger - any protected resource will prompt for basic auth
+		basicHandler := s.applyBasicAuthMiddleware(http.HandlerFunc(s.Handler.BasicAuthSuccessHandler))
+		mux.Handle("/auth/basic", basicHandler)
+	}
+
+	if s.Config.X509Auth && s.Config.TLS {
+		// X.509 auth trigger - protected resource that requires client cert
+		x509Handler := s.applyX509AuthMiddleware(http.HandlerFunc(s.Handler.X509AuthSuccessHandler))
+		mux.Handle("/auth/x509", x509Handler)
+	}
+
+	// OIDC routes if OIDC is enabled
+	if s.Config.OIDCAuth {
+		mux.HandleFunc("/auth/oidc", s.Handler.OIDCHandler(s.AuthStore))
+		mux.HandleFunc("/oidc_redirect", s.Handler.OIDCRedirectHandler(s.AuthStore))
+		log.Printf("[OIDC] Added OIDC routes: /auth/oidc and /oidc_redirect")
+	}
+
+	// Utility routes
 	mux.HandleFunc("/proc/x509", s.Handler.ProcX509Handler)
-	
+
+	// Add whoami route at /proc/whoami - apply auth middleware if any auth is enabled
+	if s.Config.BasicAuth || s.Config.X509Auth || s.Config.OIDCAuth {
+		// Create a whoami handler with authentication middleware
+		whoamiHandler := s.applyAuthMiddleware(http.HandlerFunc(s.Handler.WhoAmIHandler))
+		mux.Handle("/proc/whoami", whoamiHandler)
+	} else {
+		// No authentication required, add directly
+		mux.HandleFunc("/proc/whoami", s.Handler.WhoAmIHandler)
+	}
+
+	log.Printf("[ROUTES] Added routes: / (public), /webdav/* (protected), /proc/whoami, /proc/x509")
 	return mux
 }
 
@@ -96,29 +180,32 @@ func (s *Server) SetupTLS() *tls.Config {
 	}
 
 	tlsConfig := &tls.Config{}
-	
+
 	if s.Config.X509Auth {
-		// Load CA certificate if specified
-		if s.Config.CACert != "" {
-			caCert, err := ioutil.ReadFile(s.Config.CACert)
-			if err != nil {
-				log.Fatalf("Failed to read CA certificate: %v", err)
-			}
-			
-			caCertPool := x509.NewCertPool()
-			if !caCertPool.AppendCertsFromPEM(caCert) {
-				log.Fatal("Failed to parse CA certificate")
-			}
-			
-			tlsConfig.ClientCAs = caCertPool
-			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
-			log.Printf("[STARTUP] X.509 client authentication enabled with CA: %s", s.Config.CACert)
-		} else {
-			tlsConfig.ClientAuth = tls.RequestClientCert
-			log.Printf("[STARTUP] X.509 client authentication enabled (no CA verification)")
+		// CA certificate is required for X.509 authentication
+		if s.Config.CACert == "" {
+			log.Fatal("CA certificate (-ca-cert) is required when X.509 authentication is enabled")
 		}
+
+		// Load CA certificate
+		caCert, err := os.ReadFile(s.Config.CACert)
+		if err != nil {
+			log.Fatalf("Failed to read CA certificate from %s: %v", s.Config.CACert, err)
+		}
+
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			log.Fatalf("Failed to parse CA certificate from %s", s.Config.CACert)
+		}
+
+		// Set up TLS to request client certificates but validate them in our middleware
+		// This allows us to handle certificate validation with detailed logging and fallback
+		tlsConfig.ClientCAs = caCertPool
+		tlsConfig.ClientAuth = tls.RequestClientCert
+		log.Printf("[TLS] X.509 client authentication enabled with CA verification: %s", s.Config.CACert)
+		log.Printf("[TLS] Client certificates will be validated in authentication middleware")
 	}
-	
+
 	return tlsConfig
 }
 
@@ -126,7 +213,7 @@ func (s *Server) SetupTLS() *tls.Config {
 func (s *Server) Start() error {
 	address := fmt.Sprintf("%s:%d", s.Config.Address, s.Config.Port)
 	mux := s.SetupRoutes()
-	
+
 	s.server = &http.Server{
 		Addr:    address,
 		Handler: mux,
@@ -152,10 +239,15 @@ func (s *Server) LogStartupInfo() {
 	log.Printf("  - TLS: %t", s.Config.TLS)
 	log.Printf("  - X.509 Auth: %t", s.Config.X509Auth)
 	log.Printf("  - Basic Auth: %t", s.Config.BasicAuth)
+	log.Printf("  - OIDC Auth: %t", s.Config.OIDCAuth)
 	if s.Config.BasicAuth {
 		log.Printf("  - Htpasswd File: %s", s.Config.HtpasswdFile)
 		log.Printf("  - App Tokens File: %s", s.Config.AppTokensFile)
 	}
+	if s.Config.OIDCAuth {
+		log.Printf("  - OIDC Issuer: %s", s.Config.OIDCIssuer)
+		log.Printf("  - OIDC Client ID: %s", s.Config.OIDCClientID)
+		log.Printf("  - OIDC Redirect URL: %s", s.Config.OIDCRedirectURL)
+	}
 	log.Println("===============================")
 }
-

@@ -1,0 +1,2 @@
+"/CN=validuser" testuser
+"/CN=selfsigneduser" baduser

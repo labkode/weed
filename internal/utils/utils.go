@@ -81,7 +81,7 @@ func AddUserToHtpasswd(username, password string) error {
 	}
 
 	entry := fmt.Sprintf("%s:%s\n", username, string(hashedPassword))
-	
+
 	file, err := os.OpenFile(".htpasswd", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("error opening .htpasswd file: %v", err)
@@ -98,16 +98,16 @@ func AddUserToHtpasswd(username, password string) error {
 // AddTokenToFile adds a token to the app tokens file
 func AddTokenToFile(filename, username, token string) error {
 	entry := fmt.Sprintf("%s:%s\n", token, username)
-	
+
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("error opening app tokens file: %v", err)
 	}
 	defer file.Close()
-	
+
 	if _, err := file.WriteString(entry); err != nil {
 		return fmt.Errorf("error writing token: %v", err)
 	}
-	
+
 	return nil
 }
