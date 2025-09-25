@@ -93,7 +93,7 @@ func NewAuthStore() *AuthStore {
 // LoadGridmap loads and parses the gridmap file
 func (as *AuthStore) LoadGridmap(filename string) error {
 	result := make(map[string]string)
-	
+
 	file, err := os.Open(filename)
 	if err != nil {
 		return err
@@ -106,7 +106,7 @@ func (as *AuthStore) LoadGridmap(filename string) error {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		
+
 		// Format: "DN" username
 		parts := strings.Fields(line)
 		if len(parts) >= 2 {
@@ -128,7 +128,7 @@ func (as *AuthStore) LoadGridmap(filename string) error {
 // LoadHtpasswd loads and parses the htpasswd file
 func (as *AuthStore) LoadHtpasswd(filename string) error {
 	result := make(map[string]string)
-	
+
 	file, err := os.Open(filename)
 	if err != nil {
 		return err
@@ -141,7 +141,7 @@ func (as *AuthStore) LoadHtpasswd(filename string) error {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		
+
 		// Format: username:password_hash
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) == 2 {
@@ -160,7 +160,7 @@ func (as *AuthStore) LoadHtpasswd(filename string) error {
 // LoadAppTokens loads and parses the app tokens file
 func (as *AuthStore) LoadAppTokens(filename string) error {
 	result := make(map[string]string)
-	
+
 	file, err := os.Open(filename)
 	if err != nil {
 		return err
@@ -173,7 +173,7 @@ func (as *AuthStore) LoadAppTokens(filename string) error {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		
+
 		// Format: token:username
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) == 2 {
@@ -220,7 +220,7 @@ func (as *AuthStore) VerifyClientCertificate(cert *x509.Certificate) error {
 	// Check certificate validity period
 	now := time.Now()
 	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
-		return fmt.Errorf("certificate expired or not yet valid: valid from %v to %v", 
+		return fmt.Errorf("certificate expired or not yet valid: valid from %v to %v",
 			cert.NotBefore, cert.NotAfter)
 	}
 
@@ -248,14 +248,14 @@ func (as *AuthStore) VerifyCredentialsWithMethod(username, password string) (boo
 			return true, "app-token", tokenPrefix
 		}
 	}
-	
+
 	// Check regular password authentication
 	if storedHash, exists := as.Htpasswd[username]; exists {
 		if as.VerifyPassword(storedHash, password) {
 			return true, "password", ""
 		}
 	}
-	
+
 	return false, "unknown", ""
 }
 
@@ -263,7 +263,7 @@ func (as *AuthStore) VerifyCredentialsWithMethod(username, password string) (boo
 func (as *AuthStore) BasicAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := logger.GetRequestID(r.Context())
-		
+
 		// Get the Authorization header
 		auth := r.Header.Get("Authorization")
 		if auth == "" {
@@ -272,7 +272,7 @@ func (as *AuthStore) BasicAuthMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "Authorization required", http.StatusUnauthorized)
 			return
 		}
-		
+
 		// Check if it's Basic auth
 		if !strings.HasPrefix(auth, "Basic ") {
 			log.Printf("[BASIC-AUTH] [%s] Non-Basic authorization - denying access", reqID)
@@ -280,7 +280,7 @@ func (as *AuthStore) BasicAuthMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "Basic authentication required", http.StatusUnauthorized)
 			return
 		}
-		
+
 		// Decode the credentials
 		encoded := auth[6:] // Remove "Basic " prefix
 		decoded, err := base64.StdEncoding.DecodeString(encoded)
@@ -290,7 +290,7 @@ func (as *AuthStore) BasicAuthMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "Invalid credentials format", http.StatusUnauthorized)
 			return
 		}
-		
+
 		// Split username:password
 		credentials := string(decoded)
 		parts := strings.SplitN(credentials, ":", 2)
@@ -300,10 +300,10 @@ func (as *AuthStore) BasicAuthMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "Invalid credentials format", http.StatusUnauthorized)
 			return
 		}
-		
+
 		username := parts[0]
 		password := parts[1]
-		
+
 		// Verify credentials and get authentication method and additional info
 		authenticated, authMethod, authInfo := as.VerifyCredentialsWithMethod(username, password)
 		if !authenticated {
@@ -312,31 +312,31 @@ func (as *AuthStore) BasicAuthMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 			return
 		}
-		
+
 		// Enhanced logging with authentication details
 		if authMethod == "app-token" {
-		log.Printf("[BASIC-AUTH] [%s] User authenticated: %s (method: %s, token: %s)", reqID, username, authMethod, authInfo)
-	} else {
-		log.Printf("[BASIC-AUTH] [%s] User authenticated: %s (method: %s)", reqID, username, authMethod)
-	}
-	
-	// Store authentication info in request context
-	userAuthInfo := &AuthInfo{
-		Username: username,
-		Method:   "Basic Authentication",
-		Details: map[string]interface{}{
-			"auth_type": authMethod,
-		},
-	}
-	if authMethod == "app-token" {
-		userAuthInfo.Details["app_token"] = authInfo
-	}
-	ctx := SetAuthInfoInContext(r.Context(), userAuthInfo)
-	r = r.WithContext(ctx)
-	
-	// Call next handler
-	next.ServeHTTP(w, r)
-})
+			log.Printf("[BASIC-AUTH] [%s] User authenticated: %s (method: %s, token: %s)", reqID, username, authMethod, authInfo)
+		} else {
+			log.Printf("[BASIC-AUTH] [%s] User authenticated: %s (method: %s)", reqID, username, authMethod)
+		}
+
+		// Store authentication info in request context
+		userAuthInfo := &AuthInfo{
+			Username: username,
+			Method:   "Basic Authentication",
+			Details: map[string]interface{}{
+				"auth_type": authMethod,
+			},
+		}
+		if authMethod == "app-token" {
+			userAuthInfo.Details["app_token"] = authInfo
+		}
+		ctx := SetAuthInfoInContext(r.Context(), userAuthInfo)
+		r = r.WithContext(ctx)
+
+		// Call next handler
+		next.ServeHTTP(w, r)
+	})
 }
 
 // GenerateState generates a random state string for OIDC
@@ -363,7 +363,7 @@ func (as *AuthStore) InitializeOIDC(ctx context.Context, issuer, clientID, clien
 	if err != nil {
 		return err
 	}
-	
+
 	as.OIDCProvider = provider
 	as.OAuth2Config = &oauth2.Config{
 		ClientID:     clientID,
@@ -372,7 +372,7 @@ func (as *AuthStore) InitializeOIDC(ctx context.Context, issuer, clientID, clien
 		Endpoint:     provider.Endpoint(),
 		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 	}
-	
+
 	as.OIDCVerifier = provider.Verifier(&oidc.Config{ClientID: clientID})
 	return nil
 }
@@ -390,13 +390,13 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 		// Track authentication attempts for logging
 		// SKIP = not provided, FAIL = error/invalid, OK = success
 		x509Status := "SKIP"  // SKIP = not provided
-		oidcStatus := "SKIP"  // SKIP = not provided  
+		oidcStatus := "SKIP"  // SKIP = not provided
 		basicStatus := "SKIP" // SKIP = not provided
 
 		// 1. Try X.509 Client Certificate Authentication first (if TLS enabled)
 		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 			cert := r.TLS.PeerCertificates[0]
-			
+
 			// Manually verify the certificate against our CA
 			if err := as.VerifyClientCertificate(cert); err == nil {
 				x509Status = "OK"
@@ -455,7 +455,7 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 				}
 				ctx := SetAuthInfoInContext(r.Context(), authInfo)
 				r = r.WithContext(ctx)
-				
+
 				log.Printf("[OIDC-AUTH] [%s] Valid OIDC session for user: %s", reqID, session.Username)
 				// Log authentication summary and proceed
 				log.Printf("[AUTH-FLOW] [%s] X509=%s OIDC=%s BASIC=%s -> SUCCESS (OIDC)", reqID, x509Status, oidcStatus, basicStatus)
@@ -511,7 +511,7 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 					log.Printf("[BASIC-AUTH] [%s] Authentication failed for user: %s", reqID, username)
 				} else {
 					// Malformed credentials - this is a failure
-					basicStatus = "FAIL" 
+					basicStatus = "FAIL"
 					log.Printf("[BASIC-AUTH] [%s] Malformed Basic auth credentials", reqID)
 				}
 			} else {
@@ -527,26 +527,26 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("WWW-Authenticate", `Basic realm="WebDAV Server"`)
 		http.Error(w, "Authorization required", http.StatusUnauthorized)
 	})
-}// X509AuthMiddleware provides X.509 client certificate authentication and stores username in context
+} // X509AuthMiddleware provides X.509 client certificate authentication and stores username in context
 func (as *AuthStore) X509AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := logger.GetRequestID(r.Context())
-		
+
 		if r.TLS == nil {
 			log.Printf("[X509-AUTH] [%s] Request over non-TLS connection - denying access", reqID)
 			http.Error(w, "TLS required for X.509 authentication", http.StatusUnauthorized)
 			return
 		}
-		
+
 		if len(r.TLS.PeerCertificates) == 0 {
 			log.Printf("[X509-AUTH] [%s] No client certificate provided - denying access", reqID)
 			http.Error(w, "Client certificate required", http.StatusUnauthorized)
 			return
 		}
-		
+
 		cert := r.TLS.PeerCertificates[0]
 		dn := x509utils.GetDNParts(cert)
-		
+
 		// Map DN to username using gridmap if available
 		var username string
 		if mappedUser, exists := as.Gridmap[dn]; exists {
@@ -556,11 +556,11 @@ func (as *AuthStore) X509AuthMiddleware(next http.Handler) http.Handler {
 			username = dn
 			log.Printf("[X509-AUTH] [%s] Certificate authenticated - DN: %s (no mapping)", reqID, dn)
 		}
-		
+
 		// Store username in request context for downstream handlers
 		ctx := context.WithValue(r.Context(), usernameContextKey, username)
 		r = r.WithContext(ctx)
-		
+
 		// Call next handler
 		next.ServeHTTP(w, r)
 	})

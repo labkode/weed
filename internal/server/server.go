@@ -15,6 +15,8 @@ import (
 	"github.com/labkode/weed/internal/logger"
 )
 
+
+
 // Server represents the WebDAV server
 type Server struct {
 	Config    *config.Config
@@ -99,6 +101,12 @@ func (s *Server) SetupMiddleware() http.Handler {
 	return middlewareChain
 }
 
+// createWebDAVHandler creates a WebDAV handler that works with the /webdav prefix
+// The WebDAV handler's Prefix field handles path stripping and href generation automatically
+func (s *Server) createWebDAVHandler(handler http.Handler) http.Handler {
+	return handler
+}
+
 // applyAuthMiddleware applies the unified authentication middleware to a handler
 func (s *Server) applyAuthMiddleware(handler http.Handler) http.Handler {
 	// Use unified authentication middleware that tries X.509 -> OIDC -> Basic Auth in order
@@ -126,15 +134,16 @@ func (s *Server) applyX509AuthMiddleware(handler http.Handler) http.Handler {
 
 // SetupRoutes sets up the HTTP routes
 func (s *Server) SetupRoutes() *http.ServeMux {
-	middlewareChain := s.SetupMiddleware()
-
 	mux := http.NewServeMux()
 
 	// Index page is publicly accessible (no auth required)
 	mux.HandleFunc("/", s.Handler.IndexHandler)
 
-	// WebDAV content requires authentication
-	mux.Handle("/webdav/", http.StripPrefix("/webdav", middlewareChain))
+	// WebDAV content requires authentication - use unified auth middleware
+	// Create a custom handler that preserves the /webdav prefix for proper href generation
+	// but strips it for filesystem access
+	webdavHandler := s.applyAuthMiddleware(s.Handler)
+	mux.Handle("/webdav/", s.createWebDAVHandler(webdavHandler))
 
 	// Authentication trigger routes - only create routes for enabled methods
 	if s.Config.BasicAuth {

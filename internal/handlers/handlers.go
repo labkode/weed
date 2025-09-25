@@ -24,7 +24,7 @@ type WebDAVHandler struct {
 // NewWebDAVHandler creates a new WebDAV handler
 func NewWebDAVHandler(directory string, cfg *config.Config) *WebDAVHandler {
 	webdavHandler := &webdav.Handler{
-		Prefix:     "/",
+		Prefix:     "/webdav",  // Set prefix to /webdav so hrefs are generated correctly
 		FileSystem: webdav.Dir(directory),
 		LockSystem: webdav.NewMemLS(),
 		Logger: func(r *http.Request, err error) {
