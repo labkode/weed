@@ -264,3 +264,14 @@ func TestUnlockMustTargetTheLockedResource(t *testing.T) {
 		t.Fatalf("UNLOCK: %d", code)
 	}
 }
+
+func TestPropfindWithDavixBody(t *testing.T) {
+	n := newNode(t, nil)
+	n.write("/d/f", "x")
+	os.Mkdir(filepath.Join(n.dir, "d", "sub"), 0755)
+	body := `<?xml version="1.0" encoding="utf-8" ?><D:propfind xmlns:D="DAV:" xmlns:L="LCGDM:"><D:prop><D:displayname/><D:getlastmodified/><D:creationdate/><D:getcontentlength/><D:quota-used-bytes/><D:resourcetype><D:collection/></D:resourcetype><L:mode/><D:owner></D:owner><D:group></D:group></D:prop></D:propfind>`
+	resp, out := n.do("PROPFIND", "/d/", body, "Depth", "1")
+	if resp.StatusCode != 207 || !strings.Contains(out, "/webdav/d/f") || !strings.Contains(out, "<D:collection") {
+		t.Fatalf("PROPFIND with davix body: %d %s", resp.StatusCode, out)
+	}
+}

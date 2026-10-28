@@ -109,6 +109,10 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Infinite depth PROPFIND requests are not allowed", http.StatusForbidden)
 			return
 		}
+		if err := lenientPropfind(r); err != nil {
+			http.Error(w, "Invalid PROPFIND body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	case http.MethodPut:
 		h.handlePut(w, r)
 		return
