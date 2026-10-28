@@ -317,6 +317,11 @@ func TestWorkerProcesses(t *testing.T) {
 	if code := n.status("PUT", "/shared/bobs", "replaced", forged...); code != 403 {
 		t.Errorf("replacing with a forged identity: %d", code)
 	}
+	// ... nor delete it with a scope naming a directory of that name
+	dirOnly := bearer(n.iss.Token(tokenAudience, "storage.modify:/shared/bobs/", map[string]interface{}{"sub": "bob"}))
+	if code := n.status("DELETE", "/shared/bobs", "", dirOnly...); code != 403 {
+		t.Errorf("deleting a file with a directory scope: %d", code)
+	}
 	if content, _ := n.read("/shared/bobs"); content != "/shared/bobs" {
 		t.Errorf("bob's file replaced: %q", content)
 	}

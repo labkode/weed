@@ -91,6 +91,9 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Non-canonical path", http.StatusBadRequest)
 		return
 	}
+	if !h.usesAsDirectories(w, r) {
+		return
+	}
 
 	// Macaroon minting requests (POST with application/macaroon-request content-type)
 	if davreq.IsMacaroonRequest(r) {
@@ -189,6 +192,46 @@ func (d *deniedWriter) Write(b []byte) (int, error) {
 func (d *deniedWriter) Unwrap() http.ResponseWriter { return d.ResponseWriter }
 
 const errNoOverwrite = "The token allows creating this file, not replacing it (storage.create without storage.modify)"
+
+const errOnlyDirectory = "The token allows this path as a directory only (its scope ends in /), and it is not one"
+
+// usesAsDirectories enforces AuthInfo.Directories: these paths are covered by token
+// scopes naming them as directories, so each must be a directory or not exist, and
+// the request may only create a directory there (MKCOL, or COPY/MOVE of a directory).
+// A concurrent request could still swap a directory for a file in between, but only
+// with credentials that cover the file.
+func (h *WebDAVHandler) usesAsDirectories(w http.ResponseWriter, r *http.Request) bool {
+	info, ok := auth.GetAuthInfoFromContext(r.Context())
+	if !ok || len(info.Directories) == 0 {
+		return true
+	}
+	stat := func(urlPath string) (os.FileInfo, error) {
+		name, _ := davreq.Strip(urlPath)
+		p, err := h.FS.Resolve(name)
+		if err != nil {
+			return nil, err
+		}
+		return os.Stat(p)
+	}
+	for _, d := range info.Directories {
+		// A path that cannot be stat'ed cannot be used either: the request fails by itself
+		fi, err := stat(d)
+		if err == nil && !fi.IsDir() || err != nil && r.Method == "LOCK" { // locking a missing resource creates an empty file
+			http.Error(w, errOnlyDirectory, http.StatusForbidden)
+			return false
+		}
+		if r.Method == "COPY" || r.Method == "MOVE" {
+			// The destination becomes what the source is
+			if t, err := davreq.ParseTarget(r); err == nil && t.Kind == davreq.CopyLocal && t.Local == d {
+				if src, err := stat(path.Clean(r.URL.Path)); err == nil && !src.IsDir() {
+					http.Error(w, errOnlyDirectory, http.StatusForbidden)
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
 
 // mayNotOverwrite reports whether the request's credentials only allow writing
 // files that do not exist yet

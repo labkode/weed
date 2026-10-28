@@ -85,7 +85,11 @@ func FuzzParseScopes(f *testing.F) {
 	f.Fuzz(func(t *testing.T, scope, basePath string) {
 		base := path.Clean("/" + basePath)
 		root := path.Join(davreq.Prefix, base)
-		for _, g := range parseScopes(strings.Fields(scope), base) {
+		grants, err := parseScopes(strings.Fields(scope), base)
+		if err != nil && grants != nil {
+			t.Fatalf("scope %q: grants %v with error %v", scope, grants, err)
+		}
+		for _, g := range grants {
 			if !pathMatches(g.path, root) || g.path != path.Clean(g.path) {
 				t.Fatalf("scope %q with base %q granted %q", scope, base, g.path)
 			}

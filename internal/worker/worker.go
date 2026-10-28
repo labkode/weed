@@ -58,9 +58,10 @@ const (
 
 // identity is what a worker learns about who sent a request
 type identity struct {
-	Username    string `json:"username"`
-	Method      string `json:"method"`
-	NoOverwrite bool   `json:"no_overwrite,omitempty"`
+	Username    string   `json:"username"`
+	Method      string   `json:"method"`
+	NoOverwrite bool     `json:"no_overwrite,omitempty"`
+	Directories []string `json:"directories,omitempty"`
 }
 
 // stripHeaders removes the headers in which the front process states facts, so that
@@ -78,7 +79,7 @@ func describe(out http.Header, r *http.Request) {
 	stripHeaders(out)
 	var id identity
 	if info, ok := auth.GetAuthInfoFromContext(r.Context()); ok {
-		id = identity{Username: info.Username, Method: info.Method, NoOverwrite: info.NoOverwrite}
+		id = identity{Username: info.Username, Method: info.Method, NoOverwrite: info.NoOverwrite, Directories: info.Directories}
 	}
 	b, _ := json.Marshal(id)
 	out.Set(headerIdentity, string(b))
@@ -100,7 +101,7 @@ func Handler(next http.Handler, u *fsuser.User) http.Handler {
 		}
 		ctx := logger.WithRequestID(r.Context(), r.Header.Get(headerRequestID))
 		ctx = auth.SetAuthInfoInContext(ctx, &auth.AuthInfo{
-			Username: id.Username, Method: id.Method, NoOverwrite: id.NoOverwrite, Unix: u,
+			Username: id.Username, Method: id.Method, NoOverwrite: id.NoOverwrite, Directories: id.Directories, Unix: u,
 		})
 		r = r.WithContext(ctx)
 		r.RemoteAddr = r.Header.Get(headerRemoteAddr)

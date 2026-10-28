@@ -69,7 +69,7 @@ func TestHeaders(t *testing.T) {
 	in.Header.Set("x-weed-tls", "")
 	in.Header.Set("Authorization", "Bearer secret")
 	ctx := logger.WithRequestID(in.Context(), "abcd1234")
-	in = in.WithContext(auth.SetAuthInfoInContext(ctx, &auth.AuthInfo{Username: "alice", Method: "token", NoOverwrite: true}))
+	in = in.WithContext(auth.SetAuthInfoInContext(ctx, &auth.AuthInfo{Username: "alice", Method: "token", NoOverwrite: true, Directories: []string{"/webdav/d"}}))
 
 	out := httptest.NewRequest("PUT", "http://worker/webdav/f", nil)
 	out.Header = in.Header.Clone()
@@ -80,7 +80,7 @@ func TestHeaders(t *testing.T) {
 		t.Fatal("not served")
 	}
 	info, ok := auth.GetAuthInfoFromContext(got.Context())
-	if !ok || info.Username != "alice" || info.Method != "token" || !info.NoOverwrite || info.Unix != alice {
+	if !ok || info.Username != "alice" || info.Method != "token" || !info.NoOverwrite || len(info.Directories) != 1 || info.Unix != alice {
 		t.Errorf("identity %+v", info)
 	}
 	if id := logger.GetRequestID(got.Context()); id != "abcd1234" {

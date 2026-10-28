@@ -79,6 +79,16 @@ func TestVerifyToken(t *testing.T) {
 		{"alg none", noneToken(), "malformed", false},
 		{"garbage", "a.b.c", "malformed", false},
 		{"no storage scopes", iss.Token(testAudience, "openid wlcg.groups", nil), "no storage scopes", true},
+		// WLCG profile 2.2.1: storage.stage does not include read; scopes need a path
+		{"storage.stage grants nothing", iss.Token(testAudience, "storage.stage:/ storage.poll:/", nil), "no storage scopes", true},
+		{"storage scope without a path", iss.Token(testAudience, "storage.read:/ storage.modify", nil), "has no path", false},
+		// WLCG profile 4.3.3: unsupported major versions are rejected, newer minor ones accepted
+		{"wlcg.ver", iss.Token(testAudience, "storage.read:/", map[string]interface{}{"wlcg.ver": "1.0"}), "", false},
+		{"newer minor wlcg.ver", iss.Token(testAudience, "storage.read:/", map[string]interface{}{"wlcg.ver": "1.12"}), "", false},
+		{"other major wlcg.ver", iss.Token(testAudience, "storage.read:/", map[string]interface{}{"wlcg.ver": "2.0"}), "not supported", false},
+		{"wlcg.ver without minor", iss.Token(testAudience, "storage.read:/", map[string]interface{}{"wlcg.ver": "1"}), "MAJOR.MINOR", false},
+		{"wlcg.ver as a number", iss.Token(testAudience, "storage.read:/", map[string]interface{}{"wlcg.ver": 1.0}), "not a string", false},
+		{"no wlcg.ver (SciTokens)", iss.Token(testAudience, "storage.read:/", map[string]interface{}{"wlcg.ver": nil}), "", false},
 	} {
 		v, err := as.verifyToken(c.token, now)
 		switch {
@@ -143,6 +153,14 @@ func TestTokenKeyRefresh(t *testing.T) {
 	iss.Close()
 	if err := valid("rsa2", now.Add(tokenKeysMinRefresh+2*tokenKeysMaxAge)); err != nil {
 		t.Fatalf("issuer down: %v", err)
+	}
+	// ... but not forever: they are dropped tokenKeysExpiry after they were fetched
+	fetched := now.Add(tokenKeysMinRefresh + tokenKeysMaxAge)
+	if err := valid("rsa2", fetched.Add(tokenKeysExpiry-time.Minute)); err != nil {
+		t.Fatalf("issuer down for less than %v: %v", tokenKeysExpiry, err)
+	}
+	if err := valid("rsa2", fetched.Add(tokenKeysExpiry)); err == nil || !strings.Contains(err.Error(), "cannot get the signing keys") {
+		t.Fatalf("issuer down for %v: %v", tokenKeysExpiry, err)
 	}
 }
 
@@ -229,21 +247,28 @@ func TestLoadTokenIssuers(t *testing.T) {
 }
 
 func TestParseScopes(t *testing.T) {
-	got := parseScopes([]string{
+	got, err := parseScopes([]string{
 		"openid", "offline_access", "storage.read:/", "storage.create:/a/b", "storage.modify:/../../etc",
-		"storage.stage:/tape", "read:/s", "write:/w", "storage.read", "storage.read:relative", "compute.read",
+		"storage.stage:/tape", "storage.poll:/tape", "storage.create:/d/", "read:/s", "write:/w", "read",
+		"storage.read:relative", "compute.read", "wlcg.capabilityset:/vo",
 	}, "/vo")
 	want := []grant{
-		{capRead, "/webdav/vo"},
-		{capCreate, "/webdav/vo/a/b"},
-		{capCreate | capModify, "/webdav/vo/etc"}, // cannot leave the base path
-		{capRead, "/webdav/vo/tape"},
-		{capRead, "/webdav/vo/s"},
-		{capCreate | capModify, "/webdav/vo/w"},
-		{capRead, "/webdav/vo"},
+		{capRead, "/webdav/vo", true},
+		{capCreate, "/webdav/vo/a/b", false},
+		{capCreate | capModify, "/webdav/vo/etc", false}, // cannot leave the base path
+		{capCreate, "/webdav/vo/d", true},
+		{capRead, "/webdav/vo/s", false},
+		{capCreate | capModify, "/webdav/vo/w", false},
+		{capRead, "/webdav/vo", true}, // SciTokens without a path: the base path
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v\nwant %v", got, want)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, %v\nwant %v", got, err, want)
+	}
+	// A storage.* scope without a path invalidates the token
+	for _, s := range []string{"storage.read", "storage.modify:", "storage.stage", "storage.poll", "storage.future"} {
+		if got, err := parseScopes([]string{"storage.read:/", s}, "/"); err == nil || got != nil {
+			t.Errorf("%s: %v, %v", s, got, err)
+		}
 	}
 }
 
@@ -254,7 +279,13 @@ func TestTokenAuthorization(t *testing.T) {
 		allowedNoOverwrite
 		forbidden
 	)
-	grants := func(scope string) []grant { return parseScopes(strings.Fields(scope), "/") }
+	grants := func(scope string) []grant {
+		g, err := parseScopes(strings.Fields(scope), "/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
 	for _, c := range []struct {
 		scope        string
 		method, path string
@@ -306,9 +337,13 @@ func TestTokenAuthorization(t *testing.T) {
 		needs, err := tokenRequirements(r)
 		if err == nil {
 			var noOverwrite bool
-			noOverwrite, err = authorizeToken(grants(c.scope), needs)
+			var dirs []string
+			noOverwrite, dirs, err = authorizeToken(grants(c.scope), needs)
 			if noOverwrite {
 				got = allowedNoOverwrite
+			}
+			if len(dirs) > 0 {
+				t.Errorf("%q: %s %s: directories %v", c.scope, c.method, c.path, dirs)
 			}
 		}
 		if err != nil {
@@ -316,6 +351,61 @@ func TestTokenAuthorization(t *testing.T) {
 		}
 		if got != c.want {
 			t.Errorf("%q: %s %s %v = %d (%v), want %d", c.scope, c.method, c.path, c.headers, got, err, c.want)
+		}
+	}
+}
+
+// A scope path ending in "/" is a directory (WLCG profile 2.2.1): "storage.create:/foo/bar/"
+// denies the creation of a file /foo/bar. Requests that may use it as a directory are
+// allowed, and the paths they must use as directories returned.
+func TestTokenDirectoryScopes(t *testing.T) {
+	for _, c := range []struct {
+		scope        string
+		method, path string
+		headers      []string
+		allowed      bool
+		directories  string // space-separated
+	}{
+		{"storage.create:/foo/bar/", "PUT", "/webdav/foo/bar", nil, false, ""},
+		{"storage.create:/foo/bar/", "PUT", "/webdav/foo/bar/", nil, false, ""},
+		{"storage.create:/foo/bar/", "PUT", "/webdav/foo/bar/f", nil, true, ""},
+		{"storage.create:/foo/bar/", "MKCOL", "/webdav/foo/bar", nil, true, "/webdav/foo/bar"},
+		{"storage.create:/foo/bar/", "COPY", "/webdav/foo/bar", []string{"Source", "https://src.example/f"}, false, ""},
+		{"storage.read:/foo/bar/", "GET", "/webdav/foo/bar", nil, false, ""},
+		{"storage.read:/foo/bar/", "HEAD", "/webdav/foo/bar", nil, false, ""},
+		{"storage.read:/foo/bar/", "COPY", "/webdav/foo/bar", []string{"Destination", "https://dst.example/f"}, false, ""},
+		{"storage.read:/foo/bar/", "GET", "/webdav/foo/bar/f", nil, true, ""},
+		{"storage.read:/foo/bar/", "GET", "/webdav/foo/barx", nil, false, ""},
+		{"storage.read:/foo/bar/", "PROPFIND", "/webdav/foo/bar/", []string{"Depth", "1"}, true, "/webdav/foo/bar"},
+		{"storage.read:/foo/bar/", "PROPFIND", "/webdav/foo/bar", []string{"Depth", "0"}, true, "/webdav/foo/bar"},
+		{"storage.modify:/foo/bar/", "DELETE", "/webdav/foo/bar", nil, true, "/webdav/foo/bar"},
+		{"storage.read:/a/ storage.create:/b/", "COPY", "/webdav/a", []string{"Destination", "/webdav/b"}, true, "/webdav/a /webdav/b"},
+		// Without the slash the path may be a file or a directory
+		{"storage.read:/foo/bar", "GET", "/webdav/foo/bar", nil, true, ""},
+		{"storage.read:/foo/bar", "PROPFIND", "/webdav/foo/bar", []string{"Depth", "1"}, true, ""},
+		// Other scopes covering the path lift the restriction
+		{"storage.read:/foo/bar/ storage.read:/foo/bar", "GET", "/webdav/foo/bar", nil, true, ""},
+		{"storage.read:/foo/bar/ storage.read:/foo", "PROPFIND", "/webdav/foo/bar", []string{"Depth", "1"}, true, ""},
+		// The root of the namespace
+		{"storage.read:/", "PROPFIND", "/webdav/", []string{"Depth", "1"}, true, "/webdav"},
+		{"storage.read:/", "GET", "/webdav/", nil, false, ""},
+	} {
+		r := httptest.NewRequest(c.method, "https://weed.example"+c.path, nil)
+		for i := 0; i+1 < len(c.headers); i += 2 {
+			r.Header.Set(c.headers[i], c.headers[i+1])
+		}
+		grants, err := parseScopes(strings.Fields(c.scope), "/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		needs, err := tokenRequirements(r)
+		var dirs []string
+		if err == nil {
+			_, dirs, err = authorizeToken(grants, needs)
+		}
+		if (err == nil) != c.allowed || strings.Join(dirs, " ") != c.directories {
+			t.Errorf("%q: %s %s %v: allowed %t (%v), directories %v; want %t, %q",
+				c.scope, c.method, c.path, c.headers, err == nil, err, dirs, c.allowed, c.directories)
 		}
 	}
 }

@@ -33,8 +33,12 @@ const AudienceAny = "https://wlcg.cern.ch/jwt/v1/any"
 
 const (
 	// Keys are fetched again after tokenKeysMaxAge, so keys an issuer withdraws
-	// stop being accepted
+	// stop being accepted (the WLCG profile allows 1 to 6 hours)
 	tokenKeysMaxAge = time.Hour
+	// Keys that could not be fetched again for tokenKeysExpiry are dropped, so a
+	// key withdrawn while the issuer cannot be reached does not stay valid forever
+	// (the WLCG profile recommends 2 days, and allows 1 to 4)
+	tokenKeysExpiry = 48 * time.Hour
 	// Keys are fetched at most once per tokenKeysMinRefresh and issuer, whatever key
 	// IDs clients send, so forged tokens cannot make weed flood an issuer
 	tokenKeysMinRefresh = time.Minute
@@ -154,42 +158,52 @@ const (
 	capModify                        // also overwrite and delete
 )
 
-// scopeCapabilities maps the WLCG and SciTokens storage scopes to capabilities
+// scopeCapabilities maps the WLCG and SciTokens storage scopes to capabilities.
+// storage.stage and storage.poll are about nearline (tape) storage, which weed does
+// not have: they grant nothing here (since version 1.1 of the WLCG profile,
+// storage.stage does not include storage.read).
 var scopeCapabilities = map[string]capability{
 	"storage.read":   capRead,
-	"storage.stage":  capRead, // a superset of read, for tape systems
 	"storage.create": capCreate,
 	"storage.modify": capCreate | capModify,
 	"read":           capRead,               // SciTokens
 	"write":          capCreate | capModify, // SciTokens
 }
 
-// grant is a capability on a URL path and everything below it
+// grant is a capability on a URL path and everything below it. If dir is set (the
+// scope's path ends in "/"), the path itself is a directory: the grant does not cover
+// a file of that name.
 type grant struct {
 	cap  capability
 	path string
+	dir  bool
 }
 
 // parseScopes returns the storage grants among scopes, with paths turned into URL
-// paths; other scopes (openid, compute.*, ...) are ignored
-func parseScopes(scopes []string, basePath string) []grant {
+// paths; other scopes (openid, compute.*, storage.stage, ...) are ignored. As the
+// WLCG profile requires, a storage.* scope without a path invalidates the token;
+// SciTokens' read and write without a path cover the base path.
+func parseScopes(scopes []string, basePath string) ([]grant, error) {
 	var grants []grant
 	for _, s := range scopes {
 		name, p, hasPath := strings.Cut(s, ":")
+		if strings.HasPrefix(name, "storage.") && p == "" {
+			return nil, fmt.Errorf("scope %q has no path", s)
+		}
 		c, ok := scopeCapabilities[name]
 		if !ok {
 			continue
 		}
 		if !hasPath {
-			p = "/" // as XRootD and dCache do: the whole base path
+			p = "/"
 		}
 		if !strings.HasPrefix(p, "/") {
 			continue
 		}
 		// Cleaning the scope path on its own first keeps ".." from leaving the base path
-		grants = append(grants, grant{c, path.Join(davreq.Prefix, basePath, path.Clean(p))})
+		grants = append(grants, grant{c, path.Join(davreq.Prefix, basePath, path.Clean(p)), strings.HasSuffix(p, "/")})
 	}
-	return grants
+	return grants, nil
 }
 
 // tokenNeed is a capability a request needs on one path
@@ -199,6 +213,9 @@ type tokenNeed struct {
 	// writes is set when the request creates or replaces path: with create but not
 	// modify, path must not exist yet
 	writes bool
+	// file is set when the request can only use path as a file (GET, PUT, ...), so
+	// that a scope naming path as a directory does not cover it
+	file bool
 }
 
 // tokenRequirements derives what a request needs from a token's scopes
@@ -214,28 +231,28 @@ func tokenRequirements(r *http.Request) ([]tokenNeed, error) {
 	if !davreq.IsClean(r.URL.Path) {
 		return nil, fmt.Errorf("non-canonical path %q", r.URL.Path)
 	}
-	p := r.URL.Path
-	one := func(any capability, writes bool) []tokenNeed { return []tokenNeed{{p, any, writes}} }
+	p := path.Clean(r.URL.Path) // "/webdav/d/" is the directory "/webdav/d"
+	one := func(any capability, writes, file bool) []tokenNeed { return []tokenNeed{{p, any, writes, file}} }
 
 	switch r.Method {
 	case http.MethodGet, http.MethodPost: // the WebDAV handler serves POST like GET
-		return one(capRead, false), nil
+		return one(capRead, false, true), nil
 	case http.MethodHead:
 		// Whether a file exists is needed to write it without overwriting
-		return one(capRead|capCreate|capModify, false), nil
+		return one(capRead|capCreate|capModify, false, true), nil
 	case "PROPFIND":
 		if r.Header.Get("Depth") == "0" {
-			return one(capRead|capCreate|capModify, false), nil
+			return one(capRead|capCreate|capModify, false, false), nil
 		}
-		return one(capRead, false), nil
+		return one(capRead, false, false), nil
 	case http.MethodOptions:
 		return nil, nil
 	case http.MethodPut:
-		return one(capCreate|capModify, true), nil
+		return one(capCreate|capModify, true, true), nil
 	case "MKCOL", "LOCK", "UNLOCK":
-		return one(capCreate|capModify, false), nil
+		return one(capCreate|capModify, false, false), nil
 	case http.MethodDelete, "PROPPATCH":
-		return one(capModify, false), nil
+		return one(capModify, false, false), nil
 	case "COPY", "MOVE":
 		t, err := davreq.ParseTarget(r)
 		if err != nil {
@@ -243,39 +260,48 @@ func tokenRequirements(r *http.Request) ([]tokenNeed, error) {
 		}
 		switch t.Kind {
 		case davreq.CopyPull: // writes the local file
-			return one(capCreate|capModify, true), nil
+			return one(capCreate|capModify, true, true), nil
 		case davreq.CopyPush: // reads the local file
-			return one(capRead, false), nil
+			return one(capRead, false, true), nil
 		}
-		dst := tokenNeed{t.Local, capCreate | capModify, true}
+		dst := tokenNeed{t.Local, capCreate | capModify, true, false}
 		if r.Method == "MOVE" {
 			// storage.create "includes renaming files if the destination file does not
 			// already exist"
-			return []tokenNeed{{p, capCreate | capModify, false}, dst}, nil
+			return []tokenNeed{{p, capCreate | capModify, false, false}, dst}, nil
 		}
-		return []tokenNeed{{p, capRead, false}, dst}, nil
+		return []tokenNeed{{p, capRead, false, false}, dst}, nil
 	}
 	return nil, fmt.Errorf("method %s cannot be used with a token", r.Method)
 }
 
 // authorizeToken checks that grants cover needs. noOverwrite is set when a path the
-// request writes is covered by create but not modify.
-func authorizeToken(grants []grant, needs []tokenNeed) (noOverwrite bool, err error) {
+// request writes is covered by create but not modify. directories are the paths only
+// covered by scopes naming them as directories, which the request may only use as
+// directories (see AuthInfo.Directories).
+func authorizeToken(grants []grant, needs []tokenNeed) (noOverwrite bool, directories []string, err error) {
 	for _, n := range needs {
-		var have capability
+		var have, asDir capability
 		for _, g := range grants {
-			if pathMatches(n.path, g.path) {
+			switch {
+			case g.dir && n.path == g.path:
+				asDir |= g.cap
+			case pathMatches(n.path, g.path):
 				have |= g.cap
 			}
 		}
+		if have&n.any == 0 && !n.file && asDir&n.any != 0 {
+			have = asDir
+			directories = append(directories, n.path)
+		}
 		if have&n.any == 0 {
-			return false, fmt.Errorf("%w: the token's scopes do not allow this request on %s", errForbidden, n.path)
+			return false, nil, fmt.Errorf("%w: the token's scopes do not allow this request on %s", errForbidden, n.path)
 		}
 		if n.writes && have&capModify == 0 {
 			noOverwrite = true
 		}
 	}
-	return noOverwrite, nil
+	return noOverwrite, directories, nil
 }
 
 // scopeClaim is the scope claim: space-separated (WLCG, SciTokens) or a list
@@ -343,8 +369,9 @@ func (as *AuthStore) verifyToken(raw string, now time.Time) (*verifiedToken, err
 
 	v := &verifiedToken{issuer: iss}
 	var extra struct {
-		Scope  scopeClaim  `json:"scope"`
-		Groups groupsClaim `json:"wlcg.groups"`
+		Scope   scopeClaim      `json:"scope"`
+		Groups  groupsClaim     `json:"wlcg.groups"`
+		Version json.RawMessage `json:"wlcg.ver"`
 	}
 	err = errors.New("no keys")
 	for i := range keys {
@@ -364,8 +391,13 @@ func (as *AuthStore) verifyToken(raw string, now time.Time) (*verifiedToken, err
 	if !v.claims.Audience.Contains(AudienceAny) && !anyIn(iss.Audiences, []string(v.claims.Audience)) {
 		return nil, fmt.Errorf("token audience %q is not accepted here", []string(v.claims.Audience))
 	}
+	if err := checkVersion(extra.Version); err != nil {
+		return nil, err
+	}
 	v.scopes, v.groups = extra.Scope, extra.Groups
-	v.grants = parseScopes(v.scopes, iss.BasePath)
+	if v.grants, err = parseScopes(v.scopes, iss.BasePath); err != nil {
+		return nil, fmt.Errorf("invalid token: %w", err)
+	}
 	if len(v.grants) == 0 {
 		// Without storage scopes access would depend on groups, which weed does not map
 		return nil, fmt.Errorf("%w: the token has no storage scopes", errForbidden)
@@ -390,7 +422,7 @@ func (as *AuthStore) authenticateToken(r *http.Request) (*AuthInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errForbidden, err)
 	}
-	noOverwrite, err := authorizeToken(v.grants, needs)
+	noOverwrite, directories, err := authorizeToken(v.grants, needs)
 	if err != nil {
 		return nil, err
 	}
@@ -408,11 +440,37 @@ func (as *AuthStore) authenticateToken(r *http.Request) (*AuthInfo, error) {
 			"expires": v.claims.Expiry.Time(),
 		},
 		NoOverwrite: noOverwrite,
+		Directories: directories,
 	}
 	if len(v.groups) > 0 {
 		info.Details["groups"] = strings.Join(v.groups, " ")
 	}
 	return info, nil
+}
+
+// checkVersion checks the wlcg.ver claim, "MAJOR.MINOR": weed implements version 1 of
+// the WLCG profile, and accepts its later minor versions, as the profile requires.
+// Tokens without the claim (SciTokens) are accepted.
+func checkVersion(raw json.RawMessage) error {
+	if raw == nil {
+		return nil
+	}
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return fmt.Errorf("invalid token: wlcg.ver %s is not a string", raw)
+	}
+	major, minor, ok := strings.Cut(v, ".")
+	if !ok || !isNumber(major) || !isNumber(minor) {
+		return fmt.Errorf("invalid token: wlcg.ver %q is not MAJOR.MINOR", v)
+	}
+	if major != "1" {
+		return fmt.Errorf("invalid token: wlcg.ver %q is not supported (weed implements version 1 of the WLCG profile)", v)
+	}
+	return nil
+}
+
+func isNumber(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
 }
 
 // bearerToken returns the token of an "Authorization: Bearer" header
@@ -496,12 +554,16 @@ func (k *tokenKeys) find(client *http.Client, kid string, now time.Time) ([]jose
 		keys, err := fetchIssuerKeys(ctx, client, k.issuer)
 		cancel()
 		if err != nil {
-			slog.Warn("cannot fetch the signing keys of a token issuer, keeping the known ones", "issuer", k.issuer, "keys", len(k.keys), "error", err)
+			slog.Warn("cannot fetch the signing keys of a token issuer, keeping the known ones", "issuer", k.issuer, "keys", len(k.keys), "fetched", k.fetched, "error", err)
 			k.err = err
 		} else {
 			slog.Info("fetched the signing keys of a token issuer", "issuer", k.issuer, "keys", len(keys))
 			k.keys, k.fetched, k.err = keys, now, nil
 		}
+	}
+	if k.keys != nil && now.Sub(k.fetched) >= tokenKeysExpiry {
+		slog.Error("dropping the signing keys of a token issuer that cannot be reached: its tokens are refused until it can be", "issuer", k.issuer, "fetched", k.fetched)
+		k.keys = nil
 	}
 	if m := match(); len(m) > 0 {
 		return m, nil

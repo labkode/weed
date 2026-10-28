@@ -200,20 +200,29 @@ Without it, all authenticated users have weed's own access to the files.
    The signature is checked against the keys the issuer publishes (found through
    /.well-known/openid-configuration, or oauth-authorization-server). Keys are cached,
    refetched every hour, and fetched at most once a minute per issuer, so forged
-   tokens cannot make weed flood an issuer; if the issuer is down, the known keys keep
-   working. Use tokens.ca_path to trust CAs other than the system's for the issuers.
-   A token must not be expired (1 minute of clock skew is allowed), and its aud must
-   include one of the audiences or https://wlcg.cern.ch/jwt/v1/any; otherwise 401.
+   tokens cannot make weed flood an issuer. If the issuer is down, the known keys keep
+   working for 2 days after they were last fetched (as the profile recommends); then
+   its tokens get 401 until it is back. Use tokens.ca_path to trust CAs other than
+   the system's for the issuers. A token must not be expired (1 minute of clock skew
+   is allowed), its aud must include one of the audiences or
+   https://wlcg.cern.ch/jwt/v1/any, and its wlcg.ver, if it has one, must be 1.x
+   (later minor versions are accepted; SciTokens have no wlcg.ver); otherwise 401.
 
    Scopes grant access to a path and everything below it; paths are relative to the
    issuer's base_path (default "/"), which is relative to the exported directory:
-     storage.read:<path>    read, list and stat (also storage.stage, SciTokens read)
+     storage.read:<path>    read, list and stat (also SciTokens read)
      storage.create:<path>  create files and directories, rename, stat; never
                             replace or delete data: PUT, COPY/MOVE and TPC pull onto
                             an existing file get 403, before any data is sent
      storage.modify:<path>  also overwrite and delete (also SciTokens write)
-   A scope without a path means "/". Tokens without storage scopes get 403: groups
-   (wlcg.groups) choose an account (see users below) but grant nothing by themselves.
+   A path ending in "/" is a directory: storage.create:/a/b/ allows creating the
+   directory /a/b and anything inside it, but not a file named /a/b (403); without the
+   "/", /a/b may be either. storage.stage and storage.poll are for tape and grant
+   nothing (since version 1.1 of the profile, stage does not include read). A
+   storage.* scope without a path makes the token invalid (401), as the profile
+   requires; SciTokens read and write without a path mean "/". Tokens without storage
+   scopes get 403: groups (wlcg.groups) choose an account (see users below) but grant
+   nothing by themselves.
    A macaroon cannot be requested with a token, since it would not be bound by the
    token's scopes.
 

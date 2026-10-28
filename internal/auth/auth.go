@@ -55,6 +55,9 @@ type AuthInfo struct {
 	// NoOverwrite is set when the request may create the file it writes but not
 	// replace an existing one (a token with storage.create but not storage.modify)
 	NoOverwrite bool `json:"-"`
+	// Directories are URL paths that the request may only use as directories: a
+	// token scope whose path ends in "/" names a directory, not a file of that name
+	Directories []string `json:"-"`
 	// Unix is the local account the request accesses files as (with UnixUsers)
 	Unix *fsuser.User `json:"-"`
 }

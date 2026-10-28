@@ -84,6 +84,48 @@ func TestTokenAccess(t *testing.T) {
 	}
 }
 
+// A scope path ending in "/" names a directory (WLCG profile 2.2.1): "storage.create:/foo/bar/"
+// must deny the creation of a file /foo/bar
+func TestTokenDirectoryScopes(t *testing.T) {
+	iss := testutil.NewIssuer(t)
+	n := newTokenNode(t, iss, "/")
+	n.write("/data/file", "data")
+	n.write("/data/dir/f", "data")
+	tok := func(scope string) []string { return bearer(iss.Token(tokenAudience, scope, nil)) }
+	lock := `<?xml version="1.0"?><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope>` +
+		`<D:locktype><D:write/></D:locktype></D:lockinfo>`
+
+	for _, c := range []struct {
+		name               string
+		method, path, body string
+		headers            []string
+		want               int
+	}{
+		{"create a file named like the directory", "PUT", "/data/new", "x", tok("storage.create:/data/new/"), 403},
+		{"lock a missing resource (creates a file)", "LOCK", "/data/new", lock, tok("storage.create:/data/new/"), 403},
+		{"create a directory", "MKCOL", "/data/new", "", tok("storage.create:/data/new/"), 201},
+		{"create a file in it", "PUT", "/data/new/f", "x", tok("storage.create:/data/new/"), 201},
+		{"read a file named like the directory", "GET", "/data/file", "", tok("storage.read:/data/file/"), 403},
+		{"stat a file named like the directory", "PROPFIND", "/data/file", "", append([]string{"Depth", "0"}, tok("storage.read:/data/file/")...), 403},
+		{"list the directory", "PROPFIND", "/data/dir", "", append([]string{"Depth", "1"}, tok("storage.read:/data/dir/")...), 207},
+		{"copy a file to the directory's name", "COPY", "/data/file", "", append([]string{"Destination", "/webdav/data/copy"},
+			tok("storage.read:/data storage.create:/data/copy/")...), 403},
+		{"copy a directory to it", "COPY", "/data/dir", "", append([]string{"Destination", "/webdav/data/copy"},
+			tok("storage.read:/data storage.create:/data/copy/")...), 201},
+		{"move a file named like the directory", "MOVE", "/data/file", "", append([]string{"Destination", "/webdav/data/moved"},
+			tok("storage.create:/data/file/ storage.create:/data/moved")...), 403},
+		{"delete a file named like the directory", "DELETE", "/data/file", "", tok("storage.modify:/data/file/"), 403},
+		{"without the slash the path may be a file", "DELETE", "/data/file", "", tok("storage.modify:/data/file"), 204},
+	} {
+		if resp, msg := n.do(c.method, c.path, c.body, c.headers...); resp.StatusCode != c.want {
+			t.Errorf("%s: %s %s = %d %q, want %d", c.name, c.method, c.path, resp.StatusCode, msg, c.want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(n.dir, "data", "copy", "f")); err != nil {
+		t.Errorf("the directory was not copied: %v", err)
+	}
+}
+
 func TestTokenBasePath(t *testing.T) {
 	iss := testutil.NewIssuer(t)
 	n := newTokenNode(t, iss, "/vo")
