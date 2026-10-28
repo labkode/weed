@@ -23,9 +23,12 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race -count=1 ./...
-      - name: Tests that switch Unix identities (as root)
+      - name: Tests of worker processes running as Unix accounts (as root)
         if: runner.os == 'Linux'
-        run: go test -exec sudo -count=1 -run 'TestUnixUsers|TestRun|TestCheck' ./internal/fsuser ./internal/server
+        run: go test -exec sudo -count=1 -run 'TestUnixUsers|TestWorker' ./internal/server ./internal/worker
+      - name: cgroups of worker processes (privileged container)
+        if: runner.os == 'Linux'
+        run: make test-cgroups
 
   build:
     runs-on: ubuntu-latest

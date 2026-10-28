@@ -19,12 +19,21 @@ type Config struct {
 	CRLPath     string
 	CRLMode     string
 	GridmapFile string
-	// UnixUsers maps every identity to a local account and accesses files as it
-	UnixUsers     bool
-	BasicAuth     bool
-	HtpasswdFile  string
-	AppTokensFile string
-	LogFile       string
+	// UnixUsers maps every identity to a local account, whose files a worker process
+	// running as the account accesses
+	UnixUsers bool
+	// WorkerIdleTimeout stops a worker that has served no request for this long
+	WorkerIdleTimeout time.Duration
+	// MaxWorkers bounds the number of workers taking requests
+	MaxWorkers int
+	// WorkerCgroups runs each worker in a cgroup of its own
+	WorkerCgroups bool
+	// WorkerCgroupLimits are written to the cgroup of every worker (file=value)
+	WorkerCgroupLimits []string
+	BasicAuth          bool
+	HtpasswdFile       string
+	AppTokensFile      string
+	LogFile            string
 	// ReloadInterval is how often credential files are re-read (0: only on SIGHUP)
 	ReloadInterval time.Duration
 	// MetricsAddress serves /metrics and /healthz without authentication ("" disables)
@@ -81,7 +90,14 @@ func ParseFlags() *Config {
 	flag.StringVar(&cfg.HtpasswdFile, "htpasswd-file", ".htpasswd", "path to htpasswd file for basic authentication")
 	flag.StringVar(&cfg.AppTokensFile, "app-tokens-file", ".app-tokens", "path to app tokens file for application password authentication")
 	flag.StringVar(&cfg.LogFile, "log-file", "", "path to log file (default: stdout)")
-	flag.BoolVar(&cfg.UnixUsers, "unix-users", false, "access files as the Unix account each identity maps to (an identity without one gets 403); Linux only, needs root or CAP_SETUID and CAP_SETGID")
+	flag.BoolVar(&cfg.UnixUsers, "unix-users", false, "access files as the Unix account each identity maps to (an identity without one gets 403), from a worker process running as the account; Linux only, needs root or CAP_SETUID and CAP_SETGID")
+	flag.DurationVar(&cfg.WorkerIdleTimeout, "worker-idle-timeout", 10*time.Minute, "with -unix-users: stop the worker process of an account once it has served no request for this long")
+	flag.IntVar(&cfg.MaxWorkers, "max-workers", 256, "with -unix-users: at most this many worker processes take requests; once they are all busy, requests of other accounts get 503")
+	flag.BoolVar(&cfg.WorkerCgroups, "worker-cgroups", false, "with -unix-users: run each worker process in a cgroup of its own, below weed's, which must be delegated to weed (systemd: Delegate=yes); cgroup v2")
+	flag.Func("worker-cgroup-limit", "with -unix-users: write file=value to the cgroup of every worker process, e.g. memory.max=4G or pids.max=1000 (repeatable; implies -worker-cgroups)", func(v string) error {
+		cfg.WorkerCgroupLimits = append(cfg.WorkerCgroupLimits, v)
+		return nil
+	})
 
 	// OIDC flags
 	flag.BoolVar(&cfg.OIDCAuth, "oidc-auth", false, "enable OIDC authentication")
@@ -131,6 +147,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ReloadInterval < 0 {
 		return fmt.Errorf("-reload-interval cannot be negative")
+	}
+	if (c.WorkerCgroups || len(c.WorkerCgroupLimits) > 0) && !c.UnixUsers {
+		return fmt.Errorf("-worker-cgroups and -worker-cgroup-limit require -unix-users")
 	}
 	if c.TokenCAPath != "" && c.TokenIssuers == "" {
 		return fmt.Errorf("-token-ca-path requires -token-issuers")

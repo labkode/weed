@@ -9,7 +9,12 @@ PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 \
 # Container image for "make test-linux": the local Go version
 GO_IMAGE  ?= golang:$(patsubst go%,%,$(firstword $(shell $(GO) env GOVERSION)))
 
-.PHONY: all build test test-root test-linux interop check fmt vulncheck fuzz bench cross ci clean help
+# Runs the Go toolchain in a container, with this tree and the local module cache
+DOCKER_GO  = --rm -v "$(CURDIR):/src" -v "$$($(GO) env GOMODCACHE):/go/pkg/mod" \
+             -v weed-gocache:/root/.cache/go-build -w /src --cap-add SYS_PTRACE \
+             -e GOPROXY=off -e GOFLAGS=-buildvcs=false
+
+.PHONY: all build test test-root test-linux test-cgroups bench-workers interop check fmt vulncheck fuzz bench cross ci clean help
 
 all: build
 
@@ -19,15 +24,17 @@ build: ## Build ./weed
 test: ## Unit and end-to-end tests (those that need root are skipped)
 	$(GO) test -race -count=1 ./...
 
-test-root: ## All tests as root, including those that switch Unix identities (Linux, sudo)
+test-root: ## All tests as root, including those of -unix-users workers (Linux, sudo)
 	$(GO) test -exec sudo -race -count=1 ./...
 
 test-linux: ## All tests as root in a Linux container (Docker), e.g. from macOS
 	$(GO) mod download
-	docker run --rm -v "$(CURDIR):/src" -v "$$($(GO) env GOMODCACHE):/go/pkg/mod" \
-		-v weed-gocache:/root/.cache/go-build -w /src \
-		-e GOPROXY=off -e GOFLAGS=-buildvcs=false \
-		$(GO_IMAGE) go test -race -count=1 ./...
+	docker run $(DOCKER_GO) $(GO_IMAGE) go test -race -count=1 ./...
+
+test-cgroups: ## The cgroups of worker processes, in a privileged Linux container (Docker)
+	$(GO) mod download
+	docker run --privileged -e WEED_TEST_CGROUPS=1 $(DOCKER_GO) $(GO_IMAGE) \
+		go test -count=1 -run TestWorkerCgroups -v ./internal/server
 
 interop: ## Interoperability tests with gfal2, davix and XRootD (Docker)
 	test/interop/interop.sh
@@ -52,6 +59,11 @@ fuzz: ## Every fuzz test, FUZZTIME each
 bench: ## Throughput benchmarks (WEED_BENCH_MIB sets the file size)
 	$(GO) test ./internal/server -run '^$$' -bench . -benchtime 3x
 	$(GO) test ./internal/digest -run '^$$' -bench Hasher
+
+bench-workers: ## Throughput with and without -unix-users workers, in a Linux container (Docker)
+	$(GO) mod download
+	docker run -e WEED_BENCH_MIB $(DOCKER_GO) $(GO_IMAGE) \
+		go test ./internal/server -run '^$$' -bench Workers -benchtime 3x -count 3
 
 cross: ## Build and vet for every platform in PLATFORMS
 	@set -e; for p in $(PLATFORMS); do \

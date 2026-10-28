@@ -249,31 +249,70 @@ Unix accounts (-unix-users)
 With -unix-users (Linux only), every identity must be the name of a local account,
 looked up with the system's user database (/etc/passwd, or LDAP and SSSD through NSS
 when weed is built with cgo); an identity without one, or that names root, gets 403.
-Each request then accesses files as that account: weed switches the filesystem UID,
-GID and supplementary groups of the thread serving it (setfsuid, setfsgid, setgroups),
-so the kernel checks permissions and ACLs as for the user, and new files and
-directories belong to the user. Third-party copies read and write the local file as
-the user too. Token scopes and macaroon caveats still apply on top.
+weed itself then never touches the exported files: it terminates TLS, authenticates
+each request and hands it to the worker process of the account, which runs as the
+account (UID, GID and supplementary groups) with no capabilities and no_new_privs.
+The kernel checks permissions and ACLs as for the user, new files and directories
+belong to the user, and third-party copies read and write the local file as the user.
+Token scopes and macaroon caveats are checked by weed before a request is handed on.
+
+    $ ps -o user,pid,ppid,args -C weed
+    USER       PID  PPID COMMAND
+    root       812     1 weed -port 443 -dir /data -unix-users ...
+    alice     1630   812 weed worker alice
+    cms001    1702   812 weed worker cms001
+
+A worker starts with the first request of its account and stops after
+-worker-idle-timeout (default 10m) without one; a worker that dies is replaced on the
+next request. At most -max-workers (default 256) take requests; when they are all
+busy, requests of other accounts get 503. Workers write to weed's log, each line
+marked "[worker alice 1630]", with the request IDs of the access log. Each worker
+checks that all its threads run as the account, with no capabilities and
+no_new_privs, and refuses to serve otherwise; weed starts one as nobody (65534) at
+startup to find problems before the first request. Workers get none of weed's
+environment, and are started from the running binary even if it has since been
+replaced on disk; the binary must be executable by the users.
+
+weed talks HTTP to its workers over socket pairs: nothing else can connect to them,
+so they trust the identity weed states in request headers (headers of the same names
+sent by clients are dropped). They report their metrics back to weed, which serves
+them; -tpc-max-transfers bounds the copies of all accounts together.
 
 weed must run as root, or with the CAP_SETUID and CAP_SETGID capabilities, for
 example in a systemd unit:
 
     User=weed
     AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE
+    Delegate=yes        # for -worker-cgroups
 
-It checks at startup that it can switch, and that acting as a user leaves it no
-capability that bypasses file permissions: the kernel removes those (CAP_DAC_OVERRIDE
-and the like) when root switches, but not when another user holding them does, nor
-under the no_setuid_fixup securebit, and weed refuses to start in those cases.
+Downloads relayed from workers run at ~95% of the speed of serving files directly,
+and uploads at the same speed (Linux, 1 GiB files over loopback without TLS:
+~5800 against ~6100 MB/s; WEED_BENCH_MIB=1024 make bench-workers measures it). That
+needs 4 MiB socket buffers, which root gets; as another user, also raise
+net.core.wmem_max and net.core.rmem_max to 4194304, or downloads lose a third.
 
-The users need search permission on the exported directory and its parents.
-Accounts are looked up again after a minute, and on reload. Operations the filesystem
-refuses get 403. As with local tools:
+The users need search permission on the exported directory and its parents (and
+weed, for /healthz). Accounts are looked up again after a minute, and on reload; an
+account whose groups changed gets a new worker (the old one finishes its requests
+first). On reload, workers re-read the CAs of TPC endpoints (-tpc-ca-path), which the
+users must be able to read; they keep running. SIGHUP sent to a worker is ignored.
+Operations the filesystem refuses get 403. As with local tools:
 * Replacing a file needs write permission on it as well as on its directory, and the
   new version belongs to the user who wrote it.
 * Locking an existing resource needs write permission on it, so a user cannot lock
   others out of their files.
-Each request in progress holds an OS thread (Go's limit is 10000).
+* WebDAV locks are kept by each worker: they only hold against requests of the same
+  account, and are lost when its worker stops.
+
+cgroups. With -worker-cgroups, each worker runs in a cgroup of its own below weed's,
+which must be delegated to weed (systemd's Delegate=yes; cgroup v2): weed moves into
+<its cgroup>/main and starts the workers of alice in <its cgroup>/worker-alice, with
+the cpu, io, memory and pids controllers when they are available. systemd-cgtop and
+systemd-cgls then show what each account uses, and -worker-cgroup-limit (repeatable)
+writes limits into the cgroup of every worker:
+
+    -worker-cgroup-limit memory.max=8G -worker-cgroup-limit pids.max=1000 \
+    -worker-cgroup-limit cpu.weight=100
 
 Without -unix-users, weed warns at startup if it runs as root: every client would
 have root's access to the files.
@@ -283,8 +322,8 @@ Reloading credentials
 
 On SIGHUP, and every -reload-interval (default 1h, 0 disables), weed re-reads the
 htpasswd and app tokens files, the grid-mapfile, the CAs and CRLs, the token issuers,
-the TLS certificate, and the CAs for TPC endpoints and token issuers, and looks Unix
-accounts up again. A file that
+the TLS certificate, and the CAs for TPC endpoints (also in the worker processes of
+-unix-users) and token issuers, and looks Unix accounts up again. A file that
 cannot be read keeps its previous contents, so a file being rewritten neither locks
 everybody out nor lets anybody in. New connections and requests use the new data.
 
@@ -303,6 +342,8 @@ Prometheus metrics on /metrics:
   weed_tpc_transfers_total{mode,result}       weed_tpc_bytes_total{mode}
   weed_tpc_active_transfers{mode}             weed_tpc_rejected_total
   weed_reloads_total{result}                  weed_build_info{version,goversion}
+  weed_workers                                weed_worker_starts_total{result}
+  weed_worker_exits_total{reason}             (stopped when asked to, or failed)
   weed_crl_expiry_timestamp_seconds           when the first CA runs out of current
                                               CRLs (alert before it is reached)
   weed_tls_certificate_expiry_timestamp_seconds
@@ -322,9 +363,10 @@ itself hashes at ~650); GET ~3000; the disk writes ~3800. Measure on your hardwa
 Testing
 
     make test          unit and end-to-end tests (go test -race ./...)
-    make test-root     the same as root, adding the tests that switch Unix identities
-                       (Linux, uses sudo)
+    make test-root     the same as root, adding the tests of -unix-users worker
+                       processes (Linux, uses sudo)
     make test-linux    the same as root in a Linux container, e.g. from macOS (Docker)
+    make test-cgroups  the cgroups of worker processes, in a privileged container
     make interop       interoperability tests (test/interop/interop.sh, Docker)
     make check         gofmt and go vet; make fuzz, make cross, make vulncheck and
                        make bench run the rest; make help lists every target
@@ -346,6 +388,7 @@ Not implemented
 * Authorization by token groups alone: a token needs storage scopes even when its
   groups choose its Unix account
 * Per-user access without -unix-users, or on systems other than Linux
+* WebDAV locks across accounts with -unix-users: each worker keeps its own
 
 
 Known deviations from RFC 4918

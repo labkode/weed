@@ -34,7 +34,6 @@ import (
 
 	"github.com/labkode/weed/internal/davfs"
 	"github.com/labkode/weed/internal/digest"
-	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 )
@@ -95,8 +94,6 @@ type Job struct {
 	ReprDigest string
 	// NoReplace makes a pull fail rather than replace an existing local file
 	NoReplace bool
-	// User, if set, is the account the local file is accessed as
-	User *fsuser.User
 }
 
 // Engine runs transfers
@@ -268,20 +265,30 @@ func (p *progress) bytes() int64 {
 	return 0
 }
 
+// Reserve takes one of the MaxTransfers slots for a transfer, and returns the
+// function that frees it. When none is free it answers 503 and returns false.
+func (e *Engine) Reserve(w http.ResponseWriter) (release func(), ok bool) {
+	select {
+	case e.slots <- struct{}{}:
+		return func() { <-e.slots }, true
+	default:
+		metrics.TPCRejected.Inc()
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "Too many concurrent third-party copies", http.StatusServiceUnavailable)
+		return nil, false
+	}
+}
+
 // Serve answers a TPC COPY: 202, performance markers, then the final status line.
 // All checks that can be done synchronously must have been done by the caller.
 func (e *Engine) Serve(w http.ResponseWriter, r *http.Request, job *Job) {
 	reqID := logger.GetRequestID(r.Context())
 
-	select {
-	case e.slots <- struct{}{}:
-		defer func() { <-e.slots }()
-	default:
-		metrics.TPCRejected.Inc()
-		w.Header().Set("Retry-After", "60")
-		http.Error(w, "Too many concurrent third-party copies", http.StatusServiceUnavailable)
+	release, ok := e.Reserve(w)
+	if !ok {
 		return
 	}
+	defer release()
 
 	mode := job.Mode.String()
 	metrics.TPCActive.Inc(mode)
@@ -292,17 +299,7 @@ func (e *Engine) Serve(w http.ResponseWriter, r *http.Request, job *Job) {
 	p := &progress{}
 	start := time.Now()
 	done := make(chan error, 1)
-	go func() {
-		if job.User == nil {
-			done <- e.run(ctx, job, p)
-			return
-		}
-		var err error
-		if runErr := job.User.Run(func() { err = e.run(ctx, job, p) }); runErr != nil {
-			err = runErr
-		}
-		done <- err
-	}()
+	go func() { done <- e.run(ctx, job, p) }()
 
 	log.Printf("[TPC] [%s] Started %s %s <-> %s", reqID, job.Mode, job.LocalPath, redact(job.Remote))
 	w.Header().Set("Content-Type", "text/perf-marker-stream")

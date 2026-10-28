@@ -83,25 +83,9 @@ func NewWebDAVHandler(directory string, cfg *config.Config, authStore *auth.Auth
 	}
 }
 
-// ServeHTTP serves the WebDAV namespace. It runs after authentication, and with
-// -unix-users accesses files as the identity's Unix account.
+// ServeHTTP serves the WebDAV namespace, after authentication. With -unix-users it
+// runs in the worker process of the identity's Unix account (see internal/worker).
 func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h.Config == nil || !h.Config.UnixUsers {
-		h.serve(w, r)
-		return
-	}
-	info, ok := auth.GetAuthInfoFromContext(r.Context())
-	if !ok || info.Unix == nil {
-		http.Error(w, "No Unix account for this identity", http.StatusForbidden)
-		return
-	}
-	if err := info.Unix.Run(func() { h.serve(w, r) }); err != nil {
-		log.Printf("[UNIX-USER] [%s] %v", logger.GetRequestID(r.Context()), err)
-		http.Error(w, "Cannot act as the Unix account", http.StatusInternalServerError)
-	}
-}
-
-func (h *WebDAVHandler) serve(w http.ResponseWriter, r *http.Request) {
 	reqID := logger.GetRequestID(r.Context())
 
 	// Encoded dot segments survive ServeMux path cleaning; never serve them
@@ -503,9 +487,6 @@ func (h *WebDAVHandler) handleTPC(w http.ResponseWriter, r *http.Request, target
 		Header:     tpc.TransferHeaders(r.Header),
 		Expected:   expected,
 		ReprDigest: reprDigest,
-	}
-	if info, ok := auth.GetAuthInfoFromContext(r.Context()); ok {
-		job.User = info.Unix
 	}
 	fi, statErr := os.Stat(localPath)
 	if errors.Is(statErr, fs.ErrPermission) {

@@ -20,6 +20,13 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// The tests of -unix-users start this binary as their workers
+	if len(os.Args) > 1 && os.Args[1] == "worker" {
+		if err := RunWorker(); err != nil {
+			log.Fatal(err)
+		}
+		os.Exit(0)
+	}
 	if !testingVerbose() {
 		log.SetOutput(io.Discard)
 	}
@@ -87,6 +94,7 @@ func newNode(t testing.TB, mod func(cfg *config.Config, baseURL string), wraps .
 	if err := s.Initialize(); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(s.Close) // after the server has closed
 	var handler http.Handler = s.SetupRoutes()
 	for _, wrap := range wraps {
 		handler = wrap(handler)

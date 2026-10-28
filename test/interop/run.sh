@@ -73,12 +73,13 @@ start_weed() { # name port [flags]
 }
 start_weed a 8443 -metrics-address localhost:9100
 start_weed b 8444
-# C accesses files as the Unix account of each identity: the grid-mapfile names it
-# for certificates, and for tokens a user rule does (the revoked DN has no account)
+# C accesses files as the Unix account of each identity, from a worker process per
+# account: the grid-mapfile names the account for certificates, and for tokens a user
+# rule does (the revoked DN has no account)
 useradd -M -u 7001 interop && useradd -M -u 7002 robot
 mkdir -p /srv/c/interop /srv/c/robot && chown interop: /srv/c/interop && chown robot: /srv/c/robot && chmod 700 /srv/c/robot
 printf '[{"issuer": "%s", "audiences": ["https://localhost:8447"], "users": [{"group": "/interop/robots", "user": "robot"}]}]' $ISS >issuers-c.json
-start_weed c 8447 -unix-users -token-issuers issuers-c.json
+start_weed c 8447 -unix-users -token-issuers issuers-c.json -worker-idle-timeout 3s
 
 # XRootD as a production-like WLCG endpoint: X.509 over HTTPS, macaroons, tokens, HTTP-TPC.
 # It runs as the xrootd user, which needs a writable working directory.
@@ -282,6 +283,15 @@ check "...owned by robot" owned robot /srv/c/robot/t.bin
 check "...and cannot write to interop's directory" http_status 403 -H "Authorization: Bearer $ROBOT" -T f.bin $(https $C)/interop/t.bin
 check "token no rule maps is refused" http_status 403 -H "Authorization: Bearer $(token -aud https://localhost:8447 -scope storage.read:/)" $(https $C)/interop/f.bin
 check "certificate whose account does not exist is refused" http_status 403 --cert revoked.pem --key revoked.key $(https $C)/interop/f.bin
+C_PID=$(pgrep -f 'weed -port 8447')
+workers() { ps -o user=,args= --ppid $C_PID | awk '{print $1, $2, $3, $4}' | sort; }
+workers_are() { [ "$(workers)" = "$(printf '%s\n' "$@")" ]; }
+gfal-ls $C/interop >/dev/null; curl -s -o /dev/null --capath $CERTS -H "Authorization: Bearer $ROBOT" $(https $C)/robot/t.bin
+check "ps shows a worker per account, running as it" workers_are "interop weed worker interop" "robot weed worker robot"
+check "...while weed itself runs as root" [ "$(ps -o user= -p $C_PID)" = root ]
+for i in $(seq 100); do [ -z "$(workers)" ] && break; sleep 0.1; done
+check "idle workers stop (-worker-idle-timeout)" workers_are
+check "...and start again when needed" gfal-ls $C/interop
 
 echo "== grid-mapfile, revocation and reloading"
 check "valid certificate with an openssl CRL" $CURL -o /dev/null https://localhost:8443/webdav/g.bin
@@ -307,7 +317,7 @@ check "CRL and certificate expiry exported" sh -c "grep -q '^weed_crl_expiry_tim
 echo
 echo "$pass passed, $fail failed"
 if [ $fail -gt 0 ]; then
-	for log in $W/weed-a.log $W/weed-b.log $(find $XRD -name xrootd.log); do
+	for log in $W/weed-a.log $W/weed-b.log $W/weed-c.log $(find $XRD -name xrootd.log); do
 		echo "--- tail $log"
 		tail -30 $log
 	done

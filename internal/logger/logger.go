@@ -39,6 +39,15 @@ func GetRequestID(ctx context.Context) string {
 	return "unknown"
 }
 
+// WithRequestID returns a context carrying an existing request ID, e.g. one assigned
+// by the process that forwarded the request
+func WithRequestID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		id = GenerateRequestID()
+	}
+	return context.WithValue(ctx, requestInfoKey, &requestInfo{id: id, username: "-"})
+}
+
 // SetUsername records the authenticated user for the access log line
 func SetUsername(ctx context.Context, username string) {
 	if info, ok := ctx.Value(requestInfoKey).(*requestInfo); ok {
@@ -82,23 +91,32 @@ func Middleware(next http.Handler) http.Handler {
 		// Create a response writer wrapper to capture status code
 		lrw := &loggingResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 
-		// Call the next handler
+		// Log the complete request-response in a single line, also when the handler
+		// panics, as a reverse proxy does to abort a response it cannot complete
+		defer func() {
+			v := recover()
+			duration := time.Since(start)
+			userAgent := r.Header.Get("User-Agent")
+			if userAgent == "" {
+				userAgent = "-"
+			}
+			aborted := ""
+			if v != nil {
+				aborted = " (aborted)"
+			}
+
+			log.Printf("[HTTP] [%s] %s %s %s %s %s -> %d%s %dB (%v) [%s]",
+				info.id, info.username, remoteAddr, r.Method, r.URL.Path, r.Proto, lrw.statusCode, aborted, lrw.bytes, duration, userAgent)
+			if !ok { // count each request once, in the outermost middleware
+				method := metrics.Method(r.Method)
+				metrics.HTTPRequests.Inc(method, strconv.Itoa(lrw.statusCode))
+				metrics.HTTPResponseBytes.Add(lrw.bytes, method)
+			}
+			if v != nil {
+				panic(v)
+			}
+		}()
 		next.ServeHTTP(lrw, r)
-
-		// Log the complete request-response in a single line
-		duration := time.Since(start)
-		userAgent := r.Header.Get("User-Agent")
-		if userAgent == "" {
-			userAgent = "-"
-		}
-
-		log.Printf("[HTTP] [%s] %s %s %s %s %s -> %d %dB (%v) [%s]",
-			info.id, info.username, remoteAddr, r.Method, r.URL.Path, r.Proto, lrw.statusCode, lrw.bytes, duration, userAgent)
-		if !ok { // count each request once, in the outermost middleware
-			method := metrics.Method(r.Method)
-			metrics.HTTPRequests.Inc(method, strconv.Itoa(lrw.statusCode))
-			metrics.HTTPResponseBytes.Add(lrw.bytes, method)
-		}
 	})
 }
 

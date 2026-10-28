@@ -2,6 +2,8 @@
 package metrics
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -64,7 +66,13 @@ func (v *Vec) value(labelValues []string) *atomic.Int64 {
 }
 
 // Add adds n to the value with the given label values
-func (v *Vec) Add(n int64, labelValues ...string) { v.value(labelValues).Add(n) }
+func (v *Vec) Add(n int64, labelValues ...string) {
+	if forwarding.Load() {
+		forwardChange(v, labelValues, n)
+		return
+	}
+	v.value(labelValues).Add(n)
+}
 
 // Inc adds one to the value with the given label values
 func (v *Vec) Inc(labelValues ...string) { v.Add(1, labelValues...) }
@@ -154,7 +162,116 @@ var (
 		"Third-party copies refused because -tpc-max-transfers were already running.")
 	Reloads = NewCounter("weed_reloads_total",
 		"Credential reloads by result (success, or partial when some file could not be read).", "result")
+	Workers = NewGauge("weed_workers",
+		"Worker processes (-unix-users), including those finishing requests after being replaced.")
+	WorkerStarts = NewCounter("weed_worker_starts_total",
+		"Worker processes started, by result (success, failure).", "result")
+	WorkerExits = NewCounter("weed_worker_exits_total",
+		"Worker processes that exited, by reason (stopped when asked to, e.g. when idle; failed otherwise).", "reason")
 )
+
+// Worker processes forward the changes to their metrics to the front process, which
+// keeps the totals: see ForwardTo and Remote
+
+// remoteMetrics are those that workers record
+var remoteMetrics = map[*Vec]bool{
+	UploadBytes: true, ChecksumMismatches: true,
+	TPCTransfers: true, TPCBytes: true, TPCActive: true,
+}
+
+// maxRemoteSeries bounds the label sets workers can add to a metric
+const maxRemoteSeries = 64
+
+type change struct {
+	Name   string   `json:"m"`
+	Labels []string `json:"l"`
+	Delta  int64    `json:"d"`
+}
+
+var (
+	forwarding atomic.Bool
+	forwardMu  sync.Mutex
+	forwardW   io.Writer
+)
+
+// ForwardTo sends every later change to a metric to w, a JSON line each, instead of
+// recording it in this process
+func ForwardTo(w io.Writer) {
+	forwardMu.Lock()
+	forwardW = w
+	forwardMu.Unlock()
+	forwarding.Store(true)
+}
+
+func forwardChange(v *Vec, labelValues []string, n int64) {
+	if len(labelValues) != len(v.labels) {
+		panic(fmt.Sprintf("metrics: %s takes %d labels, got %d", v.name, len(v.labels), len(labelValues)))
+	}
+	line, _ := json.Marshal(change{Name: v.name, Labels: labelValues, Delta: n})
+	forwardMu.Lock()
+	forwardW.Write(append(line, '\n'))
+	forwardMu.Unlock()
+}
+
+// Remote applies the changes forwarded by one worker. Workers are less trusted than
+// the front process: only the metrics they record are accepted, with a bounded
+// number of label sets.
+type Remote struct {
+	mu     sync.Mutex
+	gauges map[*Vec]map[string]int64 // net changes to gauges, undone by Close
+}
+
+// Apply records one forwarded change
+func (r *Remote) Apply(line []byte) error {
+	var c change
+	if err := json.Unmarshal(line, &c); err != nil {
+		return fmt.Errorf("invalid metric change: %w", err)
+	}
+	registryMu.Lock()
+	var v *Vec
+	for _, candidate := range registry {
+		if candidate.name == c.Name && remoteMetrics[candidate] {
+			v = candidate
+		}
+	}
+	registryMu.Unlock()
+	if v == nil || len(c.Labels) != len(v.labels) {
+		return fmt.Errorf("unexpected metric change %s%v", c.Name, c.Labels)
+	}
+	key := strings.Join(c.Labels, "\x00")
+	v.mu.RLock()
+	_, known := v.values[key]
+	full := len(v.values) >= maxRemoteSeries
+	v.mu.RUnlock()
+	if !known && full {
+		return errors.New("too many label sets for " + c.Name)
+	}
+	v.value(c.Labels).Add(c.Delta)
+	if v.kind == "gauge" {
+		r.mu.Lock()
+		if r.gauges == nil {
+			r.gauges = make(map[*Vec]map[string]int64)
+		}
+		if r.gauges[v] == nil {
+			r.gauges[v] = make(map[string]int64)
+		}
+		r.gauges[v][key] += c.Delta
+		r.mu.Unlock()
+	}
+	return nil
+}
+
+// Close undoes the worker's changes to gauges, which describe what it was doing
+func (r *Remote) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for v, changes := range r.gauges {
+		for key, d := range changes {
+			v.value(strings.Split(key, "\x00")).Add(-d)
+		}
+	}
+	r.gauges = nil
+}
 
 // davMethods are the methods counted by name; others are counted as "other" so
 // that clients cannot create unbounded label values

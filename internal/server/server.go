@@ -20,11 +20,11 @@ import (
 
 	"github.com/labkode/weed/internal/auth"
 	"github.com/labkode/weed/internal/config"
-	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/handlers"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/tpc"
+	"github.com/labkode/weed/internal/worker"
 	"github.com/labkode/weed/internal/x509utils"
 )
 
@@ -36,7 +36,9 @@ type Server struct {
 	Config    *config.Config
 	AuthStore *auth.AuthStore
 	Handler   *handlers.WebDAVHandler
-	server    *http.Server
+	// Workers serve the files of each Unix account with -unix-users
+	Workers *worker.Pool
+	server  *http.Server
 
 	reloadMu sync.Mutex
 	cert     atomic.Pointer[tls.Certificate] // TLS server certificate, replaced on reload
@@ -62,11 +64,7 @@ func (s *Server) Initialize() error {
 	s.AuthStore.X509Enabled = s.Config.X509Auth
 	s.AuthStore.TokenEnabled = s.Config.TokenIssuers != ""
 	if s.Config.UnixUsers {
-		if err := fsuser.Check(); err != nil {
-			return fmt.Errorf("-unix-users: %w", err)
-		}
 		s.AuthStore.UnixUsers = true
-		log.Printf("[UNIX-USERS] Files are accessed as the Unix account of each identity")
 	} else if os.Geteuid() == 0 {
 		log.Printf("[UNIX-USERS] WARNING: running as root without -unix-users: every client has root's access to the files")
 	}
@@ -105,26 +103,38 @@ func (s *Server) Initialize() error {
 
 	// Initialize third-party copy if enabled
 	if s.Config.TPC {
-		tpcCfg := tpc.Config{
-			MarkerInterval: s.Config.TPCMarkerInterval,
-			StallTimeout:   s.Config.TPCStallTimeout,
-			MaxTransfers:   s.Config.TPCMaxTransfers,
-			AllowHTTP:      s.Config.TPCAllowHTTP,
-			AllowLocal:     s.Config.TPCAllowLocal,
-			AllowPrivate:   s.Config.TPCAllowPrivate,
+		if s.Handler.TPC, err = newTPCEngine(s.Config); err != nil {
+			return err
 		}
-		if s.Config.TPCCAPath != "" {
-			pool, err := x509utils.SystemPoolWith(s.Config.TPCCAPath)
-			if err != nil {
-				return fmt.Errorf("failed to load TPC CA certificates: %w", err)
-			}
-			tpcCfg.RootCAs = pool
-		}
-		s.Handler.TPC = tpc.New(tpcCfg)
 		log.Printf("[TPC] Third-party copy enabled (max %d concurrent transfers)", s.Config.TPCMaxTransfers)
 	}
 
+	if s.Config.UnixUsers {
+		if err := s.startWorkers(); err != nil {
+			return fmt.Errorf("-unix-users: %w", err)
+		}
+	}
 	return nil
+}
+
+// newTPCEngine creates the engine that runs third-party copies
+func newTPCEngine(cfg *config.Config) (*tpc.Engine, error) {
+	tpcCfg := tpc.Config{
+		MarkerInterval: cfg.TPCMarkerInterval,
+		StallTimeout:   cfg.TPCStallTimeout,
+		MaxTransfers:   cfg.TPCMaxTransfers,
+		AllowHTTP:      cfg.TPCAllowHTTP,
+		AllowLocal:     cfg.TPCAllowLocal,
+		AllowPrivate:   cfg.TPCAllowPrivate,
+	}
+	if cfg.TPCCAPath != "" {
+		pool, err := x509utils.SystemPoolWith(cfg.TPCCAPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load TPC CA certificates: %w", err)
+		}
+		tpcCfg.RootCAs = pool
+	}
+	return tpc.New(tpcCfg), nil
 }
 
 // loadCredentials reads the credential files of the enabled authentication methods.
@@ -242,6 +252,9 @@ func (s *Server) Reload() {
 		s.AuthStore.SetCredentials(creds)
 	}
 	s.AuthStore.ForgetUnixUsers()
+	if s.Workers != nil {
+		s.Workers.Reload()
+	}
 	if s.Config.TLS && s.cert.Load() != nil {
 		if err := s.loadCertificate(); err != nil {
 			log.Printf("[RELOAD] Cannot read TLS certificate, keeping the previous one: %v", err)
@@ -353,7 +366,7 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 	mux.HandleFunc("/", s.Handler.IndexHandler)
 
 	// WebDAV content requires authentication - use unified auth middleware
-	mux.Handle("/webdav/", s.applyAuthMiddleware(s.Handler))
+	mux.Handle("/webdav/", s.applyAuthMiddleware(s.webdavHandler()))
 
 	// Authentication trigger routes - only create routes for enabled methods
 	if s.Config.BasicAuth {
@@ -533,7 +546,17 @@ func (s *Server) Run(ctx context.Context) error {
 		cancelBase()
 		s.server.Close()
 	}
+	s.Close()
 	return nil
+}
+
+// Close stops the worker processes, if any
+func (s *Server) Close() {
+	if s.Workers != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.Workers.Close(ctx)
+	}
 }
 
 // LogStartupInfo logs the server startup information

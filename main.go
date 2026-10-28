@@ -18,6 +18,13 @@ func main() {
 		utils.HandleUtilsCommand(os.Args)
 		return
 	}
+	// Worker processes, started by weed -unix-users
+	if len(os.Args) > 1 && os.Args[1] == "worker" {
+		if err := server.RunWorker(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	// Parse configuration
 	cfg := config.ParseFlags()

@@ -1,10 +1,6 @@
-// Package fsuser runs filesystem operations as a local Unix account.
-//
-// Run locks the calling goroutine to its OS thread and switches that thread's
-// filesystem UID, GID and supplementary groups (setfsuid, setfsgid and setgroups act
-// on a single thread on Linux). The kernel then checks permissions, ACLs included, as
-// for the account, and the files and directories created belong to it. Other threads
-// keep the process's identity throughout.
+// Package fsuser describes the local Unix accounts that identities are mapped to with
+// -unix-users, whose files are then accessed by a worker process running as the
+// account (see internal/worker).
 package fsuser
 
 import (
