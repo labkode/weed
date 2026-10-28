@@ -50,7 +50,7 @@ type AuthInfo struct {
 	// Directories are URL paths that the request may only use as directories: a
 	// token scope whose path ends in "/" names a directory, not a file of that name
 	Directories []string `json:"-"`
-	// Unix is the local account the request accesses files as (with UnixUsers)
+	// Unix is the local account the request accesses files as
 	Unix *fsuser.User `json:"-"`
 }
 
@@ -108,7 +108,8 @@ type AuthStore struct {
 	Anonymous bool
 
 	// UnixUsers requires every identity to be a local account (see unix.go), found
-	// with LookupUnixUser (default fsuser.Lookup)
+	// with LookupUnixUser (default fsuser.Lookup); anonymous requests are nobody's.
+	// weed always sets it; without it, tests serve requests as the process's user.
 	UnixUsers      bool
 	LookupUnixUser func(name string) (*fsuser.User, error)
 	unixMu         sync.Mutex
@@ -549,9 +550,18 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 
 		// Requests without credentials may be anonymous (only on loopback, see config)
 		if as.Anonymous && !slices.ContainsFunc(status, func(s string) bool { return s != "skip" }) {
+			info := &AuthInfo{Username: logger.Nobody, Method: "anonymous"}
+			if as.UnixUsers {
+				var err error
+				if info.Unix, err = as.unixUser(logger.Nobody); err != nil {
+					slog.ErrorContext(ctx, "cannot serve anonymous requests", "error", err)
+					http.Error(w, "Forbidden", http.StatusForbidden)
+					return
+				}
+			}
 			slog.DebugContext(ctx, "anonymous request", flow())
 			metrics.Auth.Inc("anonymous", "success")
-			next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(ctx, &AuthInfo{Username: logger.Nobody, Method: "anonymous"})))
+			next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(ctx, info)))
 			return
 		}
 

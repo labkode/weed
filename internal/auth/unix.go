@@ -7,9 +7,9 @@ import (
 	"github.com/labkode/weed/internal/fsuser"
 )
 
-// With UnixUsers, every identity must be a local account, as which the request then
-// accesses files (see fsuser); accounts are looked up again after unixUserCacheTTL,
-// so changes to them (new groups, say) apply within that time
+// Every identity must be a local account, as which the request then accesses files
+// (see fsuser); accounts are looked up again after unixUserCacheTTL, so changes to
+// them (new groups, say) apply within that time
 
 const (
 	unixUserCacheTTL   = time.Minute

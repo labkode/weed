@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/labkode/weed/internal/auth"
 	"github.com/labkode/weed/internal/config"
@@ -15,13 +17,18 @@ import (
 	"github.com/labkode/weed/internal/x509utils"
 )
 
-// With unix_users, WebDAV requests are served by a worker process per Unix account
-// (see internal/worker): this process authenticates them and forwards them
+// WebDAV requests are served by a worker process per Unix account (see
+// internal/worker): this process authenticates them and forwards them
 
 // startWorkers prepares the workers, and starts one to check that they can start
 func (s *Server) startWorkers() error {
+	// Workers run in /, not in this process's working directory
+	dir, err := filepath.Abs(s.Config.Directory)
+	if err != nil {
+		return err
+	}
 	opts := worker.Options{
-		Config:       workerConfig(s.Config),
+		Config:       workerConfig(s.Config, dir),
 		IdleTimeout:  s.Config.WorkerIdleTimeout,
 		MaxWorkers:   s.Config.MaxWorkers,
 		Cgroups:      s.Config.WorkerCgroups,
@@ -39,6 +46,9 @@ func (s *Server) startWorkers() error {
 	}
 	if err := pool.Check(); err != nil {
 		pool.Close(context.Background())
+		if os.Geteuid() != 0 {
+			err = fmt.Errorf("%w (weed must run as root, or with the CAP_SETUID and CAP_SETGID capabilities)", err)
+		}
 		return err
 	}
 	s.Workers = pool
@@ -47,13 +57,12 @@ func (s *Server) startWorkers() error {
 	return nil
 }
 
-// workerConfig is the configuration that workers serve with: what serving files
+// workerConfig is the configuration that workers serve dir with: what serving files
 // needs, and no credentials
-func workerConfig(c *config.Config) config.Config {
+func workerConfig(c *config.Config, dir string) config.Config {
 	return config.Config{
-		Directory:         c.Directory,
+		Directory:         dir,
 		LogLevel:          c.LogLevel,
-		UnixUsers:         true,
 		TPC:               c.TPC,
 		TPCCAPath:         c.TPCCAPath,
 		TPCAllowHTTP:      c.TPCAllowHTTP,
@@ -99,8 +108,8 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 }
 
 // RunWorker is the main function of worker processes ("weed worker <account>"),
-// which weed starts with unix_users: it serves the requests forwarded to it, as the
-// account, until the front process stops it
+// which weed starts: it serves the requests forwarded to it, as the account, until
+// the front process stops it
 func RunWorker() error {
 	// JSON records, which the front process logs as the worker's
 	level := new(slog.LevelVar)

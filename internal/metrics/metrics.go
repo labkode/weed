@@ -172,7 +172,7 @@ var (
 	Reloads = NewCounter("weed_reloads_total",
 		"Credential reloads by result (success, or partial when some file could not be read).", "result")
 	Workers = NewGauge("weed_workers",
-		"Worker processes (unix_users), including those finishing requests after being replaced.")
+		"Worker processes, including those finishing requests after being replaced.")
 	WorkerStarts = NewCounter("weed_worker_starts_total",
 		"Worker processes started, by result (success, failure).", "result")
 	WorkerExits = NewCounter("weed_worker_exits_total",

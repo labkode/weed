@@ -16,7 +16,7 @@ type Config struct {
 	Port      int
 	Address   string
 	Directory string
-	// Anonymous serves requests without credentials, as "nobody" (loopback only)
+	// Anonymous serves requests without credentials, as the account nobody (loopback only)
 	Anonymous   bool
 	TLS         bool
 	TLSCert     string
@@ -26,9 +26,6 @@ type Config struct {
 	CRLPath     string
 	CRLMode     string
 	GridmapFile string
-	// UnixUsers maps every identity to a local account, whose files a worker process
-	// running as the account accesses
-	UnixUsers bool
 	// WorkerIdleTimeout stops a worker that has served no request for this long
 	WorkerIdleTimeout time.Duration
 	// MaxWorkers bounds the number of workers taking requests
@@ -125,16 +122,8 @@ func (c *Config) Validate() error {
 	if c.ReloadInterval < 0 {
 		return errors.New("server.reload_interval cannot be negative")
 	}
-	if c.Anonymous {
-		if !loopback(c.Address) {
-			return errors.New(`server.anonymous is only allowed on a loopback address (server.address = "127.0.0.1")`)
-		}
-		if c.UnixUsers {
-			return errAnonymousUnixUsers
-		}
-	}
-	if (c.WorkerCgroups || len(c.WorkerCgroupLimits) > 0) && !c.UnixUsers {
-		return errors.New("unix_users.cgroups and unix_users.cgroup_limits need unix_users.enabled")
+	if c.Anonymous && !loopback(c.Address) {
+		return errors.New(`server.anonymous is only allowed on a loopback address (server.address = "127.0.0.1")`)
 	}
 	for _, l := range c.WorkerCgroupLimits {
 		if file, _, ok := strings.Cut(l, "="); !ok || !cgroupLimitFile.MatchString(file) || strings.HasPrefix(file, "cgroup.") {

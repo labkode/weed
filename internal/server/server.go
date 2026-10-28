@@ -37,7 +37,7 @@ type Server struct {
 	Config    *config.Config
 	AuthStore *auth.AuthStore
 	Handler   *handlers.WebDAVHandler
-	// Workers serve the files of each Unix account with unix_users
+	// Workers serve the files of each Unix account
 	Workers *worker.Pool
 	// MonitorOnMainPort also serves /metrics and /status on the main port, as weed
 	// does without a configuration file (see config.QuickStart): its clients are local,
@@ -50,6 +50,10 @@ type Server struct {
 
 	run      running // what runs, compared to what a restart would run (see status.go)
 	checking bool    // weed check: only find out whether weed would start
+	// inProcess serves files in this process, as its user, without Unix accounts or
+	// workers: only for tests of request handling, which is what workers run. weed
+	// always accesses files as the Unix account of each request.
+	inProcess bool
 }
 
 // New creates a new server instance
@@ -73,11 +77,7 @@ func (s *Server) Initialize() error {
 	s.AuthStore.X509Enabled = s.Config.X509Auth
 	s.AuthStore.Anonymous = s.Config.Anonymous
 	s.AuthStore.TokenEnabled = s.Config.TokenIssuers != ""
-	if s.Config.UnixUsers {
-		s.AuthStore.UnixUsers = true
-	} else if os.Geteuid() == 0 {
-		slog.Warn("running as root without unix_users: every client has root's access to the files")
-	}
+	s.AuthStore.UnixUsers = !s.inProcess
 	if s.Config.TokenCAPath != "" {
 		pool, err := x509utils.SystemPoolWith(s.Config.TokenCAPath)
 		if err != nil {
@@ -119,9 +119,9 @@ func (s *Server) Initialize() error {
 		}
 	}
 
-	if s.Config.UnixUsers {
+	if !s.inProcess {
 		if err := s.startWorkers(); err != nil {
-			return fmt.Errorf("unix_users: %w", err)
+			return fmt.Errorf("cannot start the worker processes, which access files as Unix accounts: %w", err)
 		}
 	}
 	return nil
@@ -592,7 +592,7 @@ func (s *Server) LogStartupInfo() {
 	slog.Info("starting weed", "version", v.Version, "commit", v.Revision, "commit_time", v.Time, "modified", v.Modified,
 		"build", v.Build, "go", v.Go, "platform", v.Platform, "pid", os.Getpid(), "executable", executablePath,
 		"dir", c.Directory, "tls", c.TLS, "authentication", strings.Join(methods, ","), "tpc", c.TPC,
-		"unix_users", c.UnixUsers, "reload_interval", c.ReloadInterval)
+		"reload_interval", c.ReloadInterval)
 	s.run.mu.Lock()
 	src, loaded := s.run.source, s.run.config
 	s.run.mu.Unlock()

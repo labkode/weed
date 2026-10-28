@@ -377,7 +377,7 @@ func TestOIDCLogin(t *testing.T) {
 	}
 
 	// weed does not start with a provider whose tokens it would not accept
-	s := New(&config.Config{Directory: t.TempDir(), TokenIssuers: testutil.NewIssuer(t).WriteIssuers(tokenAudience, "/"),
+	s := newServer(&config.Config{Directory: t.TempDir(), TokenIssuers: testutil.NewIssuer(t).WriteIssuers(tokenAudience, "/"),
 		OIDCAuth: true, OIDCIssuer: iss.URL, OIDCClientID: "weed", OIDCClientSecret: "secret", OIDCRedirectURL: redirectURL})
 	t.Cleanup(s.Close)
 	if err := s.Initialize(); err == nil || !strings.Contains(err.Error(), "not in tokens.issuers") {

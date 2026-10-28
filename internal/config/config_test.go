@@ -72,7 +72,6 @@ enabled = true
 stall_timeout = "90s"
 
 [unix_users]
-enabled = true
 cgroup_limits = ["memory.max=8G", "pids.max=1000"]
 `, 0644))
 	if err != nil {
@@ -80,7 +79,7 @@ cgroup_limits = ["memory.max=8G", "pids.max=1000"]
 	}
 	want := Default()
 	want.Port, want.Directory, want.TLS, want.TPC, want.TPCStallTimeout = 8443, "/data", true, true, 90*time.Second
-	want.UnixUsers, want.WorkerCgroupLimits = true, []string{"memory.max=8G", "pids.max=1000"}
+	want.WorkerCgroupLimits = []string{"memory.max=8G", "pids.max=1000"}
 	if !reflect.DeepEqual(c, want) {
 		t.Errorf("got\n%+v\nwant\n%+v", c, want)
 	}
@@ -222,18 +221,14 @@ func TestValidate(t *testing.T) {
 		"anonymous everywhere":   {func(c *Config) { c.Anonymous = true }, "loopback"},
 		"anonymous on 0.0.0.0":   {func(c *Config) { c.Anonymous, c.Address = true, "0.0.0.0" }, "loopback"},
 		"anonymous on a host":    {func(c *Config) { c.Anonymous, c.Address = true, "weed.example.org" }, "loopback"},
-		"anonymous Unix users": {func(c *Config) {
-			c.Anonymous, c.Address, c.UnixUsers = true, "127.0.0.1", true
-		}, "unix_users"},
-		"x509 without tls": {func(c *Config) { c.X509Auth, c.CACert = true, "ca.pem" }, "x509 needs tls"},
-		"crl mode":         {func(c *Config) { c.CRLMode = "sometimes" }, "x509.crl_mode"},
-		"cgroups":          {func(c *Config) { c.WorkerCgroups = true }, "unix_users.enabled"},
+		"x509 without tls":       {func(c *Config) { c.X509Auth, c.CACert = true, "ca.pem" }, "x509 needs tls"},
+		"crl mode":               {func(c *Config) { c.CRLMode = "sometimes" }, "x509.crl_mode"},
 		"cgroup limits": {func(c *Config) {
-			c.UnixUsers, c.WorkerCgroupLimits = true, []string{"memory.max=8G", "cpu.weight=100", "io.max=8:0 rbps=1048576"}
+			c.WorkerCgroupLimits = []string{"memory.max=8G", "cpu.weight=100", "io.max=8:0 rbps=1048576"}
 		}, ""},
-		"cgroup limit without =":       {func(c *Config) { c.UnixUsers, c.WorkerCgroupLimits = true, []string{"memory.max"} }, "cgroup_limits"},
-		"cgroup limit on cgroup.procs": {func(c *Config) { c.UnixUsers, c.WorkerCgroupLimits = true, []string{"cgroup.procs=1"} }, "cgroup_limits"},
-		"cgroup limit outside":         {func(c *Config) { c.UnixUsers, c.WorkerCgroupLimits = true, []string{"../x.max=1"} }, "cgroup_limits"},
+		"cgroup limit without =":       {func(c *Config) { c.WorkerCgroupLimits = []string{"memory.max"} }, "cgroup_limits"},
+		"cgroup limit on cgroup.procs": {func(c *Config) { c.WorkerCgroupLimits = []string{"cgroup.procs=1"} }, "cgroup_limits"},
+		"cgroup limit outside":         {func(c *Config) { c.WorkerCgroupLimits = []string{"../x.max=1"} }, "cgroup_limits"},
 		"short macaroon key":           {func(c *Config) { c.MacaroonAuth, c.MacaroonSecretKey = true, "short" }, "macaroons.secret_key"},
 		"incomplete OIDC":              {func(c *Config) { c.OIDCAuth, c.OIDCIssuer = true, "https://issuer" }, "oidc needs"},
 		"OIDC without tokens": {func(c *Config) {

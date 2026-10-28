@@ -6,14 +6,17 @@ in https://github.com/labkode/wlcg-tpc. Clients authenticate with X.509 certific
 and proxies, WLCG/SciTokens bearer tokens (which browsers can get from an OIDC login
 page), macaroons or passwords.
 
-Runs on Linux, macOS and Windows (checksum caching in extended attributes on Linux and
-macOS only).
+Every request accesses files as the Unix account that its credentials map to, from a
+worker process running as that account (see Unix accounts), so weed serves on Linux
+only, and runs as root. The other systems only get the helpers (weed utils, config,
+check, version).
 
-    go build && ./weed
+    go build && sudo ./weed
 
 serves the current directory at http://127.0.0.1:9000/webdav/ to local clients,
-without authentication, with its metrics and status at http://127.0.0.1:9000/metrics
-and /status. Anything else is set in a configuration file:
+without authentication, as the account nobody (so they can read and write what nobody
+can), with its metrics and status at http://127.0.0.1:9000/metrics and /status.
+Anything else is set in a configuration file:
 
     ./weed config >weed.toml     every option, its default and what it does
     ./weed check -config weed.toml   would weed start with it? (see What runs)
@@ -59,10 +62,10 @@ ignored. Durations are strings such as "90s", "10m" or "24h". weed refuses to re
 file that holds secrets (macaroons.secret_key, oidc.client_secret) if every user can
 read it. Changes to the file take effect on restart.
 
-server.anonymous serves requests without credentials, read-write, as the user
-"nobody". It is the default without a configuration file, and weed only allows it
-when server.address is a loopback address, so only local clients (any local user)
-reach it. Credentials that an enabled method rejects still get 401.
+server.anonymous serves requests without credentials as the Unix account nobody. It
+is the default without a configuration file, and weed only allows it when
+server.address is a loopback address, so only local clients (any local user) reach
+it. Credentials that an enabled method rejects still get 401.
 
 
 Storage guarantees
@@ -157,9 +160,8 @@ Authentication
 
 Methods are tried in this order; the first one that applies decides. A request that
 presents bad credentials gets 401, or 403 if the credentials are valid but not allowed
-to do what was asked. Every identity has a username; with unix_users it must be a
-local account, which the request then accesses files as (see Unix accounts below).
-Without it, all authenticated users have weed's own access to the files.
+to do what was asked. Every identity has a username, which must be a local account,
+as which the request then accesses files (see Unix accounts below).
 
 1. X.509 client certificates ([tls] and [x509]: enabled, ca, gridmap)
    x509.ca is a PEM file or a directory such as /etc/grid-security/certificates.
@@ -313,12 +315,12 @@ Usernames come from: the grid-mapfile (X.509), the htpasswd or app tokens file
 (Basic), the issuer's users rules or sub (tokens), and the minting user (macaroons).
 
 
-Unix accounts (unix_users)
+Unix accounts
 
-With unix_users.enabled (Linux only), every identity must be the name of a local
-account, looked up with the system's user database (/etc/passwd, or LDAP and SSSD
-through NSS when weed is built with cgo); an identity without one, or that names
-root, gets 403. weed itself then never touches the exported files: it terminates TLS,
+Every identity must be the name of a local account, looked up with the system's user
+database (/etc/passwd, or LDAP and SSSD through NSS when weed is built with cgo); an
+identity without one, or that names root, gets 403, and anonymous requests are the
+account nobody's. weed itself never touches the exported files: it terminates TLS,
 authenticates each request and hands it to the worker process of the account, which
 runs as the account (UID, GID and supplementary groups) with no capabilities and
 no_new_privs. The kernel checks permissions and ACLs as for the user, new files and
@@ -358,8 +360,9 @@ so they trust the identity weed states in request headers (headers of the same n
 sent by clients are dropped). They report their metrics back to weed, which serves
 them; tpc.max_transfers bounds the copies of all accounts together.
 
-weed must run as root, or with the CAP_SETUID and CAP_SETGID capabilities, for
-example in a systemd unit:
+weed runs as root, which it needs to start workers as other accounts, and which the
+systemd unit in What runs does. Otherwise, it needs the CAP_SETUID and CAP_SETGID
+capabilities, or it does not start ("weed must run as root, ..."):
 
     User=weed
     AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE
@@ -392,11 +395,7 @@ available. systemd-cgtop and systemd-cgls then show what each account uses, and
 unix_users.cgroup_limits writes limits into the cgroup of every worker:
 
     [unix_users]
-    enabled = true
     cgroup_limits = ["memory.max=8G", "pids.max=1000", "cpu.weight=100"]
-
-Without unix_users, weed warns at startup if it runs as root: every client would
-have root's access to the files.
 
 
 Reloading credentials
@@ -404,7 +403,7 @@ Reloading credentials
 On SIGHUP, and every server.reload_interval (default 1h, "0s" disables), weed
 re-reads the htpasswd and app tokens files, the grid-mapfile, the CAs and CRLs, the
 token issuers, the TLS certificate, and the CAs for TPC endpoints (also in the worker
-processes of unix_users) and token issuers, and looks Unix accounts up again. A file
+processes) and token issuers, and looks Unix accounts up again. A file
 that cannot be read keeps its previous contents, so a file being rewritten neither
 locks everybody out nor lets anybody in. New connections and requests use the new
 data. The configuration file itself is only read at startup: weed says when it has
@@ -430,11 +429,11 @@ the least severe level logged (default "info"):
 (one line in the log). Every request to the main port gets one, and is counted in
 weed_http_requests_total, whatever it is for: /webdav/, /healthz, the index page,
 unknown paths. Requests to server.metrics_address (Prometheus scrapes) get neither.
-user is the user that the request's credentials map to (the grid-mapfile's, an
-issuer's user rule's, the one a macaroon was minted for, the htpasswd entry; with
-unix_users, the account), also when they do not allow the request (403). It is nobody
-when no credentials map to anyone: anonymous requests, invalid or expired
-credentials, and routes that take none, such as /healthz.
+user is the Unix account that the request's credentials map to (the grid-mapfile's,
+an issuer's user rule's, the one a macaroon was minted for, the htpasswd entry), also
+when they do not allow the request (403). It is nobody when no credentials map to
+anyone: anonymous requests, invalid or expired credentials, and routes that take
+none, such as /healthz.
 Records logged while serving a request carry its request_id, also when a worker
 process logs them: workers send their records to weed, which logs them with
 worker.user and worker.pid. Values are quoted or escaped, so clients cannot forge
@@ -515,7 +514,7 @@ Each is logged once, and "restart no longer pending" once the change is undone.
 
 weed check -config weed.toml does what starting does, without serving: it reads the
 configuration and every file it names (credential files, the certificate and its
-key, CAs, CRLs, token issuers), contacts the OIDC provider, and with unix_users starts
+key, CAs, CRLs, token issuers), contacts the OIDC provider, and starts
 a worker as nobody (without setting cgroups up, which would change the cgroup it runs
 in). It prints the warnings weed would log, and the SHA-256 of the file; if weed
 would not start, it says why and exits with 1. It does not try to listen on the
@@ -573,7 +572,7 @@ across servers that should run the same build.
     }
 
 sha256sum /etc/weed/weed.toml tells whether the file is still the one weed runs with.
-workers lists the worker processes of unix_users; a retired one finishes its requests
+workers lists the worker processes; a retired one finishes its requests
 and takes no new ones (its account's groups changed).
 
 
@@ -590,9 +589,10 @@ itself hashes at ~650); GET ~3000; the disk writes ~3800. Measure on your hardwa
 
 Testing
 
-    make test          unit and end-to-end tests (go test -race ./...)
-    make test-root     the same as root, adding the tests of unix_users worker
-                       processes (Linux, uses sudo)
+    make test          unit and end-to-end tests (go test -race ./...); the tests of
+                       request handling serve files in the test process, as its user
+    make test-root     the same as root, adding the tests of worker processes and
+                       Unix accounts (Linux, uses sudo)
     make test-linux    the same as root in a Linux container, e.g. from macOS (Docker)
     make test-cgroups  the cgroups of worker processes, in a privileged container
     make interop       interoperability tests (test/interop/interop.sh, Docker)
@@ -615,8 +615,8 @@ Not implemented
   macaroons in TransferHeaderAuthorization
 * Authorization by token groups alone: a token needs storage scopes even when its
   groups choose its Unix account
-* Per-user access without unix_users, or on systems other than Linux
-* WebDAV locks across accounts with unix_users: each worker keeps its own
+* Serving on systems other than Linux
+* WebDAV locks across accounts: each worker keeps its own
 
 
 Known deviations from RFC 4918

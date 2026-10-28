@@ -89,7 +89,7 @@ func TestMissingRequiredCRLIsFatal(t *testing.T) {
 	os.WriteFile(gridmap, nil, 0600)
 	cfg := &config.Config{Directory: t.TempDir(), TLS: true, X509Auth: true, CACert: writePEM(t, ca.Cert.Raw),
 		GridmapFile: gridmap, CRLPath: t.TempDir(), CRLMode: config.CRLRequire}
-	if err := New(cfg).Initialize(); err == nil || !strings.Contains(err.Error(), "CRL") {
+	if err := newServer(cfg).Initialize(); err == nil || !strings.Contains(err.Error(), "CRL") {
 		t.Fatalf("startup without CRLs: %v", err)
 	}
 }
@@ -99,7 +99,7 @@ func TestMissingGridmapIsFatal(t *testing.T) {
 	ca := testutil.NewCA(t, testutil.Name(t, "CN=Grid CA"))
 	cfg := &config.Config{Directory: t.TempDir(), TLS: true, X509Auth: true, CACert: writePEM(t, ca.Cert.Raw),
 		GridmapFile: filepath.Join(t.TempDir(), "grid-mapfile")}
-	if err := New(cfg).Initialize(); err == nil || !strings.Contains(err.Error(), "grid-mapfile") {
+	if err := newServer(cfg).Initialize(); err == nil || !strings.Contains(err.Error(), "grid-mapfile") {
 		t.Fatalf("startup without a grid-mapfile: %v", err)
 	}
 }
@@ -120,7 +120,7 @@ func TestReloadTLSCertificate(t *testing.T) {
 	first := testutil.NewUser(t, ca, testutil.Name(t, "CN=weed.example"), time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 	writeKeyPair(t, first, certFile, keyFile)
 
-	s := New(&config.Config{Directory: dir, TLS: true, TLSCert: certFile, TLSKey: keyFile})
+	s := newServer(&config.Config{Directory: dir, TLS: true, TLSCert: certFile, TLSKey: keyFile})
 	if err := s.Initialize(); err != nil {
 		t.Fatal(err)
 	}

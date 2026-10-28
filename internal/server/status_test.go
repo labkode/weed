@@ -42,7 +42,7 @@ func fromFile(t *testing.T, content string) (*Server, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := New(cfg)
+	s := newServer(cfg)
 	s.SetSource(src)
 	if err := s.Initialize(); err != nil {
 		t.Fatal(err)
@@ -296,7 +296,7 @@ func TestRunNotifiesSystemd(t *testing.T) {
 	}
 	defer busy.Close()
 	port := busy.Addr().(*net.TCPAddr).Port
-	s := New(&config.Config{Directory: t.TempDir(), Address: "127.0.0.1", Port: port, Anonymous: true})
+	s := newServer(&config.Config{Directory: t.TempDir(), Address: "127.0.0.1", Port: port, Anonymous: true})
 	if err := s.Initialize(); err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestRunNotifiesSystemd(t *testing.T) {
 		t.Fatalf("notified %d bytes", n)
 	}
 
-	s = New(&config.Config{Directory: t.TempDir(), Address: "127.0.0.1", Anonymous: true})
+	s = newServer(&config.Config{Directory: t.TempDir(), Address: "127.0.0.1", Anonymous: true})
 	if err := s.Initialize(); err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestQuickStartMonitoring(t *testing.T) {
 		if err := cfg.Validate(); err != nil {
 			t.Fatal(err)
 		}
-		s := New(cfg)
+		s := newServer(cfg)
 		s.MonitorOnMainPort = cfg.Anonymous // main sets it for QuickStart, which is anonymous
 		if err := s.Initialize(); err != nil {
 			t.Fatal(err)

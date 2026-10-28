@@ -25,7 +25,7 @@ func main() {
 		utils.HandleUtilsCommand(os.Args)
 		return
 	}
-	// Worker processes, started by weed with unix_users enabled
+	// Worker processes, which weed starts to access files as Unix accounts
 	if len(os.Args) > 1 && os.Args[1] == "worker" {
 		if err := server.RunWorker(); err != nil {
 			logger.Fatal("worker failed", err)

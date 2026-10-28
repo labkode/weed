@@ -56,10 +56,9 @@ func newUnixNode(t *testing.T, mod func(cfg *config.Config)) *unixNode {
 		"carol": {Name: "carol", UID: 6003, GID: 6003, Groups: []int{6003, 6100}},
 	}}
 	issuers := n.iss.WriteIssuers(tokenAudience, "/")
-	n.node = newNode(t, func(cfg *config.Config, _ string) {
+	n.node = newWorkerNode(t, func(cfg *config.Config, _ string) {
 		cfg.TokenIssuers = issuers
 		cfg.TokenCAPath = n.iss.CAFile
-		cfg.UnixUsers = true
 		if mod != nil {
 			mod(cfg)
 		}
@@ -603,7 +602,7 @@ func TestWorkerCgroups(t *testing.T) {
 	// weed check leaves the cgroups alone: controllers enabled in weed's cgroup would
 	// keep systemd from starting weed in it after ExecStartPre=weed check
 	cfg := config.Default()
-	cfg.Directory, cfg.UnixUsers, cfg.WorkerCgroupLimits = t.TempDir(), true, []string{"pids.max=64"}
+	cfg.Directory, cfg.WorkerCgroupLimits = t.TempDir(), []string{"pids.max=64"}
 	if err := New(cfg).Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
@@ -695,7 +694,7 @@ func TestWorkersOfUnprivilegedFront(t *testing.T) {
 	if status := procStatus(os.Getpid()); status["Uid"] != "6009\t6009\t6009\t6009" || status["CapAmb"] != "00000000000000c0" {
 		t.Fatalf("not running as intended: uid %q, ambient capabilities %q", status["Uid"], status["CapAmb"])
 	}
-	n := newNode(t, func(cfg *config.Config, _ string) { cfg.UnixUsers = true })
+	n := newWorkerNode(t, nil)
 	n.srv.AuthStore.LookupUnixUser = func(name string) (*fsuser.User, error) {
 		return &fsuser.User{Name: "alice", UID: 6001, GID: 6001, Groups: []int{6001}}, nil
 	}
@@ -760,7 +759,7 @@ func BenchmarkWorkers(b *testing.B) {
 			if os.Geteuid() != 0 {
 				b.Skip("needs root")
 			}
-			n = newNode(b, func(cfg *config.Config, _ string) { cfg.UnixUsers = true })
+			n = newWorkerNode(b, nil)
 			n.srv.AuthStore.LookupUnixUser = func(string) (*fsuser.User, error) {
 				return &fsuser.User{Name: "alice", UID: 6001, GID: 6001, Groups: []int{6001}}, nil
 			}
@@ -805,5 +804,52 @@ func TestUnusableAccountLogged(t *testing.T) {
 	}
 	if records := grepLines(log.String(), "msg=request "); !strings.Contains(records, " user=dave ") {
 		t.Errorf("logged as:\n%s", records)
+	}
+}
+
+// Anonymous requests access files as the Unix account nobody
+func TestAnonymousIsNobody(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root (make test-root)")
+	}
+	nobody, err := fsuser.Lookup("nobody")
+	if err != nil {
+		t.Skip(err)
+	}
+	n := newWorkerNode(t, func(cfg *config.Config, _ string) { cfg.Anonymous, cfg.Address = true, "127.0.0.1" })
+	for p := n.dir; p != os.TempDir() && p != "/"; p = filepath.Dir(p) {
+		os.Chmod(p, 0755)
+	}
+	os.Mkdir(filepath.Join(n.dir, "open"), 0777)
+	os.Chmod(filepath.Join(n.dir, "open"), 0777)
+	anonymous := []string{"Authorization", "none"}
+	if code := n.status("PUT", "/open/f", "data", anonymous...); code != 201 {
+		t.Fatalf("anonymous PUT: %d", code)
+	}
+	fi, err := os.Stat(filepath.Join(n.dir, "open", "f"))
+	if err != nil || fi.Sys().(*syscall.Stat_t).Uid != uint32(nobody.UID) {
+		t.Errorf("anonymous upload: %v, %+v", err, fi)
+	}
+	if code := n.status("PUT", "/f", "data", anonymous...); code != 403 {
+		t.Errorf("anonymous PUT where nobody cannot write: %d", code)
+	}
+	if _, body := n.do("GET", n.ts.URL+"/proc/whoami", "", anonymous...); !strings.Contains(body, "Username: nobody") {
+		t.Errorf("whoami: %s", body)
+	}
+}
+
+// A relative server.dir (the default is ".") is the same directory for the workers,
+// which do not run in weed's working directory
+func TestRelativeDirectory(t *testing.T) {
+	n := newUnixNode(t, func(cfg *config.Config) {
+		t.Chdir(filepath.Dir(cfg.Directory))
+		cfg.Directory = filepath.Base(cfg.Directory)
+	})
+	n.setup("/alice/", 0755, 6001, 6001)
+	if code := n.status("PUT", "/alice/f", "data"); code != 201 {
+		t.Fatalf("PUT: %d", code)
+	}
+	if content, _ := n.read("/alice/f"); content != "data" {
+		t.Errorf("stored %q", content)
 	}
 }

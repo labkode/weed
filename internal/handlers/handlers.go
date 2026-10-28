@@ -78,8 +78,8 @@ func NewWebDAVHandler(directory string, cfg *config.Config, authStore *auth.Auth
 	}
 }
 
-// ServeHTTP serves the WebDAV namespace, after authentication. With unix_users it
-// runs in the worker process of the identity's Unix account (see internal/worker).
+// ServeHTTP serves the WebDAV namespace, after authentication. It runs in the worker
+// process of the identity's Unix account (see internal/worker).
 func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Encoded dot segments survive ServeMux path cleaning; never serve them
 	if !davreq.IsClean(r.URL.Path) {
@@ -122,7 +122,7 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !h.lockTokenInScope(w, r) {
 			return
 		}
-		if r.Method == "LOCK" && h.Config != nil && h.Config.UnixUsers && !h.mayLock(w, r) {
+		if r.Method == "LOCK" && !h.mayLock(w, r) {
 			return
 		}
 	}
@@ -134,6 +134,9 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // would keep those who can from writing it. A LOCK that creates the resource needs
 // permission to create it.
 func (h *WebDAVHandler) mayLock(w http.ResponseWriter, r *http.Request) bool {
+	if info, ok := auth.GetAuthInfoFromContext(r.Context()); !ok || info.Unix == nil {
+		return true // tests that serve files as this process's user
+	}
 	name, ok := davreq.Strip(r.URL.Path)
 	if !ok {
 		return true

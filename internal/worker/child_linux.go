@@ -41,12 +41,12 @@ func Attach() (*Child, error) {
 	c, err := net.FileConn(f)
 	f.Close()
 	if err != nil {
-		return nil, fmt.Errorf("weed worker is started by weed with unix_users enabled: %w", err)
+		return nil, fmt.Errorf("weed worker is started by weed, not by hand: %w", err)
 	}
 	ctl, ok := c.(*net.UnixConn)
 	if !ok {
 		c.Close()
-		return nil, errors.New("weed worker is started by weed with unix_users enabled")
+		return nil, errors.New("weed worker is started by weed, not by hand")
 	}
 	buf := make([]byte, maxMessage)
 	n, err := ctl.Read(buf)

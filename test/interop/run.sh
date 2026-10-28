@@ -56,13 +56,19 @@ ssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out issuer.key
 ISS=https://localhost:8446
 issuer serve -url $ISS -signing-key issuer.key -cert host.pem -key host.key 2>$W/issuer.log &
 token() { issuer mint -url $ISS -signing-key issuer.key "$@"; } # -aud AUD -scope SCOPES [-lifetime D]
-printf '[{"issuer": "%s", "audiences": ["https://localhost:8443", "https://localhost:8444"]}]' $ISS >issuers.json
+printf '[{"issuer": "%s", "audiences": ["https://localhost:8443", "https://localhost:8444"], "users": [{"sub": "interop-token-user", "user": "interop"}]}]' $ISS >issuers.json
 
 # --- servers
-# A certificate from the CA that is not listed here, like unmapped.pem, is refused
-printf '"%s" interop\n"%s" revoked\n' "$USER_DN" "$REVOKED_DN" >gridmap
+# weed accesses files as the Unix account of each identity, from a worker process per
+# account: the grid-mapfile names the account for certificates, and for tokens the
+# subject or a user rule does. A certificate from the CA that is not listed here, like
+# unmapped.pem, is refused, and so is one whose account does not exist (ghost.pem).
+useradd -M -u 7001 interop && useradd -M -u 7002 robot && useradd -M -u 7003 revoked
+GHOST_DN="/DC=org/DC=weed/OU=Users/CN=Ghost User"
+printf '"%s" interop\n"%s" revoked\n"%s" ghost\n' "$USER_DN" "$REVOKED_DN" "$GHOST_DN" >gridmap
 issue unmapped "/DC=org/DC=weed/OU=Users/CN=Unmapped User" ca.pem ca.key 5 "keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n"
-mkdir -p /srv/a /srv/b
+issue ghost "$GHOST_DN" ca.pem ca.key 6 "keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n"
+mkdir -p /srv/a /srv/b && chown interop: /srv/a /srv/b
 start_weed() { # name port [lines of further tables]; METRICS, ISSUERS, LOG_FORMAT
 	(umask 077 && cat >weed-$1.toml) <<TOML
 [server]
@@ -97,13 +103,10 @@ TOML
 }
 METRICS=localhost:9100 start_weed a 8443
 start_weed b 8444
-# C accesses files as the Unix account of each identity, from a worker process per
-# account: the grid-mapfile names the account for certificates, and for tokens a user
-# rule does (the revoked DN has no account)
-useradd -M -u 7001 interop && useradd -M -u 7002 robot
+# C has a directory per account, and maps tokens to accounts by their groups
 mkdir -p /srv/c/interop /srv/c/robot && chown interop: /srv/c/interop && chown robot: /srv/c/robot && chmod 700 /srv/c/robot
 printf '[{"issuer": "%s", "audiences": ["https://localhost:8447"], "users": [{"group": "/interop/robots", "user": "robot"}]}]' $ISS >issuers-c.json
-ISSUERS=issuers-c.json LOG_FORMAT=json METRICS=localhost:9101 start_weed c 8447 '[unix_users]' 'enabled = true' 'idle_timeout = "3s"'
+ISSUERS=issuers-c.json LOG_FORMAT=json METRICS=localhost:9101 start_weed c 8447 '[unix_users]' 'idle_timeout = "3s"'
 
 # XRootD as a production-like WLCG endpoint: X.509 over HTTPS, macaroons, tokens, HTTP-TPC.
 # It runs as the xrootd user, which needs a writable working directory.
@@ -238,7 +241,8 @@ check "push with wrong digest fails with 412 from destination" sh -c "$CURL -X C
 
 echo "== WLCG tokens (no client certificate)"
 mv /tmp/x509up_u0 proxy.off
-mkdir -p /srv/a/tok/up /srv/b/tok/up /srv/x/tok/up && cp f.bin /srv/a/tok/f.bin && cp f.bin /srv/x/tok/f.bin && chown -R xrootd /srv/x/tok
+mkdir -p /srv/a/tok/up /srv/b/tok/up /srv/x/tok/up && cp f.bin /srv/a/tok/f.bin && cp f.bin /srv/x/tok/f.bin && chown -R xrootd /srv/x/tok &&
+	chown -R interop: /srv/a/tok /srv/b/tok
 AUDS=https://localhost:8443,https://localhost:8444,https://localhost:8445
 READ=$(token -aud $AUDS -scope storage.read:/tok)
 CREATE=$(token -aud $AUDS -scope "storage.read:/tok storage.create:/tok/up")
@@ -288,7 +292,7 @@ check "weed refuses a pull onto an existing file with storage.create" status 403
 	-H "Source: https://localhost:8445/srv/x/tok/f.bin" -H "TransferHeaderAuthorization: Bearer $READ" https://localhost:8443/webdav/tok/up/g.bin
 mv proxy.off /tmp/x509up_u0
 
-echo "== Unix accounts (unix_users)"
+echo "== Unix accounts"
 owned() { [ "$(stat -c %U "$2")" = "$1" ]; } # user path
 http_status() { # want curl-args...
 	[ "$(curl -s -o /dev/null -w '%{http_code}' --capath $CERTS "${@:2}")" = "$1" ]
@@ -308,7 +312,8 @@ check "...logged as robot" grep -q '"msg":"request","method":"PUT","path":"/webd
 check "...owned by robot" owned robot /srv/c/robot/t.bin
 check "...and cannot write to interop's directory" http_status 403 -H "Authorization: Bearer $ROBOT" -T f.bin $(https $C)/interop/t.bin
 check "token no rule maps is refused" http_status 403 -H "Authorization: Bearer $(token -aud https://localhost:8447 -scope storage.read:/)" $(https $C)/interop/f.bin
-check "certificate whose account does not exist is refused" http_status 403 --cert revoked.pem --key revoked.key $(https $C)/interop/f.bin
+check "certificate whose account does not exist is refused" http_status 403 --cert ghost.pem --key ghost.key $(https $C)/interop/f.bin
+check "...logged as its account" grep -q '"msg":"request","method":"GET","path":"/webdav/interop/f.bin",.*"status":403,.*"user":"ghost"' $W/weed-c.log
 C_PID=$(pgrep -f 'weed -config weed-c.toml')
 workers() { ps -o user=,args= --ppid $C_PID | awk '{print $1, $2, $3, $4}' | sort; }
 workers_are() { [ "$(workers)" = "$(printf '%s\n' "$@")" ]; }
@@ -348,7 +353,7 @@ echo "== what runs: build, start, configuration, pending restart"
 SHA=$(sha256sum weed-a.toml | cut -d' ' -f1)
 curl -s localhost:9100/status >status.json
 check "weed check: A's configuration is valid" sh -c "weed check -config weed-a.toml | grep -q 'sha256 $SHA'"
-check "weed check: C's (unix_users) too" weed check -config weed-c.toml
+check "weed check: C's too" weed check -config weed-c.toml
 check "/status: the configuration's SHA-256 is the file's" sh -c "[ \"\$(jq -r .config.sha256 status.json)\" = $SHA ]"
 check "/status: the build is weed version's" sh -c "weed version | grep -qx \"build    \$(jq -r .version.build status.json)\""
 SECRET=$(sed -n 's/^secret_key = "\(.*\)"$/\1/p' weed-a.toml)
@@ -372,6 +377,8 @@ Q_PID=$!
 for i in $(seq 50); do curl -sf localhost:9000/healthz >/dev/null && break; sleep 0.1; done
 check "without a configuration file: /status on the main port" sh -c "curl -sf localhost:9000/status | jq -e '.config.file == \"\" and .config.settings.server.anonymous' >/dev/null"
 check "...and /metrics" sh -c "curl -sf localhost:9000/metrics | grep -q '^weed_build_info{'"
+check "...anonymous uploads belong to nobody" sh -c "! curl -sf -T f.bin localhost:9000/webdav/f.bin && chmod 1777 /srv/q &&
+	curl -sf -T f.bin localhost:9000/webdav/f.bin && [ \$(stat -c %U /srv/q/f.bin) = nobody ]"
 kill $Q_PID
 
 echo

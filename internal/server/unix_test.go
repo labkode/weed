@@ -90,12 +90,12 @@ func TestTokenUserRules(t *testing.T) {
 	}
 }
 
-func TestUnixUsersNeedLinux(t *testing.T) {
+// weed accesses files as Unix accounts, from worker processes, which need Linux
+func TestServingNeedsLinux(t *testing.T) {
 	if runtime.GOOS == "linux" {
 		t.Skip("supported here")
 	}
-	cfg := &config.Config{Directory: t.TempDir(), UnixUsers: true}
-	if err := New(cfg).Initialize(); err == nil || !strings.Contains(err.Error(), "Linux") {
-		t.Fatalf("-unix-users on %s: %v", runtime.GOOS, err)
+	if err := New(&config.Config{Directory: t.TempDir()}).Initialize(); err == nil || !strings.Contains(err.Error(), "Linux") {
+		t.Fatalf("on %s: %v", runtime.GOOS, err)
 	}
 }

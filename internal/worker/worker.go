@@ -1,5 +1,4 @@
-// Package worker serves the requests of each Unix account from a process of its own
-// (unix_users).
+// Package worker serves the requests of each Unix account from a process of its own.
 //
 // The front process (weed) terminates TLS, authenticates requests and maps each
 // identity to a local account, but never touches the exported files. It hands every
@@ -32,7 +31,7 @@ import (
 	"github.com/labkode/weed/internal/logger"
 )
 
-var errUnsupported = errors.New("acting as Unix users is only supported on Linux")
+var errUnsupported = errors.New("only supported on Linux")
 
 // Settings are what the front process starts a worker with
 type Settings struct {

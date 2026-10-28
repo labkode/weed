@@ -74,7 +74,7 @@ func (c *Config) sections() []section {
 			{"address", `address to listen on ("" for all interfaces)`, &c.Address},
 			{"port", "TCP port", &c.Port},
 			{"dir", "directory exported under /webdav/", &c.Directory},
-			{"anonymous", "serve requests without credentials, read-write, as \"nobody\"; only on a loopback address (the default without a configuration file)", &c.Anonymous},
+			{"anonymous", "serve requests without credentials as the Unix account nobody; only on a loopback address (the default without a configuration file)", &c.Anonymous},
 			{"log_file", `log to this file ("" for standard error); weed reopens it on SIGHUP, for logrotate`, &c.LogFile},
 			{"log_level", `log records of this level and above: "debug", "info", "warn" or "error"`, &c.LogLevel},
 			{"log_format", `"text" (key=value) or "json", one record per line`, &c.LogFormat},
@@ -127,8 +127,7 @@ func (c *Config) sections() []section {
 			{"marker_interval", "interval between performance markers", &c.TPCMarkerInterval},
 			{"stall_timeout", `abort a copy that transfers no data for this long ("0s" disables)`, &c.TPCStallTimeout},
 		}},
-		{"unix_users", "Unix accounts: each identity is a local account, whose files a worker process running as the account accesses (Linux; needs root, or CAP_SETUID and CAP_SETGID)", []option{
-			{"enabled", "map identities to Unix accounts (an identity without one gets 403)", &c.UnixUsers},
+		{"unix_users", "Unix accounts: every request accesses files as the Unix account its credentials map to (anonymous ones: nobody), from a worker process running as that account; an identity without an account gets 403. weed runs on Linux, as root (or with CAP_SETUID and CAP_SETGID)", []option{
 			{"idle_timeout", "stop the worker process of an account once it has served no request for this long", &c.WorkerIdleTimeout},
 			{"max_workers", "at most this many worker processes take requests; once they are all busy, requests of other accounts get 503", &c.MaxWorkers},
 			{"cgroups", "run each worker process in a cgroup of its own, below weed's, which must be delegated to weed (systemd: Delegate=yes); cgroup v2", &c.WorkerCgroups},
@@ -413,5 +412,3 @@ func loopback(address string) bool {
 	ip := net.ParseIP(address)
 	return ip != nil && ip.IsLoopback()
 }
-
-var errAnonymousUnixUsers = errors.New("server.anonymous cannot be combined with unix_users: anonymous requests have no Unix account")

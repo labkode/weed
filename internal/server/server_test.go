@@ -20,7 +20,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// The tests of unix_users start this binary as their workers
+	// The tests of worker processes start this binary as their workers
 	if len(os.Args) > 1 && os.Args[1] == "worker" {
 		if err := RunWorker(); err != nil {
 			log.Fatal(err)
@@ -55,7 +55,28 @@ const basicUser, basicPass = "alice", "pw"
 // newNode starts a weed server with Basic auth (alice:pw), macaroons and TPC enabled.
 // mod may adjust the configuration; it receives the server's base URL.
 // wraps, if given, wrap the server's handler (e.g. to put a redirecting door in front).
+// It serves files in this process, as its user (see Server.inProcess);
+// newWorkerNode does as weed does.
 func newNode(t testing.TB, mod func(cfg *config.Config, baseURL string), wraps ...func(http.Handler) http.Handler) *node {
+	t.Helper()
+	return startNode(t, true, mod, wraps...)
+}
+
+// newWorkerNode is newNode with a worker process per Unix account, as weed serves
+// (Linux, as root)
+func newWorkerNode(t testing.TB, mod func(cfg *config.Config, baseURL string), wraps ...func(http.Handler) http.Handler) *node {
+	t.Helper()
+	return startNode(t, false, mod, wraps...)
+}
+
+// newServer is New for tests of request handling, which serve files in this process
+func newServer(cfg *config.Config) *Server {
+	s := New(cfg)
+	s.inProcess = true
+	return s
+}
+
+func startNode(t testing.TB, inProcess bool, mod func(cfg *config.Config, baseURL string), wraps ...func(http.Handler) http.Handler) *node {
 	t.Helper()
 	dir := t.TempDir()
 	hash, _ := bcrypt.GenerateFromPassword([]byte(basicPass), bcrypt.MinCost)
@@ -91,6 +112,7 @@ func newNode(t testing.TB, mod func(cfg *config.Config, baseURL string), wraps .
 		t.Fatal(err)
 	}
 	s := New(cfg)
+	s.inProcess = inProcess
 	if err := s.Initialize(); err != nil {
 		t.Fatal(err)
 	}

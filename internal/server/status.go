@@ -231,7 +231,7 @@ type status struct {
 	Config         statusConfig      `json:"config"`
 	Reload         statusReload      `json:"reload"`
 	RestartPending map[string]string `json:"restart_pending"` // why, by reason
-	Workers        []worker.Info     `json:"workers"`         // with unix_users
+	Workers        []worker.Info     `json:"workers"`
 }
 
 type statusConfig struct {
