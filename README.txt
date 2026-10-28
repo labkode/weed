@@ -135,7 +135,8 @@ to do what was asked. All authenticated users share the same namespace.
    Activities required per request:
      GET                      DOWNLOAD
      HEAD                     DOWNLOAD, LIST or READ_METADATA
-     PROPFIND                 LIST or READ_METADATA
+     PROPFIND Depth: 0        DOWNLOAD, LIST or READ_METADATA
+     PROPFIND Depth: 1        LIST or READ_METADATA
      PUT                      UPLOAD
      MKCOL                    MANAGE or UPLOAD
      DELETE                   DELETE

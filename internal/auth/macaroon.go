@@ -73,7 +73,13 @@ func RequestAccess(r *http.Request) (AccessRequest, error) {
 	case http.MethodOptions:
 		// capability discovery only
 	case "PROPFIND":
-		need(ActivityList, ActivityReadMetadata)
+		if r.Header.Get("Depth") == "0" {
+			// Only the resource's own metadata, as with HEAD; clients such as davix
+			// stat a file this way before downloading it
+			need(ActivityDownload, ActivityList, ActivityReadMetadata, activityReadLegacy)
+		} else {
+			need(ActivityList, ActivityReadMetadata)
+		}
 	case http.MethodPut:
 		need(ActivityUpload)
 	case "MKCOL":
