@@ -16,11 +16,15 @@ type Config struct {
 	TLSKey        string
 	X509Auth      bool
 	CACert        string
+	CRLPath       string
+	CRLMode       string
 	GridmapFile   string
 	BasicAuth     bool
 	HtpasswdFile  string
 	AppTokensFile string
 	LogFile       string
+	// ReloadInterval is how often credential files are re-read (0: only on SIGHUP)
+	ReloadInterval time.Duration
 	// OIDC configuration
 	OIDCAuth         bool
 	OIDCIssuer       string
@@ -43,6 +47,12 @@ type Config struct {
 	TPCStallTimeout   time.Duration
 }
 
+// CRL modes (-crl-mode)
+const (
+	CRLRequire = "require"
+	CRLIfValid = "if-valid"
+)
+
 // ParseFlags parses command line flags and returns a Config
 func ParseFlags() *Config {
 	cfg := &Config{}
@@ -54,7 +64,10 @@ func ParseFlags() *Config {
 	flag.StringVar(&cfg.TLSCert, "tls-cert", "server.crt", "path to the TLS server certificate")
 	flag.StringVar(&cfg.TLSKey, "tls-key", "server.key", "path to the TLS server private key")
 	flag.BoolVar(&cfg.X509Auth, "x509-auth", false, "enable X.509 client certificate authentication (requires TLS)")
-	flag.StringVar(&cfg.CACert, "ca-cert", "", "path to CA certificate file for X.509 authentication")
+	flag.StringVar(&cfg.CACert, "ca-cert", "", "CA certificates for X.509 authentication: a PEM file or a directory such as /etc/grid-security/certificates")
+	flag.StringVar(&cfg.CRLPath, "crl-path", "", "certificate revocation lists for X.509 authentication: a file or a directory such as /etc/grid-security/certificates (kept current by fetch-crl)")
+	flag.StringVar(&cfg.CRLMode, "crl-mode", CRLRequire, "with -crl-path: \"require\" rejects certificates whose issuer has no current CRL; \"if-valid\" only checks against CRLs that are present and current")
+	flag.DurationVar(&cfg.ReloadInterval, "reload-interval", time.Hour, "re-read credential files (htpasswd, app tokens, grid-mapfile, CAs, CRLs, TLS certificate) this often; 0 disables (SIGHUP always reloads)")
 	flag.StringVar(&cfg.GridmapFile, "gridmap-file", "/etc/grid-security/grid-mapfile", "path to gridmap file for X.509 DN to username mapping")
 	flag.BoolVar(&cfg.BasicAuth, "basic-auth", false, "enable HTTP Basic Authentication")
 	flag.StringVar(&cfg.HtpasswdFile, "htpasswd-file", ".htpasswd", "path to htpasswd file for basic authentication")
@@ -95,6 +108,18 @@ func (c *Config) Validate() error {
 	}
 	if c.X509Auth && c.CACert == "" {
 		return fmt.Errorf("X.509 authentication requires a CA certificate (-ca-cert)")
+	}
+	if c.CRLPath != "" && !c.X509Auth {
+		return fmt.Errorf("-crl-path requires X.509 authentication (-x509-auth)")
+	}
+	if c.CRLMode == "" {
+		c.CRLMode = CRLRequire
+	}
+	if c.CRLMode != CRLRequire && c.CRLMode != CRLIfValid {
+		return fmt.Errorf("-crl-mode must be %q or %q", CRLRequire, CRLIfValid)
+	}
+	if c.ReloadInterval < 0 {
+		return fmt.Errorf("-reload-interval cannot be negative")
 	}
 	if c.OIDCAuth {
 		if c.OIDCIssuer == "" {

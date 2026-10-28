@@ -587,10 +587,7 @@ func (h *WebDAVHandler) ProcX509Handler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	dn := x509utils.GetDNParts(eec)
-	username := dn
-	if mapped, ok := h.AuthStore.Gridmap[dn]; ok {
-		username = mapped
-	}
+	username := h.AuthStore.MapDN(dn)
 	fmt.Fprintf(w, "Authentication Status: Would SUCCEED\n")
 	fmt.Fprintf(w, "Identity DN: %s\n", dn)
 	if proxies > 0 {

@@ -47,6 +47,15 @@ func main() {
 	// Print startup information
 	srv.LogStartupInfo()
 
+	// Reload credentials on SIGHUP
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		for range hup {
+			srv.Reload()
+		}
+	}()
+
 	// Serve until SIGINT/SIGTERM, then shut down gracefully
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

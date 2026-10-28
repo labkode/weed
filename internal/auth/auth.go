@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -95,11 +96,8 @@ type AuthStore struct {
 	OIDCEnabled     bool
 	MacaroonEnabled bool
 
-	Gridmap   map[string]string
-	Htpasswd  map[string]string
-	AppTokens map[string]string
-	// X.509 certificate verification
-	CACertPool *x509.CertPool
+	// File-based credentials, replaced as a whole on reload
+	creds atomic.Pointer[Credentials]
 	// OIDC configuration
 	OIDCProvider *oidc.Provider
 	OAuth2Config *oauth2.Config
@@ -117,15 +115,44 @@ type AuthStore struct {
 	dummyHash []byte
 }
 
+// Credentials are the file-based inputs of authentication. A set is never modified
+// once in use: reloading builds a new set and swaps it in, so that every request
+// sees one consistent set.
+type Credentials struct {
+	Gridmap   map[string]string // certificate DN -> account
+	Htpasswd  map[string]string // user -> bcrypt hash
+	AppTokens map[string]string // token -> user
+	Roots     *x509.CertPool    // CAs trusted for X.509 client authentication
+	CRLs      *x509utils.CRLSet // nil disables revocation checks
+}
+
 // NewAuthStore creates a new authentication store
 func NewAuthStore() *AuthStore {
-	return &AuthStore{
-		Gridmap:      make(map[string]string),
-		Htpasswd:     make(map[string]string),
-		AppTokens:    make(map[string]string),
+	as := &AuthStore{
 		oidcLogins:   make(map[string]oidcLogin),
 		oidcSessions: make(map[string]*OIDCSession),
 	}
+	as.SetCredentials(&Credentials{})
+	return as
+}
+
+// Credentials returns the credentials in use
+func (as *AuthStore) Credentials() *Credentials {
+	return as.creds.Load()
+}
+
+// SetCredentials replaces the credentials in use; c must not be modified afterwards
+func (as *AuthStore) SetCredentials(c *Credentials) {
+	as.creds.Store(c)
+}
+
+// MapDN returns the account a certificate DN maps to in the grid-mapfile, or the DN
+// itself if it is not listed
+func (as *AuthStore) MapDN(dn string) string {
+	if user, ok := as.Credentials().Gridmap[dn]; ok {
+		return user
+	}
+	return dn
 }
 
 // parseGridmapLine parses `"DN" user[,user...]`; the DN may contain spaces
@@ -152,13 +179,13 @@ func parseGridmapLine(line string) (dn, username string, ok bool) {
 	return dn, accounts[0], true
 }
 
-// LoadGridmap loads and parses the gridmap file
-func (as *AuthStore) LoadGridmap(filename string) error {
+// LoadGridmap reads a grid-mapfile
+func LoadGridmap(filename string) (map[string]string, error) {
 	result := make(map[string]string)
 
 	file, err := os.Open(filename)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer file.Close()
 
@@ -181,20 +208,18 @@ func (as *AuthStore) LoadGridmap(filename string) error {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return err
+		return nil, err
 	}
-
-	as.Gridmap = result
-	return nil
+	return result, nil
 }
 
-// LoadHtpasswd loads and parses the htpasswd file
-func (as *AuthStore) LoadHtpasswd(filename string) error {
+// LoadHtpasswd reads an htpasswd file
+func LoadHtpasswd(filename string) (map[string]string, error) {
 	result := make(map[string]string)
 
 	file, err := os.Open(filename)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer file.Close()
 
@@ -216,20 +241,18 @@ func (as *AuthStore) LoadHtpasswd(filename string) error {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return err
+		return nil, err
 	}
-
-	as.Htpasswd = result
-	return nil
+	return result, nil
 }
 
-// LoadAppTokens loads and parses the app tokens file
-func (as *AuthStore) LoadAppTokens(filename string) error {
+// LoadAppTokens reads an app tokens file
+func LoadAppTokens(filename string) (map[string]string, error) {
 	result := make(map[string]string)
 
 	file, err := os.Open(filename)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer file.Close()
 
@@ -248,27 +271,23 @@ func (as *AuthStore) LoadAppTokens(filename string) error {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return err
+		return nil, err
 	}
-
-	as.AppTokens = result
-	return nil
+	return result, nil
 }
 
-// LoadCACert loads and parses the CA certificate(s) for X.509 verification
-func (as *AuthStore) LoadCACert(filename string) error {
-	caCert, err := os.ReadFile(filename)
+// LoadCAs reads the CA certificates trusted for X.509 client authentication from a
+// PEM file or a directory such as /etc/grid-security/certificates
+func LoadCAs(path string) (*x509.CertPool, int, error) {
+	certs, err := x509utils.LoadCertificates(path)
 	if err != nil {
-		return fmt.Errorf("failed to read CA certificate file %s: %w", filename, err)
+		return nil, 0, err
 	}
-
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM(caCert) {
-		return fmt.Errorf("failed to parse CA certificate from %s", filename)
+	pool := x509.NewCertPool()
+	for _, c := range certs {
+		pool.AddCert(c)
 	}
-
-	as.CACertPool = caCertPool
-	return nil
+	return pool, len(certs), nil
 }
 
 // VerifyPassword checks if the provided password matches the stored hash
@@ -280,14 +299,16 @@ func (as *AuthStore) VerifyPassword(storedHash, password string) bool {
 // VerifyClientCertificate verifies a client certificate chain (leaf first, possibly
 // starting with grid proxies) against the CA and returns the end-entity certificate
 func (as *AuthStore) VerifyClientCertificate(chain []*x509.Certificate) (*x509.Certificate, int, error) {
-	return x509utils.VerifyChain(chain, as.CACertPool, time.Now())
+	c := as.Credentials()
+	return x509utils.VerifyChainCRL(chain, c.Roots, c.CRLs, time.Now())
 }
 
 // VerifyCredentialsWithMethod verifies username/password and returns authentication method and additional info
 func (as *AuthStore) VerifyCredentialsWithMethod(username, password string) (bool, string, string) {
+	creds := as.Credentials()
 	// First check if it's an app token (password is 64 char hex string)
 	if len(password) == 64 {
-		if tokenUsername, exists := as.AppTokens[password]; exists &&
+		if tokenUsername, exists := creds.AppTokens[password]; exists &&
 			subtle.ConstantTimeCompare([]byte(tokenUsername), []byte(username)) == 1 {
 			// Return first 8 characters of token for logging
 			tokenPrefix := password[:8] + "..."
@@ -297,7 +318,7 @@ func (as *AuthStore) VerifyCredentialsWithMethod(username, password string) (boo
 
 	// Check regular password authentication; unknown users still pay for a bcrypt
 	// comparison so that timing does not reveal which accounts exist
-	storedHash, exists := as.Htpasswd[username]
+	storedHash, exists := creds.Htpasswd[username]
 	if !exists {
 		if as.dummyHash != nil {
 			bcrypt.CompareHashAndPassword(as.dummyHash, []byte(password))
@@ -427,13 +448,7 @@ func (as *AuthStore) authenticateX509(r *http.Request) (*AuthInfo, error) {
 		return nil, err
 	}
 	dn := x509utils.GetDNParts(eec)
-
-	// Map DN to username using gridmap if available
-	username := dn
-	mappedUser, mapped := as.Gridmap[dn]
-	if mapped {
-		username = mappedUser
-	}
+	username := as.MapDN(dn)
 
 	info := &AuthInfo{
 		Username: username,
@@ -444,8 +459,8 @@ func (as *AuthStore) authenticateX509(r *http.Request) (*AuthInfo, error) {
 			"certificate_serial":  eec.SerialNumber.String(),
 		},
 	}
-	if mapped {
-		info.Details["gridmap_mapping"] = mappedUser
+	if username != dn {
+		info.Details["gridmap_mapping"] = username
 	}
 	if proxies > 0 {
 		info.Details["proxy_certificates"] = proxies

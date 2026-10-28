@@ -27,7 +27,6 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -36,6 +35,7 @@ import (
 	"github.com/labkode/weed/internal/davfs"
 	"github.com/labkode/weed/internal/digest"
 	"github.com/labkode/weed/internal/logger"
+	"github.com/labkode/weed/internal/x509utils"
 )
 
 // Mode is the direction of a transfer
@@ -93,7 +93,7 @@ type Job struct {
 // Engine runs transfers
 type Engine struct {
 	cfg    Config
-	client *http.Client
+	client atomic.Pointer[http.Client]
 	slots  chan struct{}
 }
 
@@ -105,48 +105,39 @@ func New(cfg Config) *Engine {
 	if cfg.MaxTransfers <= 0 {
 		cfg.MaxTransfers = 1
 	}
-	return &Engine{
-		cfg:    cfg,
-		client: newClient(cfg),
-		slots:  make(chan struct{}, cfg.MaxTransfers),
+	e := &Engine{
+		cfg:   cfg,
+		slots: make(chan struct{}, cfg.MaxTransfers),
 	}
+	e.client.Store(newClient(cfg))
+	return e
 }
 
 // LoadCAs builds a pool from the system roots plus the PEM certificates in path,
 // which may be a file or a directory such as /etc/grid-security/certificates
 func LoadCAs(path string) (*x509.CertPool, error) {
+	certs, err := x509utils.LoadCertificates(path)
+	if err != nil {
+		return nil, err
+	}
 	pool, err := x509.SystemCertPool()
 	if err != nil {
 		pool = x509.NewCertPool()
 	}
-	fi, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	files := []string{path}
-	if fi.IsDir() {
-		entries, err := os.ReadDir(path)
-		if err != nil {
-			return nil, err
-		}
-		files = files[:0]
-		for _, e := range entries {
-			n := e.Name()
-			if !e.IsDir() && (strings.HasSuffix(n, ".pem") || strings.HasSuffix(n, ".crt") || strings.HasSuffix(n, ".0")) {
-				files = append(files, filepath.Join(path, n))
-			}
-		}
-	}
-	loaded := 0
-	for _, f := range files {
-		if pem, err := os.ReadFile(f); err == nil && pool.AppendCertsFromPEM(pem) {
-			loaded++
-		}
-	}
-	if loaded == 0 {
-		return nil, fmt.Errorf("no CA certificates found in %s", path)
+	for _, c := range certs {
+		pool.AddCert(c)
 	}
 	return pool, nil
+}
+
+// SetRootCAs makes new transfers verify remote endpoints with pool; transfers in
+// progress are not affected
+func (e *Engine) SetRootCAs(pool *x509.CertPool) {
+	cfg := e.cfg
+	cfg.RootCAs = pool
+	if old := e.client.Swap(newClient(cfg)); old != nil {
+		old.CloseIdleConnections()
+	}
 }
 
 func newClient(cfg Config) *http.Client {
@@ -381,7 +372,7 @@ func (e *Engine) pull(ctx context.Context, job *Job, p *progress) error {
 		req.Header.Set("Want-Repr-Digest", digest.FormatWant(job.Expected.Algorithms()))
 	}
 
-	resp, err := e.client.Do(req)
+	resp, err := e.client.Load().Do(req)
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", redact(job.Remote), unwrapURLError(err))
 	}
@@ -498,7 +489,7 @@ func (e *Engine) push(ctx context.Context, job *Job, p *progress) error {
 		req.Header.Set("Expect", "100-continue")
 	}
 
-	resp, err := e.client.Do(req)
+	resp, err := e.client.Load().Do(req)
 	if err != nil {
 		return fmt.Errorf("PUT %s: %w", redact(job.Remote), unwrapURLError(err))
 	}

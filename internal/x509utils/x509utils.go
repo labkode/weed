@@ -179,6 +179,13 @@ func IsProxyOf(cert, issuer *x509.Certificate) bool {
 // one or more proxy certificates, and returns the end-entity certificate that
 // identifies the user
 func VerifyChain(chain []*x509.Certificate, roots *x509.CertPool, now time.Time) (eec *x509.Certificate, proxies int, err error) {
+	return VerifyChainCRL(chain, roots, nil, now)
+}
+
+// VerifyChainCRL is VerifyChain with revocation checks of the end-entity certificate
+// and its CAs against crls (nil disables them). Proxies are short-lived and not
+// covered by CRLs, but a proxy of a revoked certificate is rejected with it.
+func VerifyChainCRL(chain []*x509.Certificate, roots *x509.CertPool, crls *CRLSet, now time.Time) (eec *x509.Certificate, proxies int, err error) {
 	if len(chain) == 0 {
 		return nil, 0, errors.New("no client certificate")
 	}
@@ -234,8 +241,14 @@ func VerifyChain(chain []*x509.Certificate, roots *x509.CertPool, now time.Time)
 		CurrentTime:   now,
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
-	if _, err := eec.Verify(opts); err != nil {
+	chains, err := eec.Verify(opts)
+	if err != nil {
 		return nil, 0, fmt.Errorf("certificate verification failed: %w", err)
+	}
+	if crls != nil {
+		if err := crls.checkChains(chains, now); err != nil {
+			return nil, 0, err
+		}
 	}
 	return eec, i, nil
 }

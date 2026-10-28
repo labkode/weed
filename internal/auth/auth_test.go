@@ -199,7 +199,7 @@ func TestUnifiedAuthStatusCodes(t *testing.T) {
 	as.BasicEnabled = true
 	as.PrepareBasicAuth()
 	hash, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
-	as.Htpasswd["alice"] = string(hash)
+	as.SetCredentials(&Credentials{Htpasswd: map[string]string{"alice": string(hash)}})
 
 	h := as.UnifiedAuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		info, _ := GetAuthInfoFromContext(r.Context())
@@ -236,9 +236,11 @@ func TestBasicCredentials(t *testing.T) {
 	as := NewAuthStore()
 	as.PrepareBasicAuth()
 	hash, _ := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.MinCost)
-	as.Htpasswd["bob"] = string(hash)
 	token := strings.Repeat("ab", 32)
-	as.AppTokens[token] = "bob"
+	as.SetCredentials(&Credentials{
+		Htpasswd:  map[string]string{"bob": string(hash)},
+		AppTokens: map[string]string{token: "bob"},
+	})
 
 	if ok, method, _ := as.VerifyCredentialsWithMethod("bob", "secret"); !ok || method != "password" {
 		t.Fatal("password rejected")
@@ -262,8 +264,8 @@ func TestLoadGridmap(t *testing.T) {
 /CN=unquoted plain
 "/CN=broken
 `), 0600)
-	as := NewAuthStore()
-	if err := as.LoadGridmap(p); err != nil {
+	gridmap, err := LoadGridmap(p)
+	if err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]string{
@@ -271,12 +273,12 @@ func TestLoadGridmap(t *testing.T) {
 		"/C=US/O=Test Org/CN=Test Client": "testuser",
 		"/CN=unquoted":                    "plain",
 	}
-	if len(as.Gridmap) != len(want) {
-		t.Fatalf("gridmap = %v", as.Gridmap)
+	if len(gridmap) != len(want) {
+		t.Fatalf("gridmap = %v", gridmap)
 	}
 	for dn, u := range want {
-		if as.Gridmap[dn] != u {
-			t.Errorf("gridmap[%q] = %q, want %q", dn, as.Gridmap[dn], u)
+		if gridmap[dn] != u {
+			t.Errorf("gridmap[%q] = %q, want %q", dn, gridmap[dn], u)
 		}
 	}
 }

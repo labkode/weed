@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/labkode/weed/internal/auth"
@@ -16,6 +18,7 @@ import (
 	"github.com/labkode/weed/internal/handlers"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/tpc"
+	"github.com/labkode/weed/internal/x509utils"
 )
 
 // shutdownGrace is how long in-flight requests get to finish on shutdown
@@ -27,6 +30,9 @@ type Server struct {
 	AuthStore *auth.AuthStore
 	Handler   *handlers.WebDAVHandler
 	server    *http.Server
+
+	reloadMu sync.Mutex
+	cert     atomic.Pointer[tls.Certificate] // TLS server certificate, replaced on reload
 }
 
 // New creates a new server instance
@@ -45,34 +51,13 @@ func (s *Server) Initialize() error {
 	if s.Config.BasicAuth {
 		s.AuthStore.BasicEnabled = true
 		s.AuthStore.PrepareBasicAuth()
-		if err := s.AuthStore.LoadHtpasswd(s.Config.HtpasswdFile); err != nil {
-			log.Printf("[HTPASSWD] Warning: Failed to load htpasswd file %s: %v", s.Config.HtpasswdFile, err)
-		} else {
-			log.Printf("[HTPASSWD] Successfully loaded %d users from %s", len(s.AuthStore.Htpasswd), s.Config.HtpasswdFile)
-		}
-
-		// Load app tokens
-		if err := s.AuthStore.LoadAppTokens(s.Config.AppTokensFile); err != nil {
-			log.Printf("[APP-TOKENS] Warning: Failed to load app tokens file %s: %v", s.Config.AppTokensFile, err)
-		} else {
-			log.Printf("[APP-TOKENS] Successfully loaded %d app tokens from %s", len(s.AuthStore.AppTokens), s.Config.AppTokensFile)
-		}
 	}
-
-	if s.Config.X509Auth {
-		// Load CA certificate for manual verification
-		if err := s.AuthStore.LoadCACert(s.Config.CACert); err != nil {
-			return fmt.Errorf("failed to load CA certificate: %w", err)
-		}
-		log.Printf("[CA-CERT] Successfully loaded CA certificate from %s", s.Config.CACert)
-		s.AuthStore.X509Enabled = true
-
-		if err := s.AuthStore.LoadGridmap(s.Config.GridmapFile); err != nil {
-			log.Printf("[GRIDMAP] Warning: Failed to load gridmap file %s: %v", s.Config.GridmapFile, err)
-		} else {
-			log.Printf("[GRIDMAP] Successfully loaded %d DN mappings from %s", len(s.AuthStore.Gridmap), s.Config.GridmapFile)
-		}
+	s.AuthStore.X509Enabled = s.Config.X509Auth
+	creds, err := s.loadCredentials(nil)
+	if err != nil {
+		return err
 	}
+	s.AuthStore.SetCredentials(creds)
 
 	// Initialize OIDC if enabled
 	if s.Config.OIDCAuth {
@@ -116,6 +101,97 @@ func (s *Server) Initialize() error {
 	}
 
 	return nil
+}
+
+// loadCredentials reads the credential files of the enabled authentication methods.
+// When a file cannot be read, its previous contents (from prev) are kept, so that a
+// file being rewritten or broken during a reload neither locks everybody out nor
+// lets anybody in. At startup (prev == nil) unreadable CAs or CRLs are fatal.
+func (s *Server) loadCredentials(prev *auth.Credentials) (*auth.Credentials, error) {
+	if prev == nil {
+		prev = &auth.Credentials{}
+	}
+	c := *prev
+	loadMap := func(what, file string, load func(string) (map[string]string, error), dst *map[string]string) {
+		m, err := load(file)
+		if err != nil {
+			log.Printf("[CREDENTIALS] Cannot read %s %s, keeping %d previous entries: %v", what, file, len(*dst), err)
+			return
+		}
+		*dst = m
+		log.Printf("[CREDENTIALS] Loaded %d %s entries from %s", len(m), what, file)
+	}
+
+	if s.Config.BasicAuth {
+		loadMap("htpasswd", s.Config.HtpasswdFile, auth.LoadHtpasswd, &c.Htpasswd)
+		loadMap("app token", s.Config.AppTokensFile, auth.LoadAppTokens, &c.AppTokens)
+	}
+	if s.Config.X509Auth {
+		loadMap("grid-mapfile", s.Config.GridmapFile, auth.LoadGridmap, &c.Gridmap)
+
+		roots, n, err := auth.LoadCAs(s.Config.CACert)
+		switch {
+		case err == nil:
+			c.Roots = roots
+			log.Printf("[CREDENTIALS] Loaded %d CA certificates from %s", n, s.Config.CACert)
+		case prev.Roots == nil:
+			return nil, fmt.Errorf("failed to load CA certificates: %w", err)
+		default:
+			log.Printf("[CREDENTIALS] Cannot read CA certificates from %s, keeping the previous ones: %v", s.Config.CACert, err)
+		}
+
+		if s.Config.CRLPath != "" {
+			crls, err := x509utils.LoadCRLs(s.Config.CRLPath, s.Config.CRLMode != config.CRLIfValid)
+			switch {
+			case err == nil:
+				c.CRLs = crls
+				log.Printf("[CREDENTIALS] Loaded %d CRLs from %s (mode %s)", crls.Len(), s.Config.CRLPath, s.Config.CRLMode)
+			case prev.CRLs == nil:
+				return nil, fmt.Errorf("failed to load CRLs: %w", err)
+			default:
+				log.Printf("[CREDENTIALS] Cannot read CRLs from %s, keeping the previous ones: %v", s.Config.CRLPath, err)
+			}
+		}
+	}
+	return &c, nil
+}
+
+// loadCertificate reads the TLS server certificate and key
+func (s *Server) loadCertificate() error {
+	cert, err := tls.LoadX509KeyPair(s.Config.TLSCert, s.Config.TLSKey)
+	if err != nil {
+		return err
+	}
+	s.cert.Store(&cert)
+	return nil
+}
+
+// Reload re-reads the credential files, the TLS server certificate and the CAs used
+// to verify third-party copy endpoints; whatever cannot be read is kept as it was.
+// New connections and requests use the new data; established ones are not affected.
+func (s *Server) Reload() {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	log.Printf("[RELOAD] Reloading credentials")
+
+	creds, err := s.loadCredentials(s.AuthStore.Credentials())
+	if err != nil {
+		log.Printf("[RELOAD] %v", err) // only possible at startup
+	} else {
+		s.AuthStore.SetCredentials(creds)
+	}
+	if s.Config.TLS && s.cert.Load() != nil {
+		if err := s.loadCertificate(); err != nil {
+			log.Printf("[RELOAD] Cannot read TLS certificate, keeping the previous one: %v", err)
+		}
+	}
+	if s.Handler.TPC != nil && s.Config.TPCCAPath != "" {
+		if pool, err := tpc.LoadCAs(s.Config.TPCCAPath); err != nil {
+			log.Printf("[RELOAD] Cannot read TPC CA certificates, keeping the previous ones: %v", err)
+		} else {
+			s.Handler.TPC.SetRootCAs(pool)
+		}
+	}
 }
 
 // applyAuthMiddleware applies the unified authentication middleware to a handler
@@ -204,14 +280,14 @@ func (s *Server) SetupTLS() (*tls.Config, error) {
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 
 	if s.Config.X509Auth {
-		if s.AuthStore.CACertPool == nil {
+		if s.AuthStore.Credentials().Roots == nil {
 			return nil, errors.New("CA certificate (-ca-cert) is required when X.509 authentication is enabled")
 		}
 
 		// Request client certificates but validate them in the authentication
 		// middleware: this allows grid proxy chains, detailed logging and fallback
 		// to other methods
-		tlsConfig.ClientCAs = s.AuthStore.CACertPool
+		tlsConfig.ClientCAs = s.AuthStore.Credentials().Roots
 		tlsConfig.ClientAuth = tls.RequestClientCert
 		log.Printf("[TLS] X.509 client authentication enabled with CA verification: %s", s.Config.CACert)
 		log.Printf("[TLS] Client certificates will be validated in authentication middleware")
@@ -270,12 +346,40 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if err := s.loadCertificate(); err != nil {
+			return fmt.Errorf("failed to load TLS certificate: %w", err)
+		}
+		// Certificates and the CAs advertised to clients follow reloads
+		tlsConfig.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return s.cert.Load(), nil }
+		if s.Config.X509Auth {
+			base := tlsConfig.Clone()
+			tlsConfig.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+				c := base.Clone()
+				c.ClientCAs = s.AuthStore.Credentials().Roots
+				return c, nil
+			}
+		}
 		s.server.TLSConfig = tlsConfig
 		log.Printf("[STARTUP] Starting HTTPS server on %s (serving directory: %s)", address, s.Config.Directory)
-		go func() { errCh <- s.server.ListenAndServeTLS(s.Config.TLSCert, s.Config.TLSKey) }()
+		go func() { errCh <- s.server.ListenAndServeTLS("", "") }()
 	} else {
 		log.Printf("[STARTUP] Starting HTTP server on %s (serving directory: %s)", address, s.Config.Directory)
 		go func() { errCh <- s.server.ListenAndServe() }()
+	}
+
+	if s.Config.ReloadInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(s.Config.ReloadInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					s.Reload()
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 	}
 
 	select {
@@ -319,6 +423,17 @@ func (s *Server) LogStartupInfo() {
 	}
 	if s.Config.MacaroonAuth {
 		log.Printf("  - Macaroon Max Validity: %v", s.Config.MacaroonMaxValidity)
+	}
+	if s.Config.X509Auth {
+		log.Printf("  - CA certificates: %s", s.Config.CACert)
+		if s.Config.CRLPath != "" {
+			log.Printf("  - CRLs: %s (mode %s)", s.Config.CRLPath, s.Config.CRLMode)
+		} else {
+			log.Printf("  - CRLs: none (revoked certificates are accepted; see -crl-path)")
+		}
+	}
+	if s.Config.ReloadInterval > 0 {
+		log.Printf("  - Reload interval: %v (and on SIGHUP)", s.Config.ReloadInterval)
 	}
 	if s.Config.TPC && (s.Config.TPCAllowHTTP || s.Config.TPCAllowLocal || s.Config.TPCAllowPrivate) {
 		log.Printf("  - TPC allow http: %t, allow local addresses: %t, allow private addresses: %t",

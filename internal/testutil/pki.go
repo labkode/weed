@@ -103,7 +103,7 @@ func NewCA(t testing.TB, subject []byte) *Cert {
 		RawSubject:            subject,
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}, nil)
@@ -116,7 +116,7 @@ func NewIntermediate(t testing.TB, parent *Cert, subject []byte) *Cert {
 		RawSubject:            subject,
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}, parent)
@@ -234,4 +234,24 @@ func mustMarshal(t testing.TB, v interface{}) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// NewCRL returns a DER-encoded CRL issued by ca, valid from thisUpdate to nextUpdate,
+// revoking the given certificates
+func NewCRL(t testing.TB, ca *Cert, thisUpdate, nextUpdate time.Time, revoked ...*Cert) []byte {
+	t.Helper()
+	var entries []x509.RevocationListEntry
+	for _, c := range revoked {
+		entries = append(entries, x509.RevocationListEntry{SerialNumber: c.Cert.SerialNumber, RevocationTime: thisUpdate})
+	}
+	der, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{
+		Number:                    serial(t),
+		ThisUpdate:                thisUpdate,
+		NextUpdate:                nextUpdate,
+		RevokedCertificateEntries: entries,
+	}, ca.Cert, ca.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
 }
