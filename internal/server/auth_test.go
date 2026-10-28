@@ -128,7 +128,7 @@ func TestAnonymous(t *testing.T) {
 	if resp, body := n.do("GET", "/f", "", anonymous...); resp.StatusCode != 200 || body != "data" {
 		t.Fatalf("anonymous GET: %d %q", resp.StatusCode, body)
 	}
-	if _, body := n.do("GET", n.ts.URL+"/proc/whoami", "", anonymous...); !strings.Contains(body, "Username: anonymous") {
+	if _, body := n.do("GET", n.ts.URL+"/proc/whoami", "", anonymous...); !strings.Contains(body, "Username: nobody") {
 		t.Fatalf("whoami: %s", body)
 	}
 	// Credentials that an enabled method rejects are refused, not served anonymously
@@ -406,5 +406,59 @@ func TestMacaroonPathCannotBeEscapedWithEncodedDots(t *testing.T) {
 	}
 	if _, ok := n.read("/b/planted"); ok {
 		t.Error("file planted outside the macaroon path")
+	}
+}
+
+// The "request" record of every request names the user its credentials map to:
+// the grid-mapfile's, an issuer's user rule's, the one a macaroon was minted for, also
+// when they do not allow the request (403); nobody when no credentials map to anyone
+// (anonymous, invalid credentials, routes that take none)
+func TestRequestRecordUser(t *testing.T) {
+	iss := testutil.NewIssuer(t)
+	issuers := iss.WriteIssuers(tokenAudience, "/", map[string]interface{}{"users": []map[string]string{
+		{"sub": "robot", "user": "prod"},
+	}})
+	n := newNode(t, func(cfg *config.Config, _ string) {
+		cfg.TokenIssuers = issuers
+		cfg.TokenCAPath = iss.CAFile
+		cfg.Anonymous, cfg.Address = true, "127.0.0.1"
+	})
+	n.write("/f", "data")
+	download, _ := n.mint("/f", `{"caveats":["activity:DOWNLOAD"]}`)
+	robot := func(scope string, claims map[string]interface{}) []string {
+		if claims == nil {
+			claims = map[string]interface{}{}
+		}
+		claims["sub"] = "robot"
+		return bearer(iss.Token(tokenAudience, scope, claims))
+	}
+	log := captureLog(t)
+
+	for _, c := range []struct {
+		name, method, path string
+		headers            []string
+		code               int
+		user               string
+	}{
+		{"password", "GET", "/webdav/f", nil, 200, basicUser},
+		{"wrong password", "GET", "/webdav/f", []string{"Authorization", "Basic " + base64.StdEncoding.EncodeToString([]byte(basicUser+":wrong"))}, 401, "nobody"},
+		{"anonymous", "GET", "/webdav/f", []string{"Authorization", "none"}, 200, "nobody"},
+		{"token mapped by a user rule", "GET", "/webdav/f", robot("storage.read:/", nil), 200, "prod"},
+		{"token whose scopes do not allow the request", "PUT", "/webdav/g", robot("storage.read:/", nil), 403, "prod"},
+		{"token whose scopes miss the path", "GET", "/webdav/f", robot("storage.read:/other", nil), 403, "prod"},
+		{"token no rule maps", "GET", "/webdav/f", bearer(iss.Token(tokenAudience, "storage.read:/", nil)), 403, "nobody"},
+		{"expired token", "GET", "/webdav/f", robot("storage.read:/", map[string]interface{}{"exp": time.Now().Add(-time.Hour).Unix()}), 401, "nobody"},
+		{"macaroon", "GET", "/webdav/f", bearer(download), 200, basicUser},
+		{"macaroon that does not allow the request", "DELETE", "/webdav/f", bearer(download), 403, basicUser},
+		{"route that takes no credentials", "GET", "/healthz", nil, 200, "nobody"},
+	} {
+		log.Reset()
+		if code := n.status(c.method, n.ts.URL+c.path, "", c.headers...); code != c.code {
+			t.Errorf("%s: %d, want %d", c.name, code, c.code)
+		}
+		records := grepLines(log.String(), "msg=request ")
+		if strings.Count(records, "msg=request ") != 1 || !strings.Contains(records, " user="+c.user+" ") {
+			t.Errorf("%s: want user=%s in\n%s", c.name, c.user, records)
+		}
 	}
 }

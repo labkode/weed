@@ -621,7 +621,7 @@ func (s *Server) LogStartupInfo() {
 			"allow_local", c.TPCAllowLocal, "allow_private", c.TPCAllowPrivate)
 	}
 	if c.Anonymous {
-		slog.Warn("requests without credentials are served, read-write, as anonymous (server.anonymous)", "address", c.Address)
+		slog.Warn("requests without credentials are served, read-write, as nobody (server.anonymous)", "address", c.Address)
 	}
 	if !c.TLS && (c.BasicAuth || c.MacaroonAuth || c.OIDCAuth || c.TokenIssuers != "") {
 		slog.Warn("TLS is disabled: passwords and tokens are sent in clear text")

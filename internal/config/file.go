@@ -74,7 +74,7 @@ func (c *Config) sections() []section {
 			{"address", `address to listen on ("" for all interfaces)`, &c.Address},
 			{"port", "TCP port", &c.Port},
 			{"dir", "directory exported under /webdav/", &c.Directory},
-			{"anonymous", "serve requests without credentials, read-write, as \"anonymous\"; only on a loopback address (the default without a configuration file)", &c.Anonymous},
+			{"anonymous", "serve requests without credentials, read-write, as \"nobody\"; only on a loopback address (the default without a configuration file)", &c.Anonymous},
 			{"log_file", `log to this file ("" for standard error); weed reopens it on SIGHUP, for logrotate`, &c.LogFile},
 			{"log_level", `log records of this level and above: "debug", "info", "warn" or "error"`, &c.LogLevel},
 			{"log_format", `"text" (key=value) or "json", one record per line`, &c.LogFormat},

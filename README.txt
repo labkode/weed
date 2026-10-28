@@ -60,7 +60,7 @@ file that holds secrets (macaroons.secret_key, oidc.client_secret) if every user
 read it. Changes to the file take effect on restart.
 
 server.anonymous serves requests without credentials, read-write, as the user
-"anonymous". It is the default without a configuration file, and weed only allows it
+"nobody". It is the default without a configuration file, and weed only allows it
 when server.address is a loopback address, so only local clients (any local user)
 reach it. Credentials that an enabled method rejects still get 401.
 
@@ -430,6 +430,11 @@ the least severe level logged (default "info"):
 (one line in the log). Every request to the main port gets one, and is counted in
 weed_http_requests_total, whatever it is for: /webdav/, /healthz, the index page,
 unknown paths. Requests to server.metrics_address (Prometheus scrapes) get neither.
+user is the user that the request's credentials map to (the grid-mapfile's, an
+issuer's user rule's, the one a macaroon was minted for, the htpasswd entry; with
+unix_users, the account), also when they do not allow the request (403). It is nobody
+when no credentials map to anyone: anonymous requests, invalid or expired
+credentials, and routes that take none, such as /healthz.
 Records logged while serving a request carry its request_id, also when a worker
 process logs them: workers send their records to weed, which logs them with
 worker.user and worker.pid. Values are quoted or escaped, so clients cannot forge

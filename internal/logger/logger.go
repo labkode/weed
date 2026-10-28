@@ -269,10 +269,15 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 	if id == "" {
 		id = GenerateRequestID()
 	}
-	return context.WithValue(ctx, requestInfoKey, &requestInfo{id: id, username: "-"})
+	return context.WithValue(ctx, requestInfoKey, &requestInfo{id: id, username: Nobody})
 }
 
-// SetUsername records the authenticated user for the access log line
+// Nobody is the user of requests that no credentials map to: anonymous requests, and
+// requests whose credentials are invalid or that take none (such as /healthz)
+const Nobody = "nobody"
+
+// SetUsername records the user that the request's credentials map to, for its
+// "request" record (Nobody until then)
 func SetUsername(ctx context.Context, username string) {
 	if info, ok := ctx.Value(requestInfoKey).(*requestInfo); ok {
 		info.username = username
@@ -288,7 +293,7 @@ func Middleware(next http.Handler) http.Handler {
 		// Reuse the request info if an outer middleware already created it
 		info, ok := r.Context().Value(requestInfoKey).(*requestInfo)
 		if !ok {
-			info = &requestInfo{id: GenerateRequestID(), username: "-"}
+			info = &requestInfo{id: GenerateRequestID(), username: Nobody}
 			r = r.WithContext(context.WithValue(r.Context(), requestInfoKey, info))
 		}
 

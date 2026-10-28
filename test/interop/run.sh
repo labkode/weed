@@ -304,6 +304,7 @@ check "...owned by the account" owned interop /srv/c/interop/pulled.bin
 check "...logged by its worker, in weed's log" grep -q '"msg":"third-party copy completed","worker":{"user":"interop","pid":[0-9]*}.*"request_id":' $W/weed-c.log
 ROBOT=$(token -aud https://localhost:8447 -scope "storage.read:/ storage.modify:/" -groups /interop/robots)
 check "token mapped by its group writes as robot" http_status 201 -H "Authorization: Bearer $ROBOT" -T f.bin $(https $C)/robot/t.bin
+check "...logged as robot" grep -q '"msg":"request","method":"PUT","path":"/webdav/robot/t.bin",.*"status":201,.*"user":"robot"' $W/weed-c.log
 check "...owned by robot" owned robot /srv/c/robot/t.bin
 check "...and cannot write to interop's directory" http_status 403 -H "Authorization: Bearer $ROBOT" -T f.bin $(https $C)/interop/t.bin
 check "token no rule maps is refused" http_status 403 -H "Authorization: Bearer $(token -aud https://localhost:8447 -scope storage.read:/)" $(https $C)/interop/f.bin
@@ -322,8 +323,10 @@ check "...and start again when needed" gfal-ls $C/interop
 
 echo "== grid-mapfile, revocation and reloading"
 check "valid certificate with an openssl CRL" $CURL -o /dev/null https://localhost:8443/webdav/g.bin
+check "...logged as the grid-mapfile's user" grep -q 'msg=request method=GET path=/webdav/g.bin proto=HTTP/[0-9.]* status=200 .* user=interop ' $W/weed-a.log
 UCURL="curl -sS -o /dev/null -w %{http_code} --capath $CERTS --cert unmapped.pem --key unmapped.key"
 check "certificate not in the grid-mapfile refused" sh -c "[ \$($UCURL https://localhost:8443/webdav/g.bin) = 403 ]"
+check "...logged as nobody" grep -q 'msg=request method=GET path=/webdav/g.bin proto=HTTP/[0-9.]* status=403 .* user=nobody ' $W/weed-a.log
 RCURL="curl -sS -o /dev/null -w %{http_code} --capath $CERTS --cert revoked.pem --key revoked.key"
 check "certificate accepted before revocation" sh -c "[ \$($RCURL https://localhost:8443/webdav/g.bin) = 200 ]"
 ssl ca -config ca.cnf -revoke revoked.pem -keyfile ca.key -cert ca.pem

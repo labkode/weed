@@ -241,13 +241,24 @@ func (as *AuthStore) VerifyMacaroon(tokenString string, access AccessRequest) (*
 	now := time.Now()
 	for _, c := range conditions {
 		if err := checkCaveat(c, access, info, now); err != nil {
-			return nil, err
+			return nil, refusedAs(mintedFor(conditions), err)
 		}
 	}
 	if info.Username == "" {
 		return nil, errors.New("no id caveat found in macaroon")
 	}
 	return info, nil
+}
+
+// mintedFor returns the user of the first id caveat of a verified macaroon, the one
+// it was minted with (holders can only append caveats), or "" if it has none
+func mintedFor(conditions []string) string {
+	for _, c := range conditions {
+		if user, ok := strings.CutPrefix(c, "id:"); ok {
+			return user
+		}
+	}
+	return ""
 }
 
 // checkCaveat evaluates one first-party caveat. Unknown caveats fail: a restriction

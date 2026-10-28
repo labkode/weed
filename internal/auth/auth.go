@@ -57,6 +57,25 @@ type AuthInfo struct {
 // errForbidden marks credentials that are valid but do not allow the request
 var errForbidden = errors.New("forbidden")
 
+// refusal is the error of valid credentials that do not allow the request: they
+// still map to a user, whom the request's "request" record names
+type refusal struct {
+	user string
+	err  error
+}
+
+func (e *refusal) Error() string { return e.err.Error() }
+func (e *refusal) Unwrap() error { return e.err }
+
+// refusedAs returns err, recording that the credentials it refuses map to user ("" if
+// they map to no one)
+func refusedAs(user string, err error) error {
+	if user == "" {
+		return err
+	}
+	return &refusal{user, err}
+}
+
 // SetAuthInfoInContext stores authentication information in the context
 func SetAuthInfoInContext(ctx context.Context, authInfo *AuthInfo) context.Context {
 	// Store both username (for backward compatibility) and auth info
@@ -85,7 +104,7 @@ type AuthStore struct {
 	X509Enabled     bool
 	MacaroonEnabled bool
 	TokenEnabled    bool // WLCG and SciTokens JWTs, from Credentials.TokenIssuers
-	// Anonymous serves requests that carry no credentials, as "anonymous"
+	// Anonymous serves requests that carry no credentials, as nobody (logger.Nobody)
 	Anonymous bool
 
 	// UnixUsers requires every identity to be a local account (see unix.go), found
@@ -499,12 +518,12 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 			return slog.Group("auth", attrs...)
 		}
 
-		forbiddenBy := ""
+		forbiddenBy, forbiddenUser := "", ""
 		for i, m := range methods {
 			info, err := m.authenticate(r)
 			if info != nil && as.UnixUsers {
 				if info.Unix, err = as.unixUser(info.Username); err != nil {
-					info = nil
+					info, err = nil, refusedAs(info.Username, err)
 				}
 			}
 			switch {
@@ -518,6 +537,9 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 				status[i] = "fail"
 				if forbiddenBy == "" && errors.Is(err, errForbidden) {
 					forbiddenBy = m.name
+					if ref := (*refusal)(nil); errors.As(err, &ref) {
+						forbiddenUser = ref.user
+					}
 				}
 				slog.InfoContext(ctx, "authentication failed", "method", m.name, "error", err)
 			default:
@@ -529,12 +551,15 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 		if as.Anonymous && !slices.ContainsFunc(status, func(s string) bool { return s != "skip" }) {
 			slog.DebugContext(ctx, "anonymous request", flow())
 			metrics.Auth.Inc("anonymous", "success")
-			next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(ctx, &AuthInfo{Username: "anonymous", Method: "anonymous"})))
+			next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(ctx, &AuthInfo{Username: logger.Nobody, Method: "anonymous"})))
 			return
 		}
 
 		// Valid credentials that do not cover this request get 403, not a login prompt
 		if forbiddenBy != "" {
+			if forbiddenUser != "" {
+				logger.SetUsername(ctx, forbiddenUser)
+			}
 			slog.DebugContext(ctx, "forbidden", "method", forbiddenBy, flow())
 			metrics.Auth.Inc(forbiddenBy, "forbidden")
 			http.Error(w, "Forbidden", http.StatusForbidden)

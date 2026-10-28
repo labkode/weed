@@ -418,17 +418,18 @@ func (as *AuthStore) authenticateToken(r *http.Request) (*AuthInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	needs, err := tokenRequirements(r)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errForbidden, err)
-	}
-	noOverwrite, directories, err := authorizeToken(v.grants, needs)
-	if err != nil {
-		return nil, err
-	}
+	// The user the token maps to, also when its scopes do not allow the request
 	username, err := v.issuer.username(v.claims.Subject, v.groups)
 	if err != nil {
 		return nil, err
+	}
+	needs, err := tokenRequirements(r)
+	if err != nil {
+		return nil, refusedAs(username, fmt.Errorf("%w: %v", errForbidden, err))
+	}
+	noOverwrite, directories, err := authorizeToken(v.grants, needs)
+	if err != nil {
+		return nil, refusedAs(username, err)
 	}
 	info := &AuthInfo{
 		Username: username,

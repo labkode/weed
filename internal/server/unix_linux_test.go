@@ -794,3 +794,16 @@ func BenchmarkWorkers(b *testing.B) {
 		})
 	}
 }
+
+// Credentials that map to an account that cannot be used get 403, and the request's
+// record names that account
+func TestUnusableAccountLogged(t *testing.T) {
+	n := newUnixNode(t, nil)
+	log := captureLog(t)
+	if code := n.status("PROPFIND", "/", "", append(n.as("dave"), "Depth", "0")...); code != 403 {
+		t.Errorf("token of an unknown account: %d", code)
+	}
+	if records := grepLines(log.String(), "msg=request "); !strings.Contains(records, " user=dave ") {
+		t.Errorf("logged as:\n%s", records)
+	}
+}

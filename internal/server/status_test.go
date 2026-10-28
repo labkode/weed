@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/labkode/weed/internal/config"
+	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/version"
 )
@@ -373,17 +374,17 @@ func TestEveryRequestLogged(t *testing.T) {
 	}{
 		{"PUT", "/webdav/f", basicUser, 201},
 		{"GET", "/webdav/f", basicUser, 200},
-		{"GET", "/", "-", 200},
-		{"GET", "/healthz", "-", 200},
-		{"GET", "/status", "-", 200},
-		{"GET", "/metrics", "-", 200},
-		{"GET", "/nothing-here", "-", 404},
+		{"GET", "/", logger.Nobody, 200},
+		{"GET", "/healthz", logger.Nobody, 200},
+		{"GET", "/status", logger.Nobody, 200},
+		{"GET", "/metrics", logger.Nobody, 200},
+		{"GET", "/nothing-here", logger.Nobody, 404},
 		{"GET", "/proc/whoami", basicUser, 200},
 	} {
 		before := metrics.HTTPRequests.Get(metrics.Method(c.method), strconv.Itoa(c.code))
 		log.Reset()
 		auth := []string{"Authorization", "none"}
-		if c.user != "-" {
+		if c.user != logger.Nobody {
 			auth = nil
 		}
 		if code := n.status(c.method, n.ts.URL+c.path, "data", auth...); code != c.code {

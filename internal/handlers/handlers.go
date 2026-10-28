@@ -880,6 +880,7 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 			oidcPage(w, status, "Login failed", "<p>"+html.EscapeString(err.Error())+"</p>\n<p><a href=\"/auth/oidc\">Try again</a></p>")
 			return
 		}
+		logger.SetUsername(ctx, tok.Username) // the user the token maps to
 		slog.InfoContext(ctx, "gave out a token through an OIDC login", "user", tok.Username, "issuer", tok.Issuer,
 			"subject", tok.Subject, "scopes", strings.Join(tok.Scopes, " "), "expires", tok.Expiry)
 

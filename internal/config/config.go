@@ -16,7 +16,7 @@ type Config struct {
 	Port      int
 	Address   string
 	Directory string
-	// Anonymous serves requests without credentials, as "anonymous" (loopback only)
+	// Anonymous serves requests without credentials, as "nobody" (loopback only)
 	Anonymous   bool
 	TLS         bool
 	TLSCert     string
