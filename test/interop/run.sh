@@ -41,12 +41,19 @@ cat proxy.pem proxy.key user.pem >/tmp/x509up_u0
 chmod 600 /tmp/x509up_u0
 export X509_USER_PROXY=/tmp/x509up_u0 X509_CERT_DIR=$CERTS
 
+# A CRL made by openssl, installed the way fetch-crl does (<hash>.r0)
+issue revoked "/DC=org/DC=weed/OU=Users/CN=Revoked User" ca.pem ca.key 4 "keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n"
+mkdir -p ca && touch ca/index.txt && echo 01 >ca/crlnumber
+printf '[ca]\ndefault_ca = d\n[d]\ndatabase = ca/index.txt\ncrlnumber = ca/crlnumber\ndefault_md = sha256\ndefault_crl_days = 1\n' >ca.cnf
+gencrl() { ssl ca -config ca.cnf -gencrl -keyfile ca.key -cert ca.pem -out $CERTS/$(openssl x509 -hash -noout -in ca.pem).r0; }
+gencrl
+
 # --- servers
 echo "\"$USER_DN\" interop" >gridmap
 mkdir -p /srv/a /srv/b
 start_weed() { # name port
 	weed -port $2 -dir /srv/$1 -tls -tls-cert host.pem -tls-key host.key \
-		-x509-auth -ca-cert ca.pem -gridmap-file gridmap \
+		-x509-auth -ca-cert $CERTS -crl-path $CERTS -gridmap-file gridmap \
 		-macaroon-auth -macaroon-secret-key "$(openssl rand -hex 32)" \
 		-tpc -tpc-ca-path $CERTS -tpc-allow-local -tpc-marker-interval 20ms \
 		-log-file $W/weed-$1.log &
@@ -169,6 +176,18 @@ check "weed pushes with Repr-Digest; destination verifies" tpc_curl $A/g.bin -H 
 MACB=$(mint $B/pushed-bad.bin UPLOAD)
 check "push with wrong digest fails with 412 from destination" sh -c "$CURL -X COPY -H 'Destination: $(https $B)/pushed-bad.bin' \
 	-H 'TransferHeaderAuthorization: Bearer $MACB' -H 'Repr-Digest: adler=:AAAAAA==:' $(https $A)/g.bin | tail -1 | grep -q 'checksum mismatch reported by destination'"
+
+echo "== revocation and reloading"
+check "valid certificate with an openssl CRL" $CURL -o /dev/null https://localhost:8443/webdav/g.bin
+RCURL="curl -sS -o /dev/null -w %{http_code} --capath $CERTS --cert revoked.pem --key revoked.key"
+check "certificate accepted before revocation" sh -c "[ \$($RCURL https://localhost:8443/webdav/g.bin) = 200 ]"
+ssl ca -config ca.cnf -revoke revoked.pem -keyfile ca.key -cert ca.pem
+gencrl
+pkill -HUP -f 'weed -port 8443'
+# wait for the reload to be logged (once at startup, once after SIGHUP)
+for i in $(seq 50); do [ "$(grep -c 'Loaded 1 CRLs' $W/weed-a.log)" -ge 2 ] && break; sleep 0.1; done
+check "revoked certificate rejected after SIGHUP" sh -c "[ \$($RCURL https://localhost:8443/webdav/g.bin) = 401 ]"
+check "other users unaffected" $CURL -o /dev/null https://localhost:8443/webdav/g.bin
 
 echo
 echo "$pass passed, $fail failed"
