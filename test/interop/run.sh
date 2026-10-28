@@ -43,7 +43,8 @@ chmod 600 /tmp/x509up_u0
 export X509_USER_PROXY=/tmp/x509up_u0 X509_CERT_DIR=$CERTS
 
 # A CRL made by openssl, installed the way fetch-crl does (<hash>.r0)
-issue revoked "/DC=org/DC=weed/OU=Users/CN=Revoked User" ca.pem ca.key 4 "keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n"
+REVOKED_DN="/DC=org/DC=weed/OU=Users/CN=Revoked User"
+issue revoked "$REVOKED_DN" ca.pem ca.key 4 "keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n"
 mkdir -p ca && touch ca/index.txt && echo 01 >ca/crlnumber
 printf '[ca]\ndefault_ca = d\n[d]\ndatabase = ca/index.txt\ncrlnumber = ca/crlnumber\ndefault_md = sha256\ndefault_crl_days = 1\n' >ca.cnf
 gencrl() { ssl ca -config ca.cnf -gencrl -keyfile ca.key -cert ca.pem -out $CERTS/$(openssl x509 -hash -noout -in ca.pem).r0; }
@@ -58,7 +59,9 @@ token() { issuer mint -url $ISS -signing-key issuer.key "$@"; } # -aud AUD -scop
 printf '[{"issuer": "%s", "audiences": ["https://localhost:8443", "https://localhost:8444"]}]' $ISS >issuers.json
 
 # --- servers
-echo "\"$USER_DN\" interop" >gridmap
+# A certificate from the CA that is not listed here, like unmapped.pem, is refused
+printf '"%s" interop\n"%s" revoked\n' "$USER_DN" "$REVOKED_DN" >gridmap
+issue unmapped "/DC=org/DC=weed/OU=Users/CN=Unmapped User" ca.pem ca.key 5 "keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n"
 mkdir -p /srv/a /srv/b
 start_weed() { # name port [flags]
 	weed -port $2 -dir /srv/$1 -tls -tls-cert host.pem -tls-key host.key \
@@ -254,8 +257,10 @@ check "weed refuses a pull onto an existing file with storage.create" status 403
 	-H "Source: https://localhost:8445/srv/x/tok/f.bin" -H "TransferHeaderAuthorization: Bearer $READ" https://localhost:8443/webdav/tok/up/g.bin
 mv proxy.off /tmp/x509up_u0
 
-echo "== revocation and reloading"
+echo "== grid-mapfile, revocation and reloading"
 check "valid certificate with an openssl CRL" $CURL -o /dev/null https://localhost:8443/webdav/g.bin
+UCURL="curl -sS -o /dev/null -w %{http_code} --capath $CERTS --cert unmapped.pem --key unmapped.key"
+check "certificate not in the grid-mapfile refused" sh -c "[ \$($UCURL https://localhost:8443/webdav/g.bin) = 403 ]"
 RCURL="curl -sS -o /dev/null -w %{http_code} --capath $CERTS --cert revoked.pem --key revoked.key"
 check "certificate accepted before revocation" sh -c "[ \$($RCURL https://localhost:8443/webdav/g.bin) = 200 ]"
 ssl ca -config ca.cnf -revoke revoked.pem -keyfile ca.key -cert ca.pem

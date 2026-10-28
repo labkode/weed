@@ -165,6 +165,34 @@ func TestX509WithProxiesAndGridmap(t *testing.T) {
 	if code, _ := get(rogue, "/webdav/"); code != 401 {
 		t.Fatalf("untrusted certificate on /webdav/: %d", code)
 	}
+
+	// A certificate from a trusted CA is refused unless the grid-mapfile lists its DN
+	other := testutil.NewUser(t, ca, testutil.Name(t, "DC=ch", "DC=cern", "CN=someone"), time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	unmapped := clientWithCert(n, testutil.TLS(testutil.NewProxy(t, other, true, time.Now().Add(time.Hour)), other))
+	for _, p := range []string{"/webdav/", "/auth/x509"} {
+		if code, _ := get(unmapped, p); code != 403 {
+			t.Fatalf("unmapped certificate on %s: %d", p, code)
+		}
+	}
+	if _, body := get(unmapped, "/proc/x509"); !strings.Contains(body, "Would FAIL (not in the grid-mapfile)") {
+		t.Fatalf("/proc/x509 for an unmapped certificate: %s", body)
+	}
+	// Other credentials sent along still apply
+	n.write("/f", "data")
+	req, _ := http.NewRequest("GET", n.ts.URL+"/webdav/f", nil)
+	req.SetBasicAuth(basicUser, basicPass)
+	if resp, err := unmapped.Do(req); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("unmapped certificate with a password: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
+	}
+
+	// Removing the DN from the grid-mapfile revokes access on reload
+	os.WriteFile(gridmap, []byte("# nobody\n"), 0600)
+	n.srv.Reload()
+	if code, _ := get(clientWithCert(n, testutil.TLS(user)), "/webdav/"); code != 403 {
+		t.Fatalf("certificate removed from the grid-mapfile: %d", code)
+	}
 }
 
 // fakeIdP is a minimal OpenID provider

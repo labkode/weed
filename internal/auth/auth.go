@@ -157,13 +157,11 @@ func (as *AuthStore) SetCredentials(c *Credentials) {
 	as.creds.Store(c)
 }
 
-// MapDN returns the account a certificate DN maps to in the grid-mapfile, or the DN
-// itself if it is not listed
-func (as *AuthStore) MapDN(dn string) string {
-	if user, ok := as.Credentials().Gridmap[dn]; ok {
-		return user
-	}
-	return dn
+// MapDN returns the account a certificate DN maps to in the grid-mapfile, and whether
+// it is listed at all
+func (as *AuthStore) MapDN(dn string) (string, bool) {
+	user, ok := as.Credentials().Gridmap[dn]
+	return user, ok
 }
 
 // parseGridmapLine parses `"DN" user[,user...]`; the DN may contain spaces
@@ -459,7 +457,11 @@ func (as *AuthStore) authenticateX509(r *http.Request) (*AuthInfo, error) {
 		return nil, err
 	}
 	dn := x509utils.GetDNParts(eec)
-	username := as.MapDN(dn)
+	username, ok := as.MapDN(dn)
+	if !ok {
+		// Only the certificates listed in the grid-mapfile are let in, not every one the CAs issued
+		return nil, fmt.Errorf("%w: %s is not in the grid-mapfile", errForbidden, dn)
+	}
 
 	info := &AuthInfo{
 		Username: username,
@@ -469,9 +471,6 @@ func (as *AuthStore) authenticateX509(r *http.Request) (*AuthInfo, error) {
 			"certificate_subject": eec.Subject.String(),
 			"certificate_serial":  eec.SerialNumber.String(),
 		},
-	}
-	if username != dn {
-		info.Details["gridmap_mapping"] = username
 	}
 	if proxies > 0 {
 		info.Details["proxy_certificates"] = proxies
@@ -597,6 +596,10 @@ func (as *AuthStore) X509AuthMiddleware(next http.Handler) http.Handler {
 				err = errors.New("no client certificate provided")
 			}
 			log.Printf("[X509-AUTH] [%s] %v - denying access", reqID, err)
+			if errors.Is(err, errForbidden) {
+				http.Error(w, "Certificate not authorized", http.StatusForbidden)
+				return
+			}
 			http.Error(w, "Valid client certificate required", http.StatusUnauthorized)
 			return
 		}

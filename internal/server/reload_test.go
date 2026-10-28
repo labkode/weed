@@ -51,10 +51,13 @@ func TestReloadCRLRevokesCertificate(t *testing.T) {
 	}
 	writeCRL()
 
+	gridmap := filepath.Join(t.TempDir(), "grid-mapfile")
+	os.WriteFile(gridmap, []byte(`"/CN=jdoe" jdoe`+"\n"), 0600)
 	n := newNode(t, func(cfg *config.Config, _ string) {
 		cfg.TLS, cfg.X509Auth = true, true
 		cfg.CACert = writePEM(t, ca.Cert.Raw)
 		cfg.CRLPath = crlDir
+		cfg.GridmapFile = gridmap
 	})
 	n.write("/f", "x")
 	client := clientWithCert(n, testutil.TLS(testutil.NewProxy(t, user, true, now.Add(time.Hour)), user))
@@ -82,10 +85,22 @@ func TestReloadCRLRevokesCertificate(t *testing.T) {
 
 func TestMissingRequiredCRLIsFatal(t *testing.T) {
 	ca := testutil.NewCA(t, testutil.Name(t, "CN=Grid CA"))
+	gridmap := filepath.Join(t.TempDir(), "grid-mapfile")
+	os.WriteFile(gridmap, nil, 0600)
 	cfg := &config.Config{Directory: t.TempDir(), TLS: true, X509Auth: true, CACert: writePEM(t, ca.Cert.Raw),
-		GridmapFile: "/nonexistent", CRLPath: t.TempDir(), CRLMode: config.CRLRequire}
+		GridmapFile: gridmap, CRLPath: t.TempDir(), CRLMode: config.CRLRequire}
 	if err := New(cfg).Initialize(); err == nil || !strings.Contains(err.Error(), "CRL") {
 		t.Fatalf("startup without CRLs: %v", err)
+	}
+}
+
+// X.509 accepts only the certificates listed in the grid-mapfile, so it cannot work without one
+func TestMissingGridmapIsFatal(t *testing.T) {
+	ca := testutil.NewCA(t, testutil.Name(t, "CN=Grid CA"))
+	cfg := &config.Config{Directory: t.TempDir(), TLS: true, X509Auth: true, CACert: writePEM(t, ca.Cert.Raw),
+		GridmapFile: filepath.Join(t.TempDir(), "grid-mapfile")}
+	if err := New(cfg).Initialize(); err == nil || !strings.Contains(err.Error(), "grid-mapfile") {
+		t.Fatalf("startup without a grid-mapfile: %v", err)
 	}
 }
 

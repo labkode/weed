@@ -606,7 +606,13 @@ func (h *WebDAVHandler) ProcX509Handler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	dn := x509utils.GetDNParts(eec)
-	username := h.AuthStore.MapDN(dn)
+	username, ok := h.AuthStore.MapDN(dn)
+	if !ok {
+		fmt.Fprintf(w, "Authentication Status: Would FAIL (not in the grid-mapfile)\n")
+		fmt.Fprintf(w, "Identity DN: %s\n", dn)
+		log.Printf("[X509-INFO] [%s] /proc/x509 - DN not in the grid-mapfile: %s", reqID, dn)
+		return
+	}
 	fmt.Fprintf(w, "Authentication Status: Would SUCCEED\n")
 	fmt.Fprintf(w, "Identity DN: %s\n", dn)
 	if proxies > 0 {

@@ -151,7 +151,18 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (c *auth.Credentials, c
 		loadMap("app token", s.Config.AppTokensFile, auth.LoadAppTokens, &next.AppTokens)
 	}
 	if s.Config.X509Auth {
-		loadMap("grid-mapfile", s.Config.GridmapFile, auth.LoadGridmap, &next.Gridmap)
+		// Only certificates listed in the grid-mapfile are accepted, so X.509 needs one
+		gridmap, err := auth.LoadGridmap(s.Config.GridmapFile)
+		switch {
+		case err == nil:
+			c.Gridmap = gridmap
+			log.Printf("[CREDENTIALS] Loaded %d grid-mapfile entries from %s", len(gridmap), s.Config.GridmapFile)
+		case startup:
+			return nil, false, fmt.Errorf("failed to load the grid-mapfile: %w", err)
+		default:
+			log.Printf("[CREDENTIALS] Cannot read grid-mapfile %s, keeping %d previous entries: %v", s.Config.GridmapFile, len(prev.Gridmap), err)
+			complete = false
+		}
 
 		roots, n, err := auth.LoadCAs(s.Config.CACert)
 		switch {

@@ -114,7 +114,11 @@ to do what was asked. All authenticated users share the same namespace.
    -ca-cert is a PEM file or a directory such as /etc/grid-security/certificates.
    End-entity certificates and RFC 3820 (and legacy Globus) proxy chains are accepted.
    The DN, in OpenSSL format and certificate order (e.g.
-   "/DC=ch/DC=cern/OU=Users/CN=jdoe"), is mapped to a user with the grid-mapfile.
+   "/DC=ch/DC=cern/OU=Users/CN=jdoe"), must be listed in the grid-mapfile, which
+   maps it to a user: a certificate from a trusted CA whose DN is not listed gets 403,
+   so trusting all of /etc/grid-security/certificates does not let in every grid user.
+   With -x509-auth, weed does not start without a readable grid-mapfile; removing a DN
+   from it and reloading revokes that user's access.
    /proc/x509 shows how the server sees the presented certificate.
 
    Proxy chains are refused when a proxy:

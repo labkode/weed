@@ -74,7 +74,7 @@ func ParseFlags() *Config {
 	flag.StringVar(&cfg.CRLMode, "crl-mode", CRLRequire, "with -crl-path: \"require\" rejects certificates whose issuer has no current CRL; \"if-valid\" only checks against CRLs that are present and current")
 	flag.StringVar(&cfg.MetricsAddress, "metrics-address", "", "serve Prometheus metrics (/metrics) and /healthz, without authentication, on this address, e.g. localhost:9100 (default: disabled)")
 	flag.DurationVar(&cfg.ReloadInterval, "reload-interval", time.Hour, "re-read credential files (htpasswd, app tokens, grid-mapfile, CAs, CRLs, token issuers, TLS certificate) this often; 0 disables (SIGHUP always reloads)")
-	flag.StringVar(&cfg.GridmapFile, "gridmap-file", "/etc/grid-security/grid-mapfile", "path to gridmap file for X.509 DN to username mapping")
+	flag.StringVar(&cfg.GridmapFile, "gridmap-file", "/etc/grid-security/grid-mapfile", "path to the grid-mapfile: only certificates whose DN it lists are accepted, mapped to its usernames")
 	flag.BoolVar(&cfg.BasicAuth, "basic-auth", false, "enable HTTP Basic Authentication")
 	flag.StringVar(&cfg.HtpasswdFile, "htpasswd-file", ".htpasswd", "path to htpasswd file for basic authentication")
 	flag.StringVar(&cfg.AppTokensFile, "app-tokens-file", ".app-tokens", "path to app tokens file for application password authentication")
