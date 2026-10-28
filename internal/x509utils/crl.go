@@ -150,6 +150,25 @@ func LoadCRLs(path string, require bool) (*CRLSet, error) {
 	return set, nil
 }
 
+// Expiry returns when the first issuer runs out of current CRLs: the earliest, over
+// all issuers, of the latest NextUpdate of their CRLs (zero if none has one). With
+// Require, certificates of that issuer are rejected from then on.
+func (s *CRLSet) Expiry() time.Time {
+	var earliest time.Time
+	for _, list := range s.byIssuer {
+		var latest time.Time
+		for _, c := range list {
+			if c.list.NextUpdate.After(latest) {
+				latest = c.list.NextUpdate
+			}
+		}
+		if !latest.IsZero() && (earliest.IsZero() || latest.Before(earliest)) {
+			earliest = latest
+		}
+	}
+	return earliest
+}
+
 // Len returns the number of CRLs in the set
 func (s *CRLSet) Len() int {
 	n := 0

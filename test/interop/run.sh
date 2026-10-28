@@ -51,14 +51,14 @@ gencrl
 # --- servers
 echo "\"$USER_DN\" interop" >gridmap
 mkdir -p /srv/a /srv/b
-start_weed() { # name port
+start_weed() { # name port [flags]
 	weed -port $2 -dir /srv/$1 -tls -tls-cert host.pem -tls-key host.key \
 		-x509-auth -ca-cert $CERTS -crl-path $CERTS -gridmap-file gridmap \
 		-macaroon-auth -macaroon-secret-key "$(openssl rand -hex 32)" \
 		-tpc -tpc-ca-path $CERTS -tpc-allow-local -tpc-marker-interval 20ms \
-		-log-file $W/weed-$1.log &
+		"${@:3}" -log-file $W/weed-$1.log &
 }
-start_weed a 8443
+start_weed a 8443 -metrics-address localhost:9100
 start_weed b 8444
 
 # XRootD as a production-like WLCG endpoint: X.509 over HTTPS, macaroons, HTTP-TPC.
@@ -188,6 +188,13 @@ pkill -HUP -f 'weed -port 8443'
 for i in $(seq 50); do [ "$(grep -c 'Loaded 1 CRLs' $W/weed-a.log)" -ge 2 ] && break; sleep 0.1; done
 check "revoked certificate rejected after SIGHUP" sh -c "[ \$($RCURL https://localhost:8443/webdav/g.bin) = 401 ]"
 check "other users unaffected" $CURL -o /dev/null https://localhost:8443/webdav/g.bin
+
+echo "== metrics"
+curl -s localhost:9100/metrics >metrics.txt
+check "/healthz" sh -c "[ \"\$(curl -s localhost:9100/healthz)\" = ok ]"
+check "TPC transfers counted" grep -qE '^weed_tpc_transfers_total\{mode="push",result="success"\} [1-9]' metrics.txt
+check "checksum mismatches counted" grep -qE '^weed_checksum_mismatches_total\{operation="tpc_push"\} [1-9]' metrics.txt
+check "CRL and certificate expiry exported" sh -c "grep -q '^weed_crl_expiry_timestamp_seconds ' metrics.txt && grep -q '^weed_tls_certificate_expiry_timestamp_seconds ' metrics.txt"
 
 echo
 echo "$pass passed, $fail failed"

@@ -6,7 +6,10 @@ import (
 	"encoding/hex"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/labkode/weed/internal/metrics"
 )
 
 // Request info context key
@@ -91,6 +94,11 @@ func Middleware(next http.Handler) http.Handler {
 
 		log.Printf("[HTTP] [%s] %s %s %s %s %s -> %d %dB (%v) [%s]",
 			info.id, info.username, remoteAddr, r.Method, r.URL.Path, r.Proto, lrw.statusCode, lrw.bytes, duration, userAgent)
+		if !ok { // count each request once, in the outermost middleware
+			method := metrics.Method(r.Method)
+			metrics.HTTPRequests.Inc(method, strconv.Itoa(lrw.statusCode))
+			metrics.HTTPResponseBytes.Add(lrw.bytes, method)
+		}
 	})
 }
 

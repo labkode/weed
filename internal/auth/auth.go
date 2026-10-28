@@ -20,6 +20,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/labkode/weed/internal/logger"
+	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/x509utils"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
@@ -623,18 +624,21 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 			return strings.Join(parts, " ")
 		}
 
-		forbidden := false
+		forbiddenBy := ""
 		for i, m := range methods {
 			info, err := m.authenticate(r)
 			switch {
 			case info != nil:
 				status[i] = "OK"
 				log.Printf("[AUTH-FLOW] [%s] %s -> SUCCESS (%s) user=%s", reqID, flow(), m.name, info.Username)
+				metrics.Auth.Inc(strings.ToLower(m.name), "success")
 				next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(r.Context(), info)))
 				return
 			case err != nil:
 				status[i] = "FAIL"
-				forbidden = forbidden || errors.Is(err, errForbidden)
+				if forbiddenBy == "" && errors.Is(err, errForbidden) {
+					forbiddenBy = strings.ToLower(m.name)
+				}
 				log.Printf("[%s-AUTH] [%s] %v - trying next auth method", m.name, reqID, err)
 			default:
 				status[i] = "SKIP"
@@ -642,12 +646,14 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Valid credentials that do not cover this request get 403, not a login prompt
-		if forbidden {
+		if forbiddenBy != "" {
 			log.Printf("[AUTH-FLOW] [%s] %s -> DENIED (403)", reqID, flow())
+			metrics.Auth.Inc(forbiddenBy, "forbidden")
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
 		log.Printf("[AUTH-FLOW] [%s] %s -> DENIED (401)", reqID, flow())
+		metrics.Auth.Inc("none", "unauthorized")
 		as.challenge(w, "Authorization required")
 	})
 }

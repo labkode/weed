@@ -70,6 +70,9 @@ func TestReloadCRLRevokesCertificate(t *testing.T) {
 	if code := get(); code != 200 {
 		t.Fatalf("valid certificate: %d", code)
 	}
+	if !strings.Contains(scrape(t, n), "\nweed_crl_expiry_timestamp_seconds ") {
+		t.Error("no CRL expiry metric")
+	}
 	writeCRL(user)
 	n.srv.Reload()
 	if code := get(); code != 401 {
@@ -144,4 +147,12 @@ func TestReloadTPCCAs(t *testing.T) {
 	n.srv.Reload()
 	code, body = copyTPC(t, n, "/b", "Source", src.URL+"/f")
 	expectSuccess(t, code, body)
+}
+
+func writeTestKeyPair(t *testing.T) (certFile, keyFile string) {
+	dir := t.TempDir()
+	certFile, keyFile = filepath.Join(dir, "host.pem"), filepath.Join(dir, "host.key")
+	ca := testutil.NewCA(t, testutil.Name(t, "CN=Host CA"))
+	writeKeyPair(t, testutil.NewUser(t, ca, testutil.Name(t, "CN=weed.example"), time.Now().Add(-time.Hour), time.Now().Add(time.Hour)), certFile, keyFile)
+	return certFile, keyFile
 }

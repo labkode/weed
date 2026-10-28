@@ -27,6 +27,7 @@ import (
 	"github.com/labkode/weed/internal/davreq"
 	"github.com/labkode/weed/internal/digest"
 	"github.com/labkode/weed/internal/logger"
+	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/tpc"
 	"github.com/labkode/weed/internal/x509utils"
 	"golang.org/x/net/webdav"
@@ -275,6 +276,7 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	sums := hasher.Sums()
 	if alg, bad := digest.Mismatch(expected, sums); bad {
 		log.Printf("[PUT] [%s] Repr-Digest mismatch for %s (%s): client %x, received %x", reqID, r.URL.Path, alg, expected[alg], sums[alg])
+		metrics.ChecksumMismatches.Inc("put")
 		http.Error(w, fmt.Sprintf("File not saved: client/server checksum mismatch (%s)", alg), http.StatusPreconditionFailed)
 		return
 	}
@@ -290,6 +292,7 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[PUT] [%s] Stored %s (%d bytes, adler32 %x)", reqID, r.URL.Path, n, sums[digest.Adler])
+	metrics.UploadBytes.Add(n)
 	w.Header().Set("ETag", etagFor(newFi))
 	w.Header().Set("Repr-Digest", digest.FormatReprDigest(sums))
 	if exists {

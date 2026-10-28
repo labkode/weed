@@ -5,9 +5,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +22,7 @@ import (
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/handlers"
 	"github.com/labkode/weed/internal/logger"
+	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/tpc"
 	"github.com/labkode/weed/internal/x509utils"
 )
@@ -53,7 +59,7 @@ func (s *Server) Initialize() error {
 		s.AuthStore.PrepareBasicAuth()
 	}
 	s.AuthStore.X509Enabled = s.Config.X509Auth
-	creds, err := s.loadCredentials(nil)
+	creds, _, err := s.loadCredentials(nil)
 	if err != nil {
 		return err
 	}
@@ -107,15 +113,25 @@ func (s *Server) Initialize() error {
 // When a file cannot be read, its previous contents (from prev) are kept, so that a
 // file being rewritten or broken during a reload neither locks everybody out nor
 // lets anybody in. At startup (prev == nil) unreadable CAs or CRLs are fatal.
-func (s *Server) loadCredentials(prev *auth.Credentials) (*auth.Credentials, error) {
-	if prev == nil {
+func (s *Server) loadCredentials(prev *auth.Credentials) (c *auth.Credentials, complete bool, err error) {
+	startup := prev == nil
+	if startup {
 		prev = &auth.Credentials{}
 	}
-	c := *prev
+	next := *prev
+	c, complete = &next, true
 	loadMap := func(what, file string, load func(string) (map[string]string, error), dst *map[string]string) {
 		m, err := load(file)
+		if errors.Is(err, fs.ErrNotExist) && len(*dst) == 0 {
+			// Not configured (e.g. the default .app-tokens does not exist): not a problem
+			if startup {
+				log.Printf("[CREDENTIALS] No %s file %s", what, file)
+			}
+			return
+		}
 		if err != nil {
 			log.Printf("[CREDENTIALS] Cannot read %s %s, keeping %d previous entries: %v", what, file, len(*dst), err)
+			complete = false
 			return
 		}
 		*dst = m
@@ -123,11 +139,11 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (*auth.Credentials, err
 	}
 
 	if s.Config.BasicAuth {
-		loadMap("htpasswd", s.Config.HtpasswdFile, auth.LoadHtpasswd, &c.Htpasswd)
-		loadMap("app token", s.Config.AppTokensFile, auth.LoadAppTokens, &c.AppTokens)
+		loadMap("htpasswd", s.Config.HtpasswdFile, auth.LoadHtpasswd, &next.Htpasswd)
+		loadMap("app token", s.Config.AppTokensFile, auth.LoadAppTokens, &next.AppTokens)
 	}
 	if s.Config.X509Auth {
-		loadMap("grid-mapfile", s.Config.GridmapFile, auth.LoadGridmap, &c.Gridmap)
+		loadMap("grid-mapfile", s.Config.GridmapFile, auth.LoadGridmap, &next.Gridmap)
 
 		roots, n, err := auth.LoadCAs(s.Config.CACert)
 		switch {
@@ -135,9 +151,10 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (*auth.Credentials, err
 			c.Roots = roots
 			log.Printf("[CREDENTIALS] Loaded %d CA certificates from %s", n, s.Config.CACert)
 		case prev.Roots == nil:
-			return nil, fmt.Errorf("failed to load CA certificates: %w", err)
+			return nil, false, fmt.Errorf("failed to load CA certificates: %w", err)
 		default:
 			log.Printf("[CREDENTIALS] Cannot read CA certificates from %s, keeping the previous ones: %v", s.Config.CACert, err)
+			complete = false
 		}
 
 		if s.Config.CRLPath != "" {
@@ -147,13 +164,14 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (*auth.Credentials, err
 				c.CRLs = crls
 				log.Printf("[CREDENTIALS] Loaded %d CRLs from %s (mode %s)", crls.Len(), s.Config.CRLPath, s.Config.CRLMode)
 			case prev.CRLs == nil:
-				return nil, fmt.Errorf("failed to load CRLs: %w", err)
+				return nil, false, fmt.Errorf("failed to load CRLs: %w", err)
 			default:
 				log.Printf("[CREDENTIALS] Cannot read CRLs from %s, keeping the previous ones: %v", s.Config.CRLPath, err)
+				complete = false
 			}
 		}
 	}
-	return &c, nil
+	return c, complete, nil
 }
 
 // loadCertificate reads the TLS server certificate and key
@@ -174,24 +192,81 @@ func (s *Server) Reload() {
 	defer s.reloadMu.Unlock()
 	log.Printf("[RELOAD] Reloading credentials")
 
-	creds, err := s.loadCredentials(s.AuthStore.Credentials())
+	creds, complete, err := s.loadCredentials(s.AuthStore.Credentials())
 	if err != nil {
 		log.Printf("[RELOAD] %v", err) // only possible at startup
+		complete = false
 	} else {
 		s.AuthStore.SetCredentials(creds)
 	}
 	if s.Config.TLS && s.cert.Load() != nil {
 		if err := s.loadCertificate(); err != nil {
 			log.Printf("[RELOAD] Cannot read TLS certificate, keeping the previous one: %v", err)
+			complete = false
 		}
 	}
 	if s.Handler.TPC != nil && s.Config.TPCCAPath != "" {
 		if pool, err := tpc.LoadCAs(s.Config.TPCCAPath); err != nil {
 			log.Printf("[RELOAD] Cannot read TPC CA certificates, keeping the previous ones: %v", err)
+			complete = false
 		} else {
 			s.Handler.TPC.SetRootCAs(pool)
 		}
 	}
+	if complete {
+		metrics.Reloads.Inc("success")
+	} else {
+		metrics.Reloads.Inc("partial")
+	}
+}
+
+// writeGauges writes the metrics computed when scraped: when credentials expire
+func (s *Server) writeGauges(w io.Writer) {
+	if crls := s.AuthStore.Credentials().CRLs; crls != nil {
+		if t := crls.Expiry(); !t.IsZero() {
+			metrics.WriteGauge(w, "weed_crl_expiry_timestamp_seconds",
+				"When the first CA runs out of current CRLs (with -crl-mode require its users are rejected from then on).",
+				float64(t.Unix()), nil, nil)
+		}
+	}
+	if cert := s.cert.Load(); cert != nil && cert.Leaf != nil {
+		metrics.WriteGauge(w, "weed_tls_certificate_expiry_timestamp_seconds", "When the TLS server certificate expires.",
+			float64(cert.Leaf.NotAfter.Unix()), nil, nil)
+	}
+	version, goVersion := "unknown", runtime.Version()
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		version = bi.Main.Version
+	}
+	metrics.WriteGauge(w, "weed_build_info", "Version of weed and of Go it was built with.", 1,
+		[]string{"version", "goversion"}, []string{version, goVersion})
+}
+
+// healthz reports whether the exported directory responds (a hung network
+// filesystem would otherwise only show up as hanging requests)
+func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
+	errc := make(chan error, 1)
+	go func() {
+		_, err := os.Stat(s.Config.Directory)
+		errc <- err
+	}()
+	select {
+	case err := <-errc:
+		if err != nil {
+			http.Error(w, "storage unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprintln(w, "ok")
+	case <-time.After(5 * time.Second):
+		http.Error(w, "storage not responding", http.StatusServiceUnavailable)
+	}
+}
+
+// MetricsHandler serves /metrics and /healthz
+func (s *Server) MetricsHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler(s.writeGauges))
+	mux.HandleFunc("/healthz", s.healthz)
+	return mux
 }
 
 // applyAuthMiddleware applies the unified authentication middleware to a handler
@@ -256,6 +331,7 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 
 	// Utility routes
 	mux.Handle("/proc/x509", logger.Middleware(http.HandlerFunc(s.Handler.ProcX509Handler)))
+	mux.HandleFunc("/healthz", s.healthz)
 
 	// Add whoami route at /proc/whoami - apply auth middleware if any auth is enabled
 	if s.Config.BasicAuth || s.Config.X509Auth || s.Config.OIDCAuth || s.Config.MacaroonAuth {
@@ -367,6 +443,16 @@ func (s *Server) Run(ctx context.Context) error {
 		go func() { errCh <- s.server.ListenAndServe() }()
 	}
 
+	if s.Config.MetricsAddress != "" {
+		ms := &http.Server{Addr: s.Config.MetricsAddress, Handler: s.MetricsHandler(), ReadHeaderTimeout: 10 * time.Second}
+		log.Printf("[STARTUP] Serving metrics on http://%s/metrics", s.Config.MetricsAddress)
+		go func() {
+			if err := ms.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("metrics server: %w", err)
+			}
+		}()
+		defer ms.Close()
+	}
 	if s.Config.ReloadInterval > 0 {
 		go func() {
 			ticker := time.NewTicker(s.Config.ReloadInterval)

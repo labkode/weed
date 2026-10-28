@@ -35,6 +35,7 @@ import (
 	"github.com/labkode/weed/internal/davfs"
 	"github.com/labkode/weed/internal/digest"
 	"github.com/labkode/weed/internal/logger"
+	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/x509utils"
 )
 
@@ -54,6 +55,10 @@ func (m Mode) String() string {
 	}
 	return "pull"
 }
+
+// ErrChecksumMismatch is wrapped by the errors of transfers that failed because the
+// data did not match the checksum given by the client
+var ErrChecksumMismatch = errors.New("client/server checksum mismatch")
 
 // Config tunes the TPC engine
 type Config struct {
@@ -285,10 +290,15 @@ func (e *Engine) Serve(w http.ResponseWriter, r *http.Request, job *Job) {
 	case e.slots <- struct{}{}:
 		defer func() { <-e.slots }()
 	default:
+		metrics.TPCRejected.Inc()
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "Too many concurrent third-party copies", http.StatusServiceUnavailable)
 		return
 	}
+
+	mode := job.Mode.String()
+	metrics.TPCActive.Inc(mode)
+	defer metrics.TPCActive.Dec(mode)
 
 	ctx, cancel := context.WithCancelCause(r.Context())
 	defer cancel(nil)
@@ -310,10 +320,16 @@ func (e *Engine) Serve(w http.ResponseWriter, r *http.Request, job *Job) {
 		select {
 		case err := <-done:
 			n := p.bytes()
+			metrics.TPCBytes.Add(n, mode)
 			if err != nil {
+				metrics.TPCTransfers.Inc(mode, "failure")
+				if errors.Is(err, ErrChecksumMismatch) {
+					metrics.ChecksumMismatches.Inc("tpc_" + mode)
+				}
 				log.Printf("[TPC] [%s] Failed %s after %d bytes (%v): %v", reqID, job.Mode, n, time.Since(start), err)
 				fmt.Fprintf(w, "failure: %s\n", oneLine(err.Error()))
 			} else {
+				metrics.TPCTransfers.Inc(mode, "success")
 				log.Printf("[TPC] [%s] Completed %s: %d bytes in %v", reqID, job.Mode, n, time.Since(start))
 				fmt.Fprint(w, "success: Created\n")
 			}
@@ -395,7 +411,7 @@ func (e *Engine) pull(ctx context.Context, job *Job, p *progress) error {
 	if len(job.Expected) > 0 {
 		if src, _, err := digest.ParseReprDigest(resp.Header.Get("Repr-Digest")); err == nil {
 			if alg, bad := digest.Mismatch(job.Expected, src); bad {
-				return fmt.Errorf("file not saved: client/server checksum mismatch: source reports %s %x, client expects %x",
+				return fmt.Errorf("file not saved: %w: source reports %s %x, client expects %x", ErrChecksumMismatch,
 					alg, src[alg], job.Expected[alg])
 			}
 		}
@@ -426,7 +442,7 @@ func (e *Engine) pull(ctx context.Context, job *Job, p *progress) error {
 
 	sums := hasher.Sums()
 	if alg, bad := digest.Mismatch(job.Expected, sums); bad {
-		return fmt.Errorf("file not saved: client/server checksum mismatch: received data has %s %x, client expects %x",
+		return fmt.Errorf("file not saved: %w: received data has %s %x, client expects %x", ErrChecksumMismatch,
 			alg, sums[alg], job.Expected[alg])
 	}
 	digest.StoreCache(af.File, sums)
@@ -495,7 +511,7 @@ func (e *Engine) push(ctx context.Context, job *Job, p *progress) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusPreconditionFailed && job.ReprDigest != "" {
-		return errors.New("file not saved: client/server checksum mismatch reported by destination (412 Precondition Failed)")
+		return fmt.Errorf("file not saved: %w reported by destination (412 Precondition Failed)", ErrChecksumMismatch)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return remoteError("PUT", job.Remote, resp)
@@ -507,7 +523,7 @@ func (e *Engine) push(ctx context.Context, job *Job, p *progress) error {
 		return fmt.Errorf("destination answered %s after %d of %d bytes", resp.Status, sent, size)
 	}
 	if alg, bad := digest.Mismatch(job.Expected, last.hasher.Sums()); bad {
-		return fmt.Errorf("source file does not match the client checksum for %s (the destination did not verify it)", alg)
+		return fmt.Errorf("%w: source file does not match the client checksum for %s (the destination did not verify it)", ErrChecksumMismatch, alg)
 	}
 	return nil
 }

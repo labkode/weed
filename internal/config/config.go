@@ -25,6 +25,8 @@ type Config struct {
 	LogFile       string
 	// ReloadInterval is how often credential files are re-read (0: only on SIGHUP)
 	ReloadInterval time.Duration
+	// MetricsAddress serves /metrics and /healthz without authentication ("" disables)
+	MetricsAddress string
 	// OIDC configuration
 	OIDCAuth         bool
 	OIDCIssuer       string
@@ -67,6 +69,7 @@ func ParseFlags() *Config {
 	flag.StringVar(&cfg.CACert, "ca-cert", "", "CA certificates for X.509 authentication: a PEM file or a directory such as /etc/grid-security/certificates")
 	flag.StringVar(&cfg.CRLPath, "crl-path", "", "certificate revocation lists for X.509 authentication: a file or a directory such as /etc/grid-security/certificates (kept current by fetch-crl)")
 	flag.StringVar(&cfg.CRLMode, "crl-mode", CRLRequire, "with -crl-path: \"require\" rejects certificates whose issuer has no current CRL; \"if-valid\" only checks against CRLs that are present and current")
+	flag.StringVar(&cfg.MetricsAddress, "metrics-address", "", "serve Prometheus metrics (/metrics) and /healthz, without authentication, on this address, e.g. localhost:9100 (default: disabled)")
 	flag.DurationVar(&cfg.ReloadInterval, "reload-interval", time.Hour, "re-read credential files (htpasswd, app tokens, grid-mapfile, CAs, CRLs, TLS certificate) this often; 0 disables (SIGHUP always reloads)")
 	flag.StringVar(&cfg.GridmapFile, "gridmap-file", "/etc/grid-security/grid-mapfile", "path to gridmap file for X.509 DN to username mapping")
 	flag.BoolVar(&cfg.BasicAuth, "basic-auth", false, "enable HTTP Basic Authentication")
