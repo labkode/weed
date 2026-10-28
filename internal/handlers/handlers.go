@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -25,6 +27,7 @@ import (
 	"github.com/labkode/weed/internal/davfs"
 	"github.com/labkode/weed/internal/davreq"
 	"github.com/labkode/weed/internal/digest"
+	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/tpc"
@@ -80,8 +83,25 @@ func NewWebDAVHandler(directory string, cfg *config.Config, authStore *auth.Auth
 	}
 }
 
-// ServeHTTP serves the WebDAV namespace. It runs after authentication.
+// ServeHTTP serves the WebDAV namespace. It runs after authentication, and with
+// -unix-users accesses files as the identity's Unix account.
 func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.Config == nil || !h.Config.UnixUsers {
+		h.serve(w, r)
+		return
+	}
+	info, ok := auth.GetAuthInfoFromContext(r.Context())
+	if !ok || info.Unix == nil {
+		http.Error(w, "No Unix account for this identity", http.StatusForbidden)
+		return
+	}
+	if err := info.Unix.Run(func() { h.serve(w, r) }); err != nil {
+		log.Printf("[UNIX-USER] [%s] %v", logger.GetRequestID(r.Context()), err)
+		http.Error(w, "Cannot act as the Unix account", http.StatusInternalServerError)
+	}
+}
+
+func (h *WebDAVHandler) serve(w http.ResponseWriter, r *http.Request) {
 	reqID := logger.GetRequestID(r.Context())
 
 	// Encoded dot segments survive ServeMux path cleaning; never serve them
@@ -123,10 +143,70 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !h.lockTokenInScope(w, r) {
 			return
 		}
+		if r.Method == "LOCK" && h.Config != nil && h.Config.UnixUsers && !h.mayLock(w, r) {
+			return
+		}
 	}
 
-	h.Handler.ServeHTTP(w, r)
+	h.serveDAV(w, r)
 }
+
+// mayLock refuses to lock an existing resource that the user cannot write: the lock
+// would keep those who can from writing it. A LOCK that creates the resource needs
+// permission to create it.
+func (h *WebDAVHandler) mayLock(w http.ResponseWriter, r *http.Request) bool {
+	name, ok := davreq.Strip(r.URL.Path)
+	if !ok {
+		return true
+	}
+	p, err := h.FS.Resolve(name)
+	if err != nil {
+		return true
+	}
+	if _, err := os.Stat(p); err == nil {
+		if err := fsuser.Writable(p); err != nil {
+			http.Error(w, "Permission denied", http.StatusForbidden)
+			return false
+		}
+	}
+	return true
+}
+
+// serveDAV hands the request to x/net/webdav, turning the 404, 405, 409 and 500 it
+// answers when the filesystem refuses an operation into 403
+func (h *WebDAVHandler) serveDAV(w http.ResponseWriter, r *http.Request) {
+	dw := &deniedWriter{ResponseWriter: w}
+	h.Handler.ServeHTTP(dw, r.WithContext(davfs.TrackDenied(r.Context(), &dw.denied)))
+}
+
+type deniedWriter struct {
+	http.ResponseWriter
+	denied    atomic.Bool
+	rewritten bool
+}
+
+func (d *deniedWriter) WriteHeader(code int) {
+	switch code {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusConflict, http.StatusInternalServerError:
+		if d.denied.Load() {
+			d.rewritten = true
+			d.ResponseWriter.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			d.ResponseWriter.WriteHeader(http.StatusForbidden)
+			d.ResponseWriter.Write([]byte("Permission denied\n"))
+			return
+		}
+	}
+	d.ResponseWriter.WriteHeader(code)
+}
+
+func (d *deniedWriter) Write(b []byte) (int, error) {
+	if d.rewritten {
+		return len(b), nil // the text of the original status
+	}
+	return d.ResponseWriter.Write(b)
+}
+
+func (d *deniedWriter) Unwrap() http.ResponseWriter { return d.ResponseWriter }
 
 const errNoOverwrite = "The token allows creating this file, not replacing it (storage.create without storage.modify)"
 
@@ -384,7 +464,7 @@ func (h *WebDAVHandler) handleCopyMove(w http.ResponseWriter, r *http.Request) {
 		}
 		r.Header.Set("Overwrite", "F") // x/net/webdav checks again just before writing
 	}
-	h.Handler.ServeHTTP(w, r)
+	h.serveDAV(w, r)
 }
 
 // handleTPC validates a third-party copy request and hands it to the TPC engine
@@ -424,7 +504,14 @@ func (h *WebDAVHandler) handleTPC(w http.ResponseWriter, r *http.Request, target
 		Expected:   expected,
 		ReprDigest: reprDigest,
 	}
+	if info, ok := auth.GetAuthInfoFromContext(r.Context()); ok {
+		job.User = info.Unix
+	}
 	fi, statErr := os.Stat(localPath)
+	if errors.Is(statErr, fs.ErrPermission) {
+		http.Error(w, "Permission denied", http.StatusForbidden)
+		return
+	}
 
 	if target.Kind == davreq.CopyPull {
 		job.Mode = tpc.Pull
@@ -638,6 +725,9 @@ func (h *WebDAVHandler) WhoAmIHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Status: Authenticated\n")
 		fmt.Fprintf(w, "Username: %s\n", authInfo.Username)
 		fmt.Fprintf(w, "Authentication Method: %s\n", authInfo.Method)
+		if authInfo.Unix != nil {
+			fmt.Fprintf(w, "Unix Account: %s\n", authInfo.Unix)
+		}
 		fmt.Fprintf(w, "\nAuthentication Details:\n")
 		for key, value := range authInfo.Details {
 			fmt.Fprintf(w, "  %s: %v\n", key, value)

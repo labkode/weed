@@ -108,7 +108,9 @@ Authentication
 
 Methods are tried in this order; the first one that applies decides. A request that
 presents bad credentials gets 401, or 403 if the credentials are valid but not allowed
-to do what was asked. All authenticated users share the same namespace.
+to do what was asked. Every identity has a username; with -unix-users it must be a
+local account, which the request then accesses files as (see Unix accounts below).
+Without it, all authenticated users have weed's own access to the files.
 
 1. X.509 client certificates (-tls -x509-auth -ca-cert <path> -gridmap-file <file>)
    -ca-cert is a PEM file or a directory such as /etc/grid-security/certificates.
@@ -165,9 +167,23 @@ to do what was asked. All authenticated users share the same namespace.
                             replace or delete data: PUT, COPY/MOVE and TPC pull onto
                             an existing file get 403, before any data is sent
      storage.modify:<path>  also overwrite and delete (also SciTokens write)
-   A scope without a path means "/". Tokens without storage scopes get 403: access
-   based on groups (wlcg.groups) is not supported. A macaroon cannot be requested
-   with a token, since it would not be bound by the token's scopes.
+   A scope without a path means "/". Tokens without storage scopes get 403: groups
+   (wlcg.groups) choose an account (see users below) but grant nothing by themselves.
+   A macaroon cannot be requested with a token, since it would not be bound by the
+   token's scopes.
+
+   A token's username is its sub claim, unless the issuer has "users" rules, which
+   map tokens to accounts; the first rule that matches decides, and a token that no
+   rule matches gets 403:
+
+    "users": [{"sub": "3f2a...", "user": "jdoe"},
+              {"group": "/cms/production", "user": "cmsprod"},
+              {"sub": "9c1e...", "group": "/cms", "user": "cmsuser"},
+              {"user": "cmsguest"}]
+
+   A rule matches tokens whose sub equals its "sub" and whose wlcg.groups contains its
+   "group" (exactly: /cms does not match /cms/production); an omitted field matches
+   any token, so a rule with only "user" is a default.
 
    Access required per request:
      GET                      read
@@ -221,14 +237,49 @@ to do what was asked. All authenticated users share the same namespace.
    Passwords are checked against bcrypt entries in the htpasswd file, or against app
    tokens. Basic credentials are sent in clear text without -tls.
 
-/proc/whoami shows the identity a request authenticates as.
+/proc/whoami shows the identity a request authenticates as, and its Unix account.
+
+Usernames come from: the grid-mapfile (X.509), the htpasswd or app tokens file
+(Basic), preferred_username (OIDC), the issuer's users rules or sub (tokens), and the
+minting user (macaroons).
+
+
+Unix accounts (-unix-users)
+
+With -unix-users (Linux only), every identity must be the name of a local account,
+looked up with the system's user database (/etc/passwd, or LDAP and SSSD through NSS
+when weed is built with cgo); an identity without one, or that names root, gets 403.
+Each request then accesses files as that account: weed switches the filesystem UID,
+GID and supplementary groups of the thread serving it (setfsuid, setfsgid, setgroups),
+so the kernel checks permissions and ACLs as for the user, and new files and
+directories belong to the user. Third-party copies read and write the local file as
+the user too. Token scopes and macaroon caveats still apply on top.
+
+weed must run as root, or with the CAP_SETUID and CAP_SETGID capabilities (it checks
+at startup), for example in a systemd unit:
+
+    User=weed
+    AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE
+
+The users need search permission on the exported directory and its parents.
+Accounts are looked up again after a minute, and on reload. Operations the filesystem
+refuses get 403. As with local tools:
+* Replacing a file needs write permission on it as well as on its directory, and the
+  new version belongs to the user who wrote it.
+* Locking an existing resource needs write permission on it, so a user cannot lock
+  others out of their files.
+Each request in progress holds an OS thread (Go's limit is 10000).
+
+Without -unix-users, weed warns at startup if it runs as root: every client would
+have root's access to the files.
 
 
 Reloading credentials
 
 On SIGHUP, and every -reload-interval (default 1h, 0 disables), weed re-reads the
 htpasswd and app tokens files, the grid-mapfile, the CAs and CRLs, the token issuers,
-the TLS certificate, and the CAs for TPC endpoints and token issuers. A file that
+the TLS certificate, and the CAs for TPC endpoints and token issuers, and looks Unix
+accounts up again. A file that
 cannot be read keeps its previous contents, so a file being rewritten neither locks
 everybody out nor lets anybody in. New connections and requests use the new data.
 
@@ -267,24 +318,27 @@ itself hashes at ~650); GET ~3000; the disk writes ~3800. Measure on your hardwa
 Testing
 
     go test -race ./...           unit and end-to-end tests
+    go test -exec sudo -run 'TestUnixUsers|TestRun|TestCheck' ./internal/fsuser ./internal/server
+                                  tests that switch identities (Linux, as root)
     test/interop/interop.sh       interoperability tests, needs Docker
 
 The interoperability tests run weed in a container against real WLCG software:
 gfal2, davix and curl as clients; XRootD (with its macaroons, SciTokens and HTTP-TPC
 plugins) as a second implementation; and a test token issuer. They cover X.509
-proxies, macaroons, tokens, revocation with SIGHUP, metrics, and third-party copies
-in both directions between two weed servers and between weed and XRootD. Each
-parser also has a fuzz test (go test -fuzz). CI (.github/workflows/ci.yml) runs the
-tests with -race on Linux and macOS, go vet, gofmt, govulncheck, cross-builds, the
-fuzz tests and the interoperability tests.
+proxies, macaroons, tokens, revocation with SIGHUP, metrics, Unix accounts, and
+third-party copies in both directions between two weed servers and between weed and
+XRootD. Each parser also has a fuzz test (go test -fuzz). CI (.github/workflows/ci.yml)
+runs the tests with -race on Linux and macOS and as root on Linux, go vet, gofmt,
+govulncheck, cross-builds, the fuzz tests and the interoperability tests.
 
 
 Not implemented
 
 * X.509 credential delegation for TPC (Credential: gridsite): use tokens or
   macaroons in TransferHeaderAuthorization
-* Per-user authorization: all authenticated users share the same namespace (tokens
-  and macaroons can be restricted to paths); group-based token authorization
+* Authorization by token groups alone: a token needs storage scopes even when its
+  groups choose its Unix account
+* Per-user access without -unix-users, or on systems other than Linux
 
 
 Known deviations from RFC 4918

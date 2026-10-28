@@ -151,11 +151,17 @@ func SignJWT(t *testing.T, key interface{}, kid string, alg jose.SignatureAlgori
 }
 
 // WriteIssuers writes a -token-issuers file trusting iss with the given audience and
-// base path
-func (iss *Issuer) WriteIssuers(audience, basePath string) string {
+// base path, and any extra settings (such as "users")
+func (iss *Issuer) WriteIssuers(audience, basePath string, extra ...map[string]interface{}) string {
 	iss.t.Helper()
 	p := filepath.Join(iss.t.TempDir(), "issuers.json")
-	data, _ := json.Marshal([]map[string]interface{}{{"issuer": iss.URL, "audiences": []string{audience}, "base_path": basePath}})
+	entry := map[string]interface{}{"issuer": iss.URL, "audiences": []string{audience}, "base_path": basePath}
+	for _, e := range extra {
+		for k, v := range e {
+			entry[k] = v
+		}
+	}
+	data, _ := json.Marshal([]map[string]interface{}{entry})
 	if err := os.WriteFile(p, data, 0600); err != nil {
 		iss.t.Fatal(err)
 	}

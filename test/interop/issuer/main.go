@@ -2,7 +2,7 @@
 // OpenID discovery and its signing key over TLS, and mints tokens.
 //
 //	issuer serve -url https://localhost:8446 -signing-key key.pem -cert host.pem -key host.key
-//	issuer mint -url https://localhost:8446 -signing-key key.pem -aud AUD -scope SCOPE [-lifetime 1h]
+//	issuer mint -url https://localhost:8446 -signing-key key.pem -aud AUD -scope SCOPE [-groups G] [-lifetime 1h]
 package main
 
 import (
@@ -39,6 +39,7 @@ func main() {
 	aud := fs.String("aud", "", "audiences, comma-separated (mint)")
 	scope := fs.String("scope", "", "scopes, space-separated (mint)")
 	sub := fs.String("sub", "interop-token-user", "subject (mint)")
+	groups := fs.String("groups", "", "wlcg.groups, comma-separated (mint)")
 	lifetime := fs.Duration("lifetime", time.Hour, "validity (mint); negative for an expired token")
 	fs.Parse(os.Args[2:])
 
@@ -47,7 +48,7 @@ func main() {
 	case "serve":
 		serve(*issuer, key, *cert, *tlsKey)
 	case "mint":
-		fmt.Println(mint(*issuer, key, strings.Split(*aud, ","), *scope, *sub, *lifetime))
+		fmt.Println(mint(*issuer, key, strings.Split(*aud, ","), *scope, *sub, *groups, *lifetime))
 	default:
 		log.Fatalf("unknown command %s", os.Args[1])
 	}
@@ -97,7 +98,7 @@ func serve(issuer string, key crypto.Signer, cert, tlsKey string) {
 	log.Fatal(http.ListenAndServeTLS(u.Host, cert, tlsKey, mux))
 }
 
-func mint(issuer string, key crypto.Signer, aud []string, scope, sub string, lifetime time.Duration) string {
+func mint(issuer string, key crypto.Signer, aud []string, scope, sub, groups string, lifetime time.Duration) string {
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key},
 		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", keyID))
 	if err != nil {
@@ -120,6 +121,9 @@ func mint(issuer string, key crypto.Signer, aud []string, scope, sub string, lif
 		"exp":      now.Add(lifetime).Unix(),
 		"jti":      hex.EncodeToString(jti),
 		"wlcg.ver": "1.0",
+	}
+	if groups != "" {
+		claims["wlcg.groups"] = strings.Split(groups, ",")
 	}
 	tok, err := jwt.Signed(signer).Claims(claims).Serialize()
 	if err != nil {

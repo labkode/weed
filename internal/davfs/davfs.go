@@ -15,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/net/webdav"
@@ -28,6 +29,22 @@ var errWriteFailed = errors.New("write failed; upload discarded")
 // FS is a webdav.FileSystem rooted at a local directory
 type FS struct {
 	Root string
+}
+
+type deniedKey struct{}
+
+// TrackDenied returns a context in which FS operations that fail for lack of
+// permission set *denied: x/net/webdav reports those failures as 404, 405 or 500
+func TrackDenied(ctx context.Context, denied *atomic.Bool) context.Context {
+	return context.WithValue(ctx, deniedKey{}, denied)
+}
+
+func noteDenied(ctx context.Context, err error) {
+	if errors.Is(err, fs.ErrPermission) {
+		if denied, ok := ctx.Value(deniedKey{}).(*atomic.Bool); ok {
+			denied.Store(true)
+		}
+	}
 }
 
 // Resolve maps a namespace name ("/a/b") to a local path. Names that cannot be
@@ -59,7 +76,8 @@ func (fs FS) isRoot(p string) bool {
 }
 
 // Mkdir implements webdav.FileSystem
-func (fs FS) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
+func (fs FS) Mkdir(ctx context.Context, name string, perm os.FileMode) (err error) {
+	defer func() { noteDenied(ctx, err) }()
 	p, err := fs.Resolve(name)
 	if err != nil {
 		return err
@@ -69,7 +87,8 @@ func (fs FS) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
 
 // OpenFile implements webdav.FileSystem. Writes that truncate the target go through
 // an AtomicFile that is committed when closed.
-func (fs FS) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (webdav.File, error) {
+func (fs FS) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (_ webdav.File, err error) {
+	defer func() { noteDenied(ctx, err) }()
 	p, err := fs.Resolve(name)
 	if err != nil {
 		return nil, err
@@ -89,7 +108,8 @@ func (fs FS) OpenFile(ctx context.Context, name string, flag int, perm os.FileMo
 }
 
 // RemoveAll implements webdav.FileSystem
-func (fs FS) RemoveAll(ctx context.Context, name string) error {
+func (fs FS) RemoveAll(ctx context.Context, name string) (err error) {
+	defer func() { noteDenied(ctx, err) }()
 	p, err := fs.Resolve(name)
 	if err != nil {
 		return err
@@ -101,7 +121,8 @@ func (fs FS) RemoveAll(ctx context.Context, name string) error {
 }
 
 // Rename implements webdav.FileSystem
-func (fs FS) Rename(ctx context.Context, oldName, newName string) error {
+func (fs FS) Rename(ctx context.Context, oldName, newName string) (err error) {
+	defer func() { noteDenied(ctx, err) }()
 	oldPath, err := fs.Resolve(oldName)
 	if err != nil {
 		return err
@@ -117,7 +138,8 @@ func (fs FS) Rename(ctx context.Context, oldName, newName string) error {
 }
 
 // Stat implements webdav.FileSystem
-func (fs FS) Stat(ctx context.Context, name string) (os.FileInfo, error) {
+func (fs FS) Stat(ctx context.Context, name string) (_ os.FileInfo, err error) {
+	defer func() { noteDenied(ctx, err) }()
 	p, err := fs.Resolve(name)
 	if err != nil {
 		return nil, err
@@ -134,8 +156,18 @@ type AtomicFile struct {
 
 // CreateAtomic starts writing a new version of target. The parent directory must exist.
 func CreateAtomic(target string, perm os.FileMode) (*AtomicFile, error) {
-	if fi, err := os.Stat(target); err == nil && fi.IsDir() {
+	fi, err := os.Stat(target)
+	if err == nil && fi.IsDir() {
 		return nil, &os.PathError{Op: "open", Path: target, Err: syscall.EISDIR}
+	}
+	// Renaming over a file only needs write permission on its directory; replacing it
+	// needs write permission on the file too, as writing it in place would
+	if err == nil && fi.Mode().IsRegular() {
+		f, err := os.OpenFile(target, os.O_WRONLY, 0)
+		if err != nil {
+			return nil, err
+		}
+		f.Close()
 	}
 	f, err := os.CreateTemp(filepath.Dir(target), TempPrefix+"*")
 	if err != nil {

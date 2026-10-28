@@ -34,6 +34,7 @@ import (
 
 	"github.com/labkode/weed/internal/davfs"
 	"github.com/labkode/weed/internal/digest"
+	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 )
@@ -94,6 +95,8 @@ type Job struct {
 	ReprDigest string
 	// NoReplace makes a pull fail rather than replace an existing local file
 	NoReplace bool
+	// User, if set, is the account the local file is accessed as
+	User *fsuser.User
 }
 
 // Engine runs transfers
@@ -289,7 +292,17 @@ func (e *Engine) Serve(w http.ResponseWriter, r *http.Request, job *Job) {
 	p := &progress{}
 	start := time.Now()
 	done := make(chan error, 1)
-	go func() { done <- e.run(ctx, job, p) }()
+	go func() {
+		if job.User == nil {
+			done <- e.run(ctx, job, p)
+			return
+		}
+		var err error
+		if runErr := job.User.Run(func() { err = e.run(ctx, job, p) }); runErr != nil {
+			err = runErr
+		}
+		done <- err
+	}()
 
 	log.Printf("[TPC] [%s] Started %s %s <-> %s", reqID, job.Mode, job.LocalPath, redact(job.Remote))
 	w.Header().Set("Content-Type", "text/perf-marker-stream")

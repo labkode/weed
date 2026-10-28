@@ -8,17 +8,19 @@ import (
 
 // Config holds all configuration options
 type Config struct {
-	Port          int
-	Address       string
-	Directory     string
-	TLS           bool
-	TLSCert       string
-	TLSKey        string
-	X509Auth      bool
-	CACert        string
-	CRLPath       string
-	CRLMode       string
-	GridmapFile   string
+	Port        int
+	Address     string
+	Directory   string
+	TLS         bool
+	TLSCert     string
+	TLSKey      string
+	X509Auth    bool
+	CACert      string
+	CRLPath     string
+	CRLMode     string
+	GridmapFile string
+	// UnixUsers maps every identity to a local account and accesses files as it
+	UnixUsers     bool
 	BasicAuth     bool
 	HtpasswdFile  string
 	AppTokensFile string
@@ -79,6 +81,7 @@ func ParseFlags() *Config {
 	flag.StringVar(&cfg.HtpasswdFile, "htpasswd-file", ".htpasswd", "path to htpasswd file for basic authentication")
 	flag.StringVar(&cfg.AppTokensFile, "app-tokens-file", ".app-tokens", "path to app tokens file for application password authentication")
 	flag.StringVar(&cfg.LogFile, "log-file", "", "path to log file (default: stdout)")
+	flag.BoolVar(&cfg.UnixUsers, "unix-users", false, "access files as the Unix account each identity maps to (an identity without one gets 403); Linux only, needs root or CAP_SETUID and CAP_SETGID")
 
 	// OIDC flags
 	flag.BoolVar(&cfg.OIDCAuth, "oidc-auth", false, "enable OIDC authentication")
@@ -89,7 +92,7 @@ func ParseFlags() *Config {
 
 	// Macaroon flags
 	flag.BoolVar(&cfg.MacaroonAuth, "macaroon-auth", false, "enable Macaroon bearer token authentication")
-	flag.StringVar(&cfg.TokenIssuers, "token-issuers", "", `accept WLCG and SciTokens JWT bearer tokens from the issuers in this JSON file: [{"issuer": "https://...", "audiences": ["https://this.server"], "base_path": "/"}] (default: disabled)`)
+	flag.StringVar(&cfg.TokenIssuers, "token-issuers", "", `accept WLCG and SciTokens JWT bearer tokens from the issuers in this JSON file: [{"issuer": "https://...", "audiences": ["https://this.server"], "base_path": "/", "users": [{"sub": "...", "group": "/vo/group", "user": "account"}]}] (default: disabled)`)
 	flag.StringVar(&cfg.TokenCAPath, "token-ca-path", "", "extra CA certificates (file or directory) for fetching token issuers' signing keys, in addition to the system roots")
 	flag.StringVar(&cfg.MacaroonSecretKey, "macaroon-secret-key", "", "secret key for signing macaroons (required for macaroon auth)")
 	flag.StringVar(&cfg.MacaroonLocation, "macaroon-location", "weed-webdav", "macaroon location identifier")

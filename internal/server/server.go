@@ -20,6 +20,7 @@ import (
 
 	"github.com/labkode/weed/internal/auth"
 	"github.com/labkode/weed/internal/config"
+	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/handlers"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
@@ -60,6 +61,15 @@ func (s *Server) Initialize() error {
 	}
 	s.AuthStore.X509Enabled = s.Config.X509Auth
 	s.AuthStore.TokenEnabled = s.Config.TokenIssuers != ""
+	if s.Config.UnixUsers {
+		if err := fsuser.Check(); err != nil {
+			return fmt.Errorf("-unix-users: %w", err)
+		}
+		s.AuthStore.UnixUsers = true
+		log.Printf("[UNIX-USERS] Files are accessed as the Unix account of each identity")
+	} else if os.Geteuid() == 0 {
+		log.Printf("[UNIX-USERS] WARNING: running as root without -unix-users: every client has root's access to the files")
+	}
 	if s.Config.TokenCAPath != "" {
 		pool, err := x509utils.SystemPoolWith(s.Config.TokenCAPath)
 		if err != nil {
@@ -231,6 +241,7 @@ func (s *Server) Reload() {
 	} else {
 		s.AuthStore.SetCredentials(creds)
 	}
+	s.AuthStore.ForgetUnixUsers()
 	if s.Config.TLS && s.cert.Load() != nil {
 		if err := s.loadCertificate(); err != nil {
 			log.Printf("[RELOAD] Cannot read TLS certificate, keeping the previous one: %v", err)
@@ -374,7 +385,7 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 	mux.HandleFunc("/healthz", s.healthz)
 
 	// Add whoami route at /proc/whoami - apply auth middleware if any auth is enabled
-	if s.Config.BasicAuth || s.Config.X509Auth || s.Config.OIDCAuth || s.Config.MacaroonAuth {
+	if s.Config.BasicAuth || s.Config.X509Auth || s.Config.OIDCAuth || s.Config.MacaroonAuth || s.Config.TokenIssuers != "" {
 		// Create a whoami handler with authentication middleware
 		whoamiHandler := s.applyAuthMiddleware(http.HandlerFunc(s.Handler.WhoAmIHandler))
 		mux.Handle("/proc/whoami", whoamiHandler)

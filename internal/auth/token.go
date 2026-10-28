@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +59,44 @@ type TokenIssuer struct {
 	// BasePath is the directory, relative to the exported directory, that the paths
 	// in scopes are relative to (default "/")
 	BasePath string `json:"base_path"`
+	// Users maps tokens to local accounts: the first matching rule names the
+	// account, and a token that no rule matches is refused. Without rules, a
+	// token's username is its subject.
+	Users []TokenUserRule `json:"users"`
+}
+
+// TokenUserRule maps tokens whose sub claim is Sub and whose wlcg.groups claim
+// contains Group to the account User. An empty Sub or Group matches any token, so a
+// rule with neither matches every token.
+type TokenUserRule struct {
+	Sub   string `json:"sub"`
+	Group string `json:"group"`
+	User  string `json:"user"`
+}
+
+// normalizeGroup gives WLCG group names their leading slash ("/cms/production")
+func normalizeGroup(g string) string {
+	return "/" + strings.TrimPrefix(g, "/")
+}
+
+// username returns the account a token maps to
+func (iss *TokenIssuer) username(sub string, groups []string) (string, error) {
+	if len(iss.Users) == 0 {
+		if sub == "" {
+			return "token", nil
+		}
+		return sub, nil
+	}
+	for _, rule := range iss.Users {
+		if rule.Sub != "" && rule.Sub != sub {
+			continue
+		}
+		if rule.Group != "" && !slices.ContainsFunc(groups, func(g string) bool { return normalizeGroup(g) == rule.Group }) {
+			continue
+		}
+		return rule.User, nil
+	}
+	return "", fmt.Errorf("%w: no user rule for %s matches subject %q and groups %q", errForbidden, iss.Issuer, sub, groups)
 }
 
 // LoadTokenIssuers reads a JSON list of TokenIssuer, keyed by issuer
@@ -87,6 +126,14 @@ func LoadTokenIssuers(filename string) (map[string]*TokenIssuer, error) {
 			}
 		}
 		iss.BasePath = path.Clean("/" + iss.BasePath)
+		for i, rule := range iss.Users {
+			if rule.User == "" {
+				return nil, fmt.Errorf("%s: user rule %d of %s names no user", filename, i+1, iss.Issuer)
+			}
+			if rule.Group != "" {
+				iss.Users[i].Group = normalizeGroup(rule.Group)
+			}
+		}
 		issuers[iss.Issuer] = iss
 	}
 	return issuers, nil
@@ -248,11 +295,29 @@ func (s *scopeClaim) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// groupsClaim is the wlcg.groups claim, a list of group names. A single string is
+// accepted too, and anything else is ignored: groups only matter to user rules.
+type groupsClaim []string
+
+func (g *groupsClaim) UnmarshalJSON(b []byte) error {
+	var list []string
+	if err := json.Unmarshal(b, &list); err == nil {
+		*g = list
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(b, &str); err == nil {
+		*g = []string{str}
+	}
+	return nil
+}
+
 // verifiedToken is a token whose signature and validity were checked
 type verifiedToken struct {
 	issuer *TokenIssuer
 	claims jwt.Claims
 	scopes []string
+	groups []string
 	grants []grant
 }
 
@@ -278,7 +343,8 @@ func (as *AuthStore) verifyToken(raw string, now time.Time) (*verifiedToken, err
 
 	v := &verifiedToken{issuer: iss}
 	var extra struct {
-		Scope scopeClaim `json:"scope"`
+		Scope  scopeClaim  `json:"scope"`
+		Groups groupsClaim `json:"wlcg.groups"`
 	}
 	err = errors.New("no keys")
 	for i := range keys {
@@ -298,7 +364,7 @@ func (as *AuthStore) verifyToken(raw string, now time.Time) (*verifiedToken, err
 	if !v.claims.Audience.Contains(AudienceAny) && !anyIn(iss.Audiences, []string(v.claims.Audience)) {
 		return nil, fmt.Errorf("token audience %q is not accepted here", []string(v.claims.Audience))
 	}
-	v.scopes = extra.Scope
+	v.scopes, v.groups = extra.Scope, extra.Groups
 	v.grants = parseScopes(v.scopes, iss.BasePath)
 	if len(v.grants) == 0 {
 		// Without storage scopes access would depend on groups, which weed does not map
@@ -328,11 +394,11 @@ func (as *AuthStore) authenticateToken(r *http.Request) (*AuthInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	username := v.claims.Subject
-	if username == "" {
-		username = "token"
+	username, err := v.issuer.username(v.claims.Subject, v.groups)
+	if err != nil {
+		return nil, err
 	}
-	return &AuthInfo{
+	info := &AuthInfo{
 		Username: username,
 		Method:   "token",
 		Details: map[string]interface{}{
@@ -342,7 +408,11 @@ func (as *AuthStore) authenticateToken(r *http.Request) (*AuthInfo, error) {
 			"expires": v.claims.Expiry.Time(),
 		},
 		NoOverwrite: noOverwrite,
-	}, nil
+	}
+	if len(v.groups) > 0 {
+		info.Details["groups"] = strings.Join(v.groups, " ")
+	}
+	return info, nil
 }
 
 // bearerToken returns the token of an "Authorization: Bearer" header

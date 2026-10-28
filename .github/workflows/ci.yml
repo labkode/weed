@@ -23,6 +23,9 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race -count=1 ./...
+      - name: Tests that switch Unix identities (as root)
+        if: runner.os == 'Linux'
+        run: go test -exec sudo -count=1 -run 'TestUnixUsers|TestRun|TestCheck' ./internal/fsuser ./internal/server
 
   build:
     runs-on: ubuntu-latest

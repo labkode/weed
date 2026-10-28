@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/x509utils"
@@ -53,6 +54,8 @@ type AuthInfo struct {
 	// NoOverwrite is set when the request may create the file it writes but not
 	// replace an existing one (a token with storage.create but not storage.modify)
 	NoOverwrite bool `json:"-"`
+	// Unix is the local account the request accesses files as (with UnixUsers)
+	Unix *fsuser.User `json:"-"`
 }
 
 // OIDCSession represents an authenticated browser session
@@ -100,6 +103,13 @@ type AuthStore struct {
 	OIDCEnabled     bool
 	MacaroonEnabled bool
 	TokenEnabled    bool // WLCG and SciTokens JWTs, from Credentials.TokenIssuers
+
+	// UnixUsers requires every identity to be a local account (see unix.go), found
+	// with LookupUnixUser (default fsuser.Lookup)
+	UnixUsers      bool
+	LookupUnixUser func(name string) (*fsuser.User, error)
+	unixMu         sync.Mutex
+	unixUsers      map[string]cachedUnixUser
 
 	// File-based credentials, replaced as a whole on reload
 	creds atomic.Pointer[Credentials]
@@ -640,6 +650,11 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 		forbiddenBy := ""
 		for i, m := range methods {
 			info, err := m.authenticate(r)
+			if info != nil && as.UnixUsers {
+				if info.Unix, err = as.unixUser(info.Username); err != nil {
+					info = nil
+				}
+			}
 			switch {
 			case info != nil:
 				status[i] = "OK"

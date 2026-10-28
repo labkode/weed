@@ -73,6 +73,12 @@ start_weed() { # name port [flags]
 }
 start_weed a 8443 -metrics-address localhost:9100
 start_weed b 8444
+# C accesses files as the Unix account of each identity: the grid-mapfile names it
+# for certificates, and for tokens a user rule does (the revoked DN has no account)
+useradd -M -u 7001 interop && useradd -M -u 7002 robot
+mkdir -p /srv/c/interop /srv/c/robot && chown interop: /srv/c/interop && chown robot: /srv/c/robot && chmod 700 /srv/c/robot
+printf '[{"issuer": "%s", "audiences": ["https://localhost:8447"], "users": [{"group": "/interop/robots", "user": "robot"}]}]' $ISS >issuers-c.json
+start_weed c 8447 -unix-users -token-issuers issuers-c.json
 
 # XRootD as a production-like WLCG endpoint: X.509 over HTTPS, macaroons, tokens, HTTP-TPC.
 # It runs as the xrootd user, which needs a writable working directory.
@@ -118,9 +124,9 @@ tpc.allow private
 CFG
 (cd $XRD && xrootd -c $W/xrootd.cfg -l $XRD/xrootd.log -R xrootd -n interop -b)
 
-A=davs://localhost:8443/webdav B=davs://localhost:8444/webdav X=davs://localhost:8445/srv/x
+A=davs://localhost:8443/webdav B=davs://localhost:8444/webdav X=davs://localhost:8445/srv/x C=davs://localhost:8447/webdav
 https() { echo "${1/davs:/https:}"; }
-for url in $A $B $X; do
+for url in $A $B $X $C; do
 	for i in $(seq 50); do
 		curl -s -o /dev/null --capath $CERTS "$(https $url)/" && break
 		sleep 0.2
@@ -256,6 +262,26 @@ check "...and cannot replace it with storage.create" refused x-push.bin
 check "weed refuses a pull onto an existing file with storage.create" status 403 $CREATE -X COPY \
 	-H "Source: https://localhost:8445/srv/x/tok/f.bin" -H "TransferHeaderAuthorization: Bearer $READ" https://localhost:8443/webdav/tok/up/g.bin
 mv proxy.off /tmp/x509up_u0
+
+echo "== Unix accounts (-unix-users)"
+owned() { [ "$(stat -c %U "$2")" = "$1" ]; } # user path
+http_status() { # want curl-args...
+	[ "$(curl -s -o /dev/null -w '%{http_code}' --capath $CERTS "${@:2}")" = "$1" ]
+}
+check "gfal2 upload as the grid-mapfile's account" gfal-copy -f file://$W/f.bin $C/interop/f.bin
+check "...owned by it" owned interop /srv/c/interop/f.bin
+check "gfal2 mkdir" gfal-mkdir $C/interop/dir
+check "...owned by it" owned interop /srv/c/interop/dir
+check "another account's private directory cannot be listed" sh -c "! gfal-ls $C/robot"
+check "...nor written to" sh -c "! gfal-copy -f file://$W/f.bin $C/robot/f.bin"
+check "gfal2 TPC pull from weed A" gfal-copy -f "${TPC[@]}" $A/g.bin $C/interop/pulled.bin
+check "...owned by the account" owned interop /srv/c/interop/pulled.bin
+ROBOT=$(token -aud https://localhost:8447 -scope "storage.read:/ storage.modify:/" -groups /interop/robots)
+check "token mapped by its group writes as robot" http_status 201 -H "Authorization: Bearer $ROBOT" -T f.bin $(https $C)/robot/t.bin
+check "...owned by robot" owned robot /srv/c/robot/t.bin
+check "...and cannot write to interop's directory" http_status 403 -H "Authorization: Bearer $ROBOT" -T f.bin $(https $C)/interop/t.bin
+check "token no rule maps is refused" http_status 403 -H "Authorization: Bearer $(token -aud https://localhost:8447 -scope storage.read:/)" $(https $C)/interop/f.bin
+check "certificate whose account does not exist is refused" http_status 403 --cert revoked.pem --key revoked.key $(https $C)/interop/f.bin
 
 echo "== grid-mapfile, revocation and reloading"
 check "valid certificate with an openssl CRL" $CURL -o /dev/null https://localhost:8443/webdav/g.bin
