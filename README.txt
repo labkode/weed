@@ -2,7 +2,8 @@ WEED: WEbdav Exporter Daemon
 
 WEED exports a local directory over WebDAV (RFC 4918) under /webdav/, and implements
 WLCG HTTP third-party copy (pull and push) with the data-integrity extension described
-in https://github.com/labkode/wlcg-tpc.
+in https://github.com/labkode/wlcg-tpc. Clients authenticate with X.509 certificates
+and proxies, WLCG/SciTokens bearer tokens, macaroons, OIDC or passwords.
 
 Runs on Linux, macOS and Windows (checksum caching in extended attributes on Linux and
 macOS only).
@@ -87,11 +88,20 @@ push of a missing file or a collection, 405 pull onto a collection, 409 missing 
 credential delegation requested (only "Credential: none" is supported), 503 too many
 concurrent transfers (-tpc-max-transfers).
 
-Remote endpoints must be https:// (unless -tpc-allow-http) and may not resolve to
-loopback, link-local, multicast or unspecified addresses (unless -tpc-allow-local).
+Remote endpoints must be https:// (unless -tpc-allow-http). So that a COPY cannot be
+used to reach services inside the site, each address a remote resolves to is checked
+when connecting (also after redirects):
+* refused unless -tpc-allow-local: loopback, link-local, multicast, 0.0.0.0/8
+* refused unless -tpc-allow-private: private (RFC 1918, fc00::/7), shared (100.64/10)
+  and other special-purpose ranges (RFC 6890), and IPv6 forms embedding IPv4
+  addresses (NAT64, 6to4, Teredo); IPv4-mapped IPv6 addresses count as IPv4
+* always refused: the unspecified address
 Redirects are followed (at most 10, never to http:// when that is not allowed, never
 when they change the method). Use -tpc-ca-path /etc/grid-security/certificates to
 trust IGTF CAs for remote endpoints.
+
+With WLCG tokens, the client passes one token for weed (Authorization) and one for
+the remote (TransferHeaderAuthorization); gfal2 does this with BEARER_TOKEN set.
 
 
 Authentication
@@ -100,18 +110,74 @@ Methods are tried in this order; the first one that applies decides. A request t
 presents bad credentials gets 401, or 403 if the credentials are valid but not allowed
 to do what was asked. All authenticated users share the same namespace.
 
-1. X.509 client certificates (-tls -x509-auth -ca-cert <file> -gridmap-file <file>)
+1. X.509 client certificates (-tls -x509-auth -ca-cert <path> -gridmap-file <file>)
+   -ca-cert is a PEM file or a directory such as /etc/grid-security/certificates.
    End-entity certificates and RFC 3820 (and legacy Globus) proxy chains are accepted.
    The DN, in OpenSSL format and certificate order (e.g.
    "/DC=ch/DC=cern/OU=Users/CN=jdoe"), is mapped to a user with the grid-mapfile.
    /proc/x509 shows how the server sees the presented certificate.
+
+   Proxy chains are refused when a proxy:
+   * has a policy other than inherit-all or limited (e.g. independent),
+   * is followed by more proxies than its path length allows,
+   * is unrestricted but issued by a limited proxy,
+   * is legacy and RFC 3820 in the same chain,
+   * is expired or not yet valid, or its issuer lacks the digitalSignature key usage.
+   Limited proxies are accepted (they are meant for data access).
+
+   Revocation (-crl-path <path> [-crl-mode require|if-valid]): CRLs, PEM or DER, are
+   read from a file or a directory such as /etc/grid-security/certificates, where
+   fetch-crl keeps them (<hash>.r0). A certificate is checked against the newest
+   current CRL signed by its issuer. With -crl-mode require (the default) a
+   certificate whose issuer has no current CRL is refused, so an expired CRL fails
+   closed; with if-valid, certificates are only checked against the CRLs that are
+   present and current.
 
 2. OIDC browser login (-oidc-auth -oidc-issuer ... -oidc-client-id ...
    -oidc-client-secret ... -oidc-redirect-url https://<host>/oidc_redirect)
    Start at /auth/oidc. The login is bound to the browser with a state cookie and a
    nonce; sessions last 24h.
 
-3. Macaroons (-macaroon-auth -macaroon-secret-key <secret>)
+3. WLCG and SciTokens bearer tokens (-token-issuers <file>)
+   JWTs from the issuers listed in the file, as defined by the WLCG Common JWT
+   Profiles (https://doi.org/10.5281/zenodo.3460258) and SciTokens:
+
+    [{"issuer": "https://wlcg.cloud.cnaf.infn.it/",
+      "audiences": ["https://weed.example:443"],
+      "base_path": "/wlcg"}]
+
+   The signature is checked against the keys the issuer publishes (found through
+   /.well-known/openid-configuration, or oauth-authorization-server). Keys are cached,
+   refetched every hour, and fetched at most once a minute per issuer, so forged
+   tokens cannot make weed flood an issuer; if the issuer is down, the known keys keep
+   working. Use -token-ca-path to trust CAs other than the system's for the issuers.
+   A token must not be expired (1 minute of clock skew is allowed), and its aud must
+   include one of the audiences or https://wlcg.cern.ch/jwt/v1/any; otherwise 401.
+
+   Scopes grant access to a path and everything below it; paths are relative to the
+   issuer's base_path (default "/"), which is relative to the exported directory:
+     storage.read:<path>    read, list and stat (also storage.stage, SciTokens read)
+     storage.create:<path>  create files and directories, rename, stat; never
+                            replace or delete data: PUT, COPY/MOVE and TPC pull onto
+                            an existing file get 403, before any data is sent
+     storage.modify:<path>  also overwrite and delete (also SciTokens write)
+   A scope without a path means "/". Tokens without storage scopes get 403: access
+   based on groups (wlcg.groups) is not supported. A macaroon cannot be requested
+   with a token, since it would not be bound by the token's scopes.
+
+   Access required per request:
+     GET                      read
+     HEAD, PROPFIND Depth: 0  read, create or modify
+     PROPFIND Depth: 1        read
+     PUT                      create (new files only) or modify
+     MKCOL, LOCK, UNLOCK      create or modify
+     DELETE, PROPPATCH        modify
+     COPY (local)             read on the source; create or modify on the destination
+     MOVE                     create or modify on source and destination
+     COPY (TPC pull)          create or modify
+     COPY (TPC push)          read
+
+4. Macaroons (-macaroon-auth -macaroon-secret-key <secret>)
    Any authenticated user can mint a macaroon for a path by POSTing to that path:
 
     curl -u user:pass -X POST https://weed.example/webdav/dir_0/dir_1/ \
@@ -147,17 +213,71 @@ to do what was asked. All authenticated users share the same namespace.
      COPY (TPC push)          DOWNLOAD
      MOVE                     MANAGE on source and destination
 
-4. HTTP Basic (-basic-auth -htpasswd-file <file> -app-tokens-file <file>)
+5. HTTP Basic (-basic-auth -htpasswd-file <file> -app-tokens-file <file>)
    Passwords are checked against bcrypt entries in the htpasswd file, or against app
    tokens. Basic credentials are sent in clear text without -tls.
 
 /proc/whoami shows the identity a request authenticates as.
 
 
+Reloading credentials
+
+On SIGHUP, and every -reload-interval (default 1h, 0 disables), weed re-reads the
+htpasswd and app tokens files, the grid-mapfile, the CAs and CRLs, the token issuers,
+the TLS certificate, and the CAs for TPC endpoints and token issuers. A file that
+cannot be read keeps its previous contents, so a file being rewritten neither locks
+everybody out nor lets anybody in. New connections and requests use the new data.
+
+
+Monitoring
+
+/healthz, on the main port without authentication, answers 200 "ok", or 503 when
+the exported directory cannot be stat'ed within 5 seconds (e.g. a hung network
+filesystem).
+
+-metrics-address localhost:9100 serves, without authentication, /healthz and
+Prometheus metrics on /metrics:
+  weed_http_requests_total{method,code}       weed_http_response_bytes_total{method}
+  weed_auth_requests_total{method,result}     weed_upload_bytes_total
+  weed_checksum_mismatches_total{operation}   (put, tpc_pull, tpc_push)
+  weed_tpc_transfers_total{mode,result}       weed_tpc_bytes_total{mode}
+  weed_tpc_active_transfers{mode}             weed_tpc_rejected_total
+  weed_reloads_total{result}                  weed_build_info{version,goversion}
+  weed_crl_expiry_timestamp_seconds           when the first CA runs out of current
+                                              CRLs (alert before it is reached)
+  weed_tls_certificate_expiry_timestamp_seconds
+
+
+Performance
+
+Uploads and TPC transfers read the next 1 MiB while the previous one is written and
+checksummed, and compute several digests in parallel, so checksums cost little more
+than the slowest of network, disk and hashing. On an M1 Pro over loopback (2 GiB
+files, MB/s): PUT or TPC pull with adler32 ~2450, + sha-256 ~1900, + md5 ~620 (md5
+itself hashes at ~650); GET ~3000; the disk writes ~3800. Measure on your hardware:
+
+    WEED_BENCH_MIB=4096 go test ./internal/server -run '^$' -bench . -benchtime 3x
+    go test ./internal/digest -run '^$' -bench Hasher
+
+
+Testing
+
+    go test -race ./...           unit and end-to-end tests
+    test/interop/interop.sh       interoperability tests, needs Docker
+
+The interoperability tests run weed in a container against real WLCG software:
+gfal2, davix and curl as clients; XRootD (with its macaroons, SciTokens and HTTP-TPC
+plugins) as a second implementation; and a test token issuer. They cover X.509
+proxies, macaroons, tokens, revocation with SIGHUP, metrics, and third-party copies
+in both directions between two weed servers and between weed and XRootD. Each
+parser also has a fuzz test (go test -fuzz). CI (.github/workflows/ci.yml) runs the
+tests with -race on Linux and macOS, go vet, gofmt, govulncheck, cross-builds, the
+fuzz tests and the interoperability tests.
+
+
 Not implemented
 
-* WLCG JWT / SciTokens bearer tokens
-* X.509 credential delegation for TPC (Credential: gridsite)
-* Certificate revocation (CRL) checks
-* Per-user authorization
-* Reloading credentials files without a restart (SIGHUP)
+* X.509 credential delegation for TPC (Credential: gridsite): use tokens or
+  macaroons in TransferHeaderAuthorization
+* Per-user authorization: all authenticated users share the same namespace (tokens
+  and macaroons can be restricted to paths); group-based token authorization
