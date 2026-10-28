@@ -1,0 +1,530 @@
+// Package tpc implements the active side of WLCG HTTP third-party copy (TPC).
+//
+// A client sends COPY to this server with either a Source header (pull: this server
+// GETs the remote file and stores it locally) or a remote Destination header (push:
+// this server PUTs a local file to the remote endpoint). The response is 202 Accepted
+// followed by a stream of performance markers and a final "success:" or "failure:"
+// line. Headers named TransferHeader<Name> are forwarded to the remote as <Name>.
+//
+// Data integrity follows https://github.com/labkode/wlcg-tpc: when the COPY carries a
+// Repr-Digest (RFC 9530), a pull asks the source for the digest (Want-Repr-Digest),
+// fails early if the source's value contradicts the client's, and always verifies the
+// received data; a push forwards the Repr-Digest so the destination can verify it, and
+// reports a 412 from the destination as a checksum mismatch.
+package tpc
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httptrace"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/labkode/weed/internal/davfs"
+	"github.com/labkode/weed/internal/digest"
+	"github.com/labkode/weed/internal/logger"
+)
+
+// Mode is the direction of a transfer
+type Mode int
+
+const (
+	// Pull copies a remote file to this server
+	Pull Mode = iota
+	// Push copies a local file to a remote server
+	Push
+)
+
+func (m Mode) String() string {
+	if m == Push {
+		return "push"
+	}
+	return "pull"
+}
+
+// Config tunes the TPC engine
+type Config struct {
+	// MarkerInterval is how often performance markers are sent
+	MarkerInterval time.Duration
+	// StallTimeout aborts a transfer that makes no progress for this long (0 disables)
+	StallTimeout time.Duration
+	// MaxTransfers bounds concurrent transfers; further requests get 503
+	MaxTransfers int
+	// AllowHTTP permits plain-text http:// remote endpoints
+	AllowHTTP bool
+	// AllowLocal permits remote endpoints on loopback and link-local addresses
+	// (which include cloud metadata services); only enable it for testing
+	AllowLocal bool
+	// RootCAs verifies remote TLS endpoints; nil means the system roots
+	RootCAs *x509.CertPool
+}
+
+// Job is one transfer
+type Job struct {
+	Mode Mode
+	// Remote is the other endpoint
+	Remote *url.URL
+	// LocalPath is the local file (destination for Pull, source for Push)
+	LocalPath string
+	// Header is sent to the remote endpoint
+	Header http.Header
+	// Expected holds the digests the client asserted in Repr-Digest (may be empty)
+	Expected digest.Set
+	// ReprDigest is the client's Repr-Digest field, forwarded verbatim on push
+	ReprDigest string
+}
+
+// Engine runs transfers
+type Engine struct {
+	cfg    Config
+	client *http.Client
+	slots  chan struct{}
+}
+
+// New creates an engine
+func New(cfg Config) *Engine {
+	if cfg.MarkerInterval <= 0 {
+		cfg.MarkerInterval = 5 * time.Second
+	}
+	if cfg.MaxTransfers <= 0 {
+		cfg.MaxTransfers = 1
+	}
+	return &Engine{
+		cfg:    cfg,
+		client: newClient(cfg),
+		slots:  make(chan struct{}, cfg.MaxTransfers),
+	}
+}
+
+// LoadCAs builds a pool from the system roots plus the PEM certificates in path,
+// which may be a file or a directory such as /etc/grid-security/certificates
+func LoadCAs(path string) (*x509.CertPool, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		pool = x509.NewCertPool()
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	files := []string{path}
+	if fi.IsDir() {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return nil, err
+		}
+		files = files[:0]
+		for _, e := range entries {
+			n := e.Name()
+			if !e.IsDir() && (strings.HasSuffix(n, ".pem") || strings.HasSuffix(n, ".crt") || strings.HasSuffix(n, ".0")) {
+				files = append(files, filepath.Join(path, n))
+			}
+		}
+	}
+	loaded := 0
+	for _, f := range files {
+		if pem, err := os.ReadFile(f); err == nil && pool.AppendCertsFromPEM(pem) {
+			loaded++
+		}
+	}
+	if loaded == 0 {
+		return nil, fmt.Errorf("no CA certificates found in %s", path)
+	}
+	return pool, nil
+}
+
+func newClient(cfg Config) *http.Client {
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	if !cfg.AllowLocal {
+		// Checked on the resolved address at connect time, so redirects and DNS tricks are covered too
+		dialer.Control = denyLocal
+	}
+	transport := &http.Transport{
+		DialContext:           dialer.DialContext,
+		TLSClientConfig:       &tls.Config{RootCAs: cfg.RootCAs, MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout:   30 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
+		ExpectContinueTimeout: 5 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConnsPerHost:   4,
+		// Files must be stored byte for byte; never ask for a transparently decoded encoding
+		DisableCompression: true,
+	}
+	return &http.Client{
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("too many redirects")
+			}
+			if req.Method != via[0].Method {
+				return fmt.Errorf("refusing redirect that turns %s into %s", via[0].Method, req.Method)
+			}
+			if req.URL.Scheme != "https" && !cfg.AllowHTTP {
+				return fmt.Errorf("refusing redirect to %s: plain http is not allowed", redact(req.URL))
+			}
+			return nil
+		},
+	}
+}
+
+func denyLocal(network, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return fmt.Errorf("connections to %s are not allowed for third-party copy", host)
+	}
+	return nil
+}
+
+// ValidateRemote checks that a remote endpoint may be used
+func (e *Engine) ValidateRemote(u *url.URL) error {
+	if u.Scheme != "https" && !(u.Scheme == "http" && e.cfg.AllowHTTP) {
+		return fmt.Errorf("scheme %q is not allowed for third-party copy", u.Scheme)
+	}
+	return nil
+}
+
+// hopByHop headers are never forwarded, whatever the client asks for
+var hopByHop = map[string]bool{
+	"Host": true, "Content-Length": true, "Transfer-Encoding": true, "Connection": true,
+	"Te": true, "Trailer": true, "Upgrade": true, "Expect": true, "Keep-Alive": true,
+	"Proxy-Connection": true,
+}
+
+// TransferHeaders returns the headers to send to the remote endpoint: every request
+// header TransferHeader<Name> becomes <Name>
+func TransferHeaders(in http.Header) http.Header {
+	const prefix = "transferheader"
+	out := http.Header{}
+	for k, vs := range in {
+		if len(k) <= len(prefix) || !strings.EqualFold(k[:len(prefix)], prefix) {
+			continue
+		}
+		name := http.CanonicalHeaderKey(k[len(prefix):])
+		if hopByHop[name] {
+			continue
+		}
+		out[name] = append(out[name], vs...)
+	}
+	return out
+}
+
+// progress is shared between a transfer and the marker loop
+type progress struct {
+	counter atomic.Pointer[atomic.Int64] // replaced when a push is retried after a redirect
+	remote  atomic.Value                 // string, the address of the remote peer
+}
+
+func (p *progress) bytes() int64 {
+	if c := p.counter.Load(); c != nil {
+		return c.Load()
+	}
+	return 0
+}
+
+// Serve answers a TPC COPY: 202, performance markers, then the final status line.
+// All checks that can be done synchronously must have been done by the caller.
+func (e *Engine) Serve(w http.ResponseWriter, r *http.Request, job *Job) {
+	reqID := logger.GetRequestID(r.Context())
+
+	select {
+	case e.slots <- struct{}{}:
+		defer func() { <-e.slots }()
+	default:
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "Too many concurrent third-party copies", http.StatusServiceUnavailable)
+		return
+	}
+
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
+	p := &progress{}
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- e.run(ctx, job, p) }()
+
+	log.Printf("[TPC] [%s] Started %s %s <-> %s", reqID, job.Mode, job.LocalPath, redact(job.Remote))
+	w.Header().Set("Content-Type", "text/perf-marker-stream")
+	w.WriteHeader(http.StatusAccepted)
+	rc := http.NewResponseController(w)
+	rc.Flush()
+
+	ticker := time.NewTicker(e.cfg.MarkerInterval)
+	defer ticker.Stop()
+	lastBytes, lastProgress := int64(0), time.Now()
+	for {
+		select {
+		case err := <-done:
+			n := p.bytes()
+			if err != nil {
+				log.Printf("[TPC] [%s] Failed %s after %d bytes (%v): %v", reqID, job.Mode, n, time.Since(start), err)
+				fmt.Fprintf(w, "failure: %s\n", oneLine(err.Error()))
+			} else {
+				log.Printf("[TPC] [%s] Completed %s: %d bytes in %v", reqID, job.Mode, n, time.Since(start))
+				fmt.Fprint(w, "success: Created\n")
+			}
+			rc.Flush()
+			return
+		case now := <-ticker.C:
+			n := p.bytes()
+			if n != lastBytes {
+				lastBytes, lastProgress = n, now
+			} else if e.cfg.StallTimeout > 0 && now.Sub(lastProgress) >= e.cfg.StallTimeout {
+				cancel(fmt.Errorf("transfer stalled: no data for %v", e.cfg.StallTimeout))
+			}
+			writeMarker(w, now, n, p)
+			rc.Flush()
+		}
+	}
+}
+
+// writeMarker writes a performance marker in the format FTS/davix parse
+func writeMarker(w io.Writer, now time.Time, n int64, p *progress) {
+	fmt.Fprintf(w, "Perf Marker\n\tTimestamp: %d\n\tStripe Index: 0\n\tStripe Bytes Transferred: %d\n\tTotal Stripe Count: 1\n", now.Unix(), n)
+	if remote, _ := p.remote.Load().(string); remote != "" {
+		fmt.Fprintf(w, "\tRemoteConnections: tcp:%s\n", remote)
+	}
+	fmt.Fprint(w, "End\n")
+}
+
+func (e *Engine) run(ctx context.Context, job *Job, p *progress) error {
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			p.remote.Store(info.Conn.RemoteAddr().String())
+		},
+	})
+	var err error
+	if job.Mode == Push {
+		err = e.push(ctx, job, p)
+	} else {
+		err = e.pull(ctx, job, p)
+	}
+	// Report why the transfer was cancelled (stall, shutdown) rather than "context canceled"
+	if err != nil && ctx.Err() != nil {
+		if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+			return cause
+		}
+	}
+	return err
+}
+
+func (e *Engine) pull(ctx context.Context, job *Job, p *progress) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, job.Remote.String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header = job.Header.Clone()
+	if len(job.Expected) > 0 {
+		req.Header.Set("Want-Repr-Digest", digest.FormatWant(job.Expected.Algorithms()))
+	}
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", redact(job.Remote), unwrapURLError(err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return remoteError("GET", job.Remote, resp)
+	}
+	// Without Content-Length or chunked framing a dropped connection looks like a
+	// complete file, so such responses are refused
+	if resp.ContentLength < 0 && !(len(resp.TransferEncoding) > 0 && resp.TransferEncoding[0] == "chunked") {
+		return errors.New("source response has no Content-Length or chunked encoding; truncation would be undetectable")
+	}
+	// We never ask for an encoding, so anything but identity would be stored mangled
+	if ce := resp.Header.Get("Content-Encoding"); ce != "" && !strings.EqualFold(ce, "identity") {
+		return fmt.Errorf("source sent unrequested Content-Encoding %q", ce)
+	}
+
+	// If the source states a digest that contradicts the client, there is no point
+	// in transferring the data (scenario a of the WLCG TPC data integrity spec)
+	if len(job.Expected) > 0 {
+		if src, _, err := digest.ParseReprDigest(resp.Header.Get("Repr-Digest")); err == nil {
+			if alg, bad := digest.Mismatch(job.Expected, src); bad {
+				return fmt.Errorf("file not saved: client/server checksum mismatch: source reports %s %x, client expects %x",
+					alg, src[alg], job.Expected[alg])
+			}
+		}
+	}
+
+	af, err := davfs.CreateAtomic(job.LocalPath, 0666)
+	if err != nil {
+		return fmt.Errorf("cannot create local file: %w", err)
+	}
+	defer af.Abort()
+
+	// adler32 is always computed: it is cheap and is the checksum WLCG asks for afterwards
+	hasher := digest.NewHasher(append([]string{digest.Adler}, job.Expected.Algorithms()...)...)
+	counter := new(atomic.Int64)
+	p.counter.Store(counter)
+	src := &countingReader{r: resp.Body, n: counter}
+	dst := &errWriter{w: io.MultiWriter(af, hasher)}
+	n, err := io.CopyBuffer(dst, src, make([]byte, 1<<20))
+	if err != nil {
+		if dst.err != nil {
+			return fmt.Errorf("writing local file after %d bytes: %w", n, dst.err)
+		}
+		return fmt.Errorf("reading from source after %d bytes: %w", n, err)
+	}
+	if resp.ContentLength >= 0 && n != resp.ContentLength {
+		return fmt.Errorf("source sent %d bytes, expected %d", n, resp.ContentLength)
+	}
+
+	sums := hasher.Sums()
+	if alg, bad := digest.Mismatch(job.Expected, sums); bad {
+		return fmt.Errorf("file not saved: client/server checksum mismatch: received data has %s %x, client expects %x",
+			alg, sums[alg], job.Expected[alg])
+	}
+	digest.StoreCache(af.File, sums)
+	if err := af.Commit(); err != nil {
+		return fmt.Errorf("cannot store local file: %w", err)
+	}
+	return nil
+}
+
+func (e *Engine) push(ctx context.Context, job *Job, p *progress) error {
+	f, err := os.Open(job.LocalPath)
+	if err != nil {
+		return err
+	}
+	fi, err := f.Stat()
+	f.Close()
+	if err != nil {
+		return err
+	}
+	size := fi.Size()
+
+	// Each attempt (the first PUT, and any retry after a 307/308 redirect) reads the
+	// file afresh with its own counter and hasher
+	type attempt struct {
+		counter *atomic.Int64
+		hasher  *digest.Hasher
+	}
+	var last attempt
+	newBody := func() (io.ReadCloser, error) {
+		f, err := os.Open(job.LocalPath)
+		if err != nil {
+			return nil, err
+		}
+		last = attempt{counter: new(atomic.Int64), hasher: digest.NewHasher(job.Expected.Algorithms()...)}
+		p.counter.Store(last.counter)
+		r := &countingReader{r: io.TeeReader(f, last.hasher), n: last.counter}
+		return struct {
+			io.Reader
+			io.Closer
+		}{r, f}, nil
+	}
+	body, err := newBody()
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, job.Remote.String(), body)
+	if err != nil {
+		body.Close()
+		return err
+	}
+	req.ContentLength = size
+	req.GetBody = newBody
+	req.Header = job.Header.Clone()
+	if job.ReprDigest != "" {
+		req.Header.Set("Repr-Digest", job.ReprDigest)
+	}
+	if size > 0 {
+		// Learn about authorization failures and redirects before sending the data
+		req.Header.Set("Expect", "100-continue")
+	}
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("PUT %s: %w", redact(job.Remote), unwrapURLError(err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusPreconditionFailed && job.ReprDigest != "" {
+		return errors.New("file not saved: client/server checksum mismatch reported by destination (412 Precondition Failed)")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return remoteError("PUT", job.Remote, resp)
+	}
+
+	// The counter is updated after the hasher, so reading the full size here means
+	// the hasher has seen every byte
+	if sent := last.counter.Load(); sent != size {
+		return fmt.Errorf("destination answered %s after %d of %d bytes", resp.Status, sent, size)
+	}
+	if alg, bad := digest.Mismatch(job.Expected, last.hasher.Sums()); bad {
+		return fmt.Errorf("source file does not match the client checksum for %s (the destination did not verify it)", alg)
+	}
+	return nil
+}
+
+type countingReader struct {
+	r io.Reader
+	n *atomic.Int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// errWriter remembers write errors so they can be told apart from read errors
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errWriter) Write(p []byte) (int, error) {
+	n, err := e.w.Write(p)
+	if err != nil {
+		e.err = err
+	}
+	return n, err
+}
+
+func remoteError(method string, u *url.URL, resp *http.Response) error {
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	msg := oneLine(string(b))
+	if msg != "" {
+		msg = ": " + msg
+	}
+	return fmt.Errorf("%s %s failed: %s%s", method, redact(u), resp.Status, msg)
+}
+
+// unwrapURLError drops the url.Error wrapper, whose message would repeat the full URL
+func unwrapURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
+}
+
+// redact removes credentials that may be embedded in URLs (user info, query tokens)
+func redact(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
+}
+
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}

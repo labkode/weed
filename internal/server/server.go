@@ -3,18 +3,23 @@ package server
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
-	"os"
 	"strings"
+	"time"
 
 	"github.com/labkode/weed/internal/auth"
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/handlers"
 	"github.com/labkode/weed/internal/logger"
+	"github.com/labkode/weed/internal/tpc"
 )
+
+// shutdownGrace is how long in-flight requests get to finish on shutdown
+const shutdownGrace = 30 * time.Second
 
 // Server represents the WebDAV server
 type Server struct {
@@ -38,6 +43,8 @@ func New(cfg *config.Config) *Server {
 func (s *Server) Initialize() error {
 	// Initialize authentication systems if enabled
 	if s.Config.BasicAuth {
+		s.AuthStore.BasicEnabled = true
+		s.AuthStore.PrepareBasicAuth()
 		if err := s.AuthStore.LoadHtpasswd(s.Config.HtpasswdFile); err != nil {
 			log.Printf("[HTPASSWD] Warning: Failed to load htpasswd file %s: %v", s.Config.HtpasswdFile, err)
 		} else {
@@ -54,12 +61,11 @@ func (s *Server) Initialize() error {
 
 	if s.Config.X509Auth {
 		// Load CA certificate for manual verification
-		if s.Config.CACert != "" {
-			if err := s.AuthStore.LoadCACert(s.Config.CACert); err != nil {
-				return fmt.Errorf("failed to load CA certificate: %w", err)
-			}
-			log.Printf("[CA-CERT] Successfully loaded CA certificate from %s", s.Config.CACert)
+		if err := s.AuthStore.LoadCACert(s.Config.CACert); err != nil {
+			return fmt.Errorf("failed to load CA certificate: %w", err)
 		}
+		log.Printf("[CA-CERT] Successfully loaded CA certificate from %s", s.Config.CACert)
+		s.AuthStore.X509Enabled = true
 
 		if err := s.AuthStore.LoadGridmap(s.Config.GridmapFile); err != nil {
 			log.Printf("[GRIDMAP] Warning: Failed to load gridmap file %s: %v", s.Config.GridmapFile, err)
@@ -70,10 +76,12 @@ func (s *Server) Initialize() error {
 
 	// Initialize OIDC if enabled
 	if s.Config.OIDCAuth {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		if err := s.AuthStore.InitializeOIDC(ctx, s.Config.OIDCIssuer, s.Config.OIDCClientID, s.Config.OIDCClientSecret, s.Config.OIDCRedirectURL); err != nil {
 			return fmt.Errorf("failed to initialize OIDC: %w", err)
 		}
+		s.AuthStore.OIDCEnabled = true
 		log.Printf("[OIDC] Successfully initialized OIDC authentication")
 	}
 
@@ -82,48 +90,37 @@ func (s *Server) Initialize() error {
 		if err := s.AuthStore.InitializeMacaroon(s.Config.MacaroonSecretKey, s.Config.MacaroonLocation); err != nil {
 			return fmt.Errorf("failed to initialize macaroon: %w", err)
 		}
+		s.AuthStore.MacaroonEnabled = true
 		log.Printf("[MACAROON] Successfully initialized macaroon authentication")
+	}
+
+	// Initialize third-party copy if enabled
+	if s.Config.TPC {
+		tpcCfg := tpc.Config{
+			MarkerInterval: s.Config.TPCMarkerInterval,
+			StallTimeout:   s.Config.TPCStallTimeout,
+			MaxTransfers:   s.Config.TPCMaxTransfers,
+			AllowHTTP:      s.Config.TPCAllowHTTP,
+			AllowLocal:     s.Config.TPCAllowLocal,
+		}
+		if s.Config.TPCCAPath != "" {
+			pool, err := tpc.LoadCAs(s.Config.TPCCAPath)
+			if err != nil {
+				return fmt.Errorf("failed to load TPC CA certificates: %w", err)
+			}
+			tpcCfg.RootCAs = pool
+		}
+		s.Handler.TPC = tpc.New(tpcCfg)
+		log.Printf("[TPC] Third-party copy enabled (max %d concurrent transfers)", s.Config.TPCMaxTransfers)
 	}
 
 	return nil
 }
 
-// SetupMiddleware sets up the middleware chain
-func (s *Server) SetupMiddleware() http.Handler {
-	var middlewareChain http.Handler = s.Handler
-
-	// Add authentication middleware
-	if s.Config.BasicAuth {
-		middlewareChain = s.AuthStore.BasicAuthMiddleware(middlewareChain)
-	}
-	if s.Config.X509Auth {
-		middlewareChain = s.AuthStore.X509AuthMiddleware(middlewareChain)
-	}
-	if s.Config.OIDCAuth {
-		middlewareChain = s.AuthStore.OIDCAuthMiddleware(middlewareChain)
-	}
-
-	// Add logging middleware
-	middlewareChain = logger.Middleware(middlewareChain)
-
-	return middlewareChain
-}
-
-// createWebDAVHandler creates a WebDAV handler that works with the /webdav prefix
-// The WebDAV handler's Prefix field handles path stripping and href generation automatically
-func (s *Server) createWebDAVHandler(handler http.Handler) http.Handler {
-	return handler
-}
-
 // applyAuthMiddleware applies the unified authentication middleware to a handler
 func (s *Server) applyAuthMiddleware(handler http.Handler) http.Handler {
-	// First apply unified authentication middleware that tries X.509 -> OIDC -> Macaroon -> Basic Auth in order
+	// Unified authentication tries X.509 -> OIDC -> Macaroon -> Basic Auth in order
 	handler = s.AuthStore.UnifiedAuthMiddleware(handler)
-
-	// After authentication, apply macaroon minting middleware (if macaroon auth is enabled)
-	if s.Config.MacaroonAuth {
-		handler = s.Handler.MacaroonMintingMiddleware(handler)
-	}
 
 	// Apply logging middleware
 	handler = logger.Middleware(handler)
@@ -153,10 +150,7 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 	mux.HandleFunc("/", s.Handler.IndexHandler)
 
 	// WebDAV content requires authentication - use unified auth middleware
-	// Create a custom handler that preserves the /webdav prefix for proper href generation
-	// but strips it for filesystem access
-	webdavHandler := s.applyAuthMiddleware(s.Handler)
-	mux.Handle("/webdav/", s.createWebDAVHandler(webdavHandler))
+	mux.Handle("/webdav/", s.applyAuthMiddleware(s.Handler))
 
 	// Authentication trigger routes - only create routes for enabled methods
 	if s.Config.BasicAuth {
@@ -173,8 +167,8 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 
 	// OIDC routes if OIDC is enabled
 	if s.Config.OIDCAuth {
-		mux.HandleFunc("/auth/oidc", s.Handler.OIDCHandler(s.AuthStore))
-		mux.HandleFunc("/oidc_redirect", s.Handler.OIDCRedirectHandler(s.AuthStore))
+		mux.Handle("/auth/oidc", logger.Middleware(s.Handler.OIDCHandler(s.AuthStore)))
+		mux.Handle("/oidc_redirect", logger.Middleware(s.Handler.OIDCRedirectHandler(s.AuthStore)))
 		log.Printf("[OIDC] Added OIDC routes: /auth/oidc and /oidc_redirect")
 	}
 
@@ -184,7 +178,7 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 	}
 
 	// Utility routes
-	mux.HandleFunc("/proc/x509", s.Handler.ProcX509Handler)
+	mux.Handle("/proc/x509", logger.Middleware(http.HandlerFunc(s.Handler.ProcX509Handler)))
 
 	// Add whoami route at /proc/whoami - apply auth middleware if any auth is enabled
 	if s.Config.BasicAuth || s.Config.X509Auth || s.Config.OIDCAuth || s.Config.MacaroonAuth {
@@ -201,39 +195,28 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 }
 
 // SetupTLS configures TLS if enabled
-func (s *Server) SetupTLS() *tls.Config {
+func (s *Server) SetupTLS() (*tls.Config, error) {
 	if !s.Config.TLS {
-		return nil
+		return nil, nil
 	}
 
-	tlsConfig := &tls.Config{}
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 
 	if s.Config.X509Auth {
-		// CA certificate is required for X.509 authentication
-		if s.Config.CACert == "" {
-			log.Fatal("CA certificate (-ca-cert) is required when X.509 authentication is enabled")
+		if s.AuthStore.CACertPool == nil {
+			return nil, errors.New("CA certificate (-ca-cert) is required when X.509 authentication is enabled")
 		}
 
-		// Load CA certificate
-		caCert, err := os.ReadFile(s.Config.CACert)
-		if err != nil {
-			log.Fatalf("Failed to read CA certificate from %s: %v", s.Config.CACert, err)
-		}
-
-		caCertPool := x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(caCert) {
-			log.Fatalf("Failed to parse CA certificate from %s", s.Config.CACert)
-		}
-
-		// Set up TLS to request client certificates but validate them in our middleware
-		// This allows us to handle certificate validation with detailed logging and fallback
-		tlsConfig.ClientCAs = caCertPool
+		// Request client certificates but validate them in the authentication
+		// middleware: this allows grid proxy chains, detailed logging and fallback
+		// to other methods
+		tlsConfig.ClientCAs = s.AuthStore.CACertPool
 		tlsConfig.ClientAuth = tls.RequestClientCert
 		log.Printf("[TLS] X.509 client authentication enabled with CA verification: %s", s.Config.CACert)
 		log.Printf("[TLS] Client certificates will be validated in authentication middleware")
 	}
 
-	return tlsConfig
+	return tlsConfig, nil
 }
 
 // createCustomErrorLogger creates a custom logger for HTTP server errors
@@ -260,25 +243,55 @@ func (w *customLogWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// Start starts the server
-func (s *Server) Start() error {
+// Run serves until ctx is cancelled, then shuts down gracefully: new connections are
+// refused, in-flight requests get shutdownGrace to finish, and whatever is still
+// running after that (e.g. long third-party copies) is cancelled
+func (s *Server) Run(ctx context.Context) error {
 	address := fmt.Sprintf("%s:%d", s.Config.Address, s.Config.Port)
 	mux := s.SetupRoutes()
+
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	defer cancelBase()
 
 	s.server = &http.Server{
 		Addr:     address,
 		Handler:  mux,
 		ErrorLog: s.createCustomErrorLogger(),
+		// No ReadTimeout/WriteTimeout: transfers of large files legitimately take long
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		BaseContext:       func(net.Listener) context.Context { return baseCtx },
 	}
 
+	errCh := make(chan error, 1)
 	if s.Config.TLS {
-		s.server.TLSConfig = s.SetupTLS()
+		tlsConfig, err := s.SetupTLS()
+		if err != nil {
+			return err
+		}
+		s.server.TLSConfig = tlsConfig
 		log.Printf("[STARTUP] Starting HTTPS server on %s (serving directory: %s)", address, s.Config.Directory)
-		return s.server.ListenAndServeTLS("server.crt", "server.key")
+		go func() { errCh <- s.server.ListenAndServeTLS(s.Config.TLSCert, s.Config.TLSKey) }()
 	} else {
 		log.Printf("[STARTUP] Starting HTTP server on %s (serving directory: %s)", address, s.Config.Directory)
-		return s.server.ListenAndServe()
+		go func() { errCh <- s.server.ListenAndServe() }()
 	}
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+	}
+
+	log.Printf("[SHUTDOWN] Shutting down (waiting up to %v for in-flight requests)", shutdownGrace)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	defer cancel()
+	if err := s.server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[SHUTDOWN] Cancelling remaining requests: %v", err)
+		cancelBase()
+		s.server.Close()
+	}
+	return nil
 }
 
 // LogStartupInfo logs the server startup information
@@ -292,6 +305,8 @@ func (s *Server) LogStartupInfo() {
 	log.Printf("  - X.509 Auth: %t", s.Config.X509Auth)
 	log.Printf("  - Basic Auth: %t", s.Config.BasicAuth)
 	log.Printf("  - OIDC Auth: %t", s.Config.OIDCAuth)
+	log.Printf("  - Macaroon Auth: %t", s.Config.MacaroonAuth)
+	log.Printf("  - Third-party copy: %t", s.Config.TPC)
 	if s.Config.BasicAuth {
 		log.Printf("  - Htpasswd File: %s", s.Config.HtpasswdFile)
 		log.Printf("  - App Tokens File: %s", s.Config.AppTokensFile)
@@ -300,6 +315,15 @@ func (s *Server) LogStartupInfo() {
 		log.Printf("  - OIDC Issuer: %s", s.Config.OIDCIssuer)
 		log.Printf("  - OIDC Client ID: %s", s.Config.OIDCClientID)
 		log.Printf("  - OIDC Redirect URL: %s", s.Config.OIDCRedirectURL)
+	}
+	if s.Config.MacaroonAuth {
+		log.Printf("  - Macaroon Max Validity: %v", s.Config.MacaroonMaxValidity)
+	}
+	if s.Config.TPC && (s.Config.TPCAllowHTTP || s.Config.TPCAllowLocal) {
+		log.Printf("  - TPC allow http: %t, allow local addresses: %t", s.Config.TPCAllowHTTP, s.Config.TPCAllowLocal)
+	}
+	if !s.Config.TLS && (s.Config.BasicAuth || s.Config.MacaroonAuth || s.Config.OIDCAuth) {
+		log.Printf("WARNING: TLS is disabled; passwords and tokens are sent in clear text")
 	}
 	log.Println("===============================")
 }

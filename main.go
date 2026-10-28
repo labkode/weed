@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/labkode/weed/cmd/utils"
 	"github.com/labkode/weed/internal/config"
@@ -21,7 +24,7 @@ func main() {
 
 	// Set up logging
 	if cfg.LogFile != "" {
-		logFile, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		logFile, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
 		if err != nil {
 			log.Fatalf("Failed to open log file %s: %v", cfg.LogFile, err)
 		}
@@ -44,8 +47,10 @@ func main() {
 	// Print startup information
 	srv.LogStartupInfo()
 
-	// Start server
-	if err := srv.Start(); err != nil {
+	// Serve until SIGINT/SIGTERM, then shut down gracefully
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := srv.Run(ctx); err != nil {
 		log.Fatal(err)
 	}
 }

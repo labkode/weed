@@ -59,7 +59,7 @@ func GenerateTLSCertificates() error {
 		return err
 	}
 
-	keyOut, err := os.Create("server.key")
+	keyOut, err := os.OpenFile("server.key", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}

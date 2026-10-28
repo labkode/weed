@@ -21,8 +21,8 @@ func HandleUtilsCommand(args []string) {
 	case "password":
 		HandlePassword()
 	case "token":
-		// For token operations, we'll use a minimal config
-		cfg := &config.Config{}
+		// Token operations use the same default file as the server (-app-tokens-file)
+		cfg := &config.Config{AppTokensFile: ".app-tokens"}
 		HandleToken(cfg)
 	default:
 		fmt.Printf("Unknown utils command: %s\n", args[2])
