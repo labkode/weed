@@ -1,7 +1,9 @@
 package x509utils
 
 import (
+	"bytes"
 	"crypto/x509"
+	"encoding/asn1"
 	"strings"
 	"testing"
 	"time"
@@ -135,5 +137,86 @@ func TestVerifyChainRejectsExpiredUser(t *testing.T) {
 	user := testutil.NewUser(t, ca, testutil.Name(t, "CN=old"), time.Now().Add(-48*time.Hour), time.Now().Add(-24*time.Hour))
 	if _, _, err := VerifyChain(chain(user), testutil.Pool(ca), time.Now()); err == nil {
 		t.Fatal("expired certificate accepted")
+	}
+}
+
+func TestProxyPolicies(t *testing.T) {
+	ca, user := setup(t)
+	rfc := testutil.ProxyOptions{PathLen: -1}
+	with := func(f func(o *testutil.ProxyOptions)) testutil.ProxyOptions {
+		o := rfc
+		f(&o)
+		return o
+	}
+	limited := with(func(o *testutil.ProxyOptions) { o.Policy = testutil.PolicyLimited })
+	legacy := with(func(o *testutil.ProxyOptions) { o.Legacy = true })
+	legacyLimited := with(func(o *testutil.ProxyOptions) { o.Legacy, o.Limited = true, true })
+	draft := with(func(o *testutil.ProxyOptions) { o.Draft = true })
+	pathLen := func(base testutil.ProxyOptions, n int) testutil.ProxyOptions {
+		base.PathLen = n
+		return base
+	}
+
+	for _, c := range []struct {
+		name    string
+		proxies []testutil.ProxyOptions // in issuing order: the first is signed by the user
+		wantErr string
+	}{
+		{"impersonation proxy", []testutil.ProxyOptions{rfc}, ""},
+		{"pre-RFC proxy", []testutil.ProxyOptions{draft, draft}, ""},
+		{"limited proxy", []testutil.ProxyOptions{limited}, ""},
+		{"limited proxy of a limited proxy", []testutil.ProxyOptions{limited, limited}, ""},
+		{"limited proxy of an impersonation proxy", []testutil.ProxyOptions{rfc, limited}, ""},
+		{"unrestricted proxy of a limited proxy", []testutil.ProxyOptions{limited, rfc}, "limited proxy issued unrestricted"},
+		{"legacy limited proxies", []testutil.ProxyOptions{legacyLimited, legacyLimited}, ""},
+		{"legacy proxy of a legacy limited proxy", []testutil.ProxyOptions{legacyLimited, legacy}, "limited proxy issued unrestricted"},
+		{"path length respected", []testutil.ProxyOptions{pathLen(rfc, 1), rfc}, ""},
+		{"path length 0 with nothing below", []testutil.ProxyOptions{rfc, pathLen(rfc, 0)}, ""},
+		{"path length exceeded", []testutil.ProxyOptions{pathLen(rfc, 0), rfc}, "allows 0 further proxies, but 1 follow"},
+		{"path length exceeded further down", []testutil.ProxyOptions{pathLen(rfc, 1), rfc, rfc}, "allows 1 further proxies, but 2 follow"},
+		{"pre-RFC path length exceeded", []testutil.ProxyOptions{pathLen(draft, 0), draft}, "allows 0 further proxies"},
+		{"pre-RFC path length respected", []testutil.ProxyOptions{pathLen(draft, 1), draft}, ""},
+		{"independent proxy", []testutil.ProxyOptions{with(func(o *testutil.ProxyOptions) { o.Policy = testutil.PolicyIndependent })}, "independent proxies"},
+		{"unknown policy language", []testutil.ProxyOptions{with(func(o *testutil.ProxyOptions) { o.Policy = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 21, 0} })}, "unsupported proxy policy language"},
+		{"RFC proxy of a legacy proxy", []testutil.ProxyOptions{legacy, rfc}, "mixes legacy and RFC 3820"},
+		{"legacy proxy of an RFC proxy", []testutil.ProxyOptions{rfc, legacy}, "mixes legacy and RFC 3820"},
+		{"issuer may not sign", []testutil.ProxyOptions{with(func(o *testutil.ProxyOptions) { o.KeyUsage = x509.KeyUsageKeyEncipherment }), rfc}, "may not sign"},
+	} {
+		certs := []*testutil.Cert{user}
+		for _, o := range c.proxies {
+			certs = append([]*testutil.Cert{testutil.NewProxyWith(t, certs[0], o)}, certs...)
+		}
+		eec, n, err := VerifyChain(chain(certs...), testutil.Pool(ca), time.Now())
+		switch {
+		case c.wantErr == "" && err != nil:
+			t.Errorf("%s: rejected: %v", c.name, err)
+		case c.wantErr == "" && (eec != user.Cert || n != len(c.proxies)):
+			t.Errorf("%s: identity %q with %d proxies", c.name, GetDNParts(eec), n)
+		case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+			t.Errorf("%s: err = %v, want %q", c.name, err, c.wantErr)
+		}
+	}
+}
+
+func TestParseProxyCertInfoMalformed(t *testing.T) {
+	policy, _ := asn1.Marshal(struct{ Language asn1.ObjectIdentifier }{oidPolicyInheritAll})
+	seq := func(parts ...[]byte) []byte {
+		b, _ := asn1.Marshal(asn1.RawValue{Tag: asn1.TagSequence, IsCompound: true, Bytes: bytes.Join(parts, nil)})
+		return b
+	}
+	negative, _ := asn1.Marshal(-1)
+	str, _ := asn1.Marshal("x")
+	for name, der := range map[string][]byte{
+		"empty":              {},
+		"not a sequence":     str,
+		"no policy":          seq(),
+		"negative path len":  seq(negative, policy),
+		"two policies":       seq(policy, policy),
+		"unexpected element": seq(policy, str),
+		"trailing bytes":     append(seq(policy), 0),
+	} {
+		if _, err := parseProxyCertInfo(der); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

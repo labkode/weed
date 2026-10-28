@@ -16,13 +16,13 @@ import (
 )
 
 var (
-	oidCN               = asn1.ObjectIdentifier{2, 5, 4, 3}
-	oidOU               = asn1.ObjectIdentifier{2, 5, 4, 11}
-	oidO                = asn1.ObjectIdentifier{2, 5, 4, 10}
-	oidC                = asn1.ObjectIdentifier{2, 5, 4, 6}
-	oidDC               = asn1.ObjectIdentifier{0, 9, 2342, 19200300, 100, 1, 25}
-	oidProxyCertInfo    = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 14}
-	oidInheritAllPolicy = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 21, 1}
+	oidCN                 = asn1.ObjectIdentifier{2, 5, 4, 3}
+	oidOU                 = asn1.ObjectIdentifier{2, 5, 4, 11}
+	oidO                  = asn1.ObjectIdentifier{2, 5, 4, 10}
+	oidC                  = asn1.ObjectIdentifier{2, 5, 4, 6}
+	oidDC                 = asn1.ObjectIdentifier{0, 9, 2342, 19200300, 100, 1, 25}
+	oidProxyCertInfo      = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 14}
+	oidProxyCertInfoDraft = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 3536, 1, 222}
 )
 
 var attrOIDs = map[string]asn1.ObjectIdentifier{"CN": oidCN, "OU": oidOU, "O": oidO, "C": oidC, "DC": oidDC}
@@ -140,20 +140,68 @@ func NewUser(t testing.TB, ca *Cert, subject []byte, notBefore, notAfter time.Ti
 // legacy Globus proxy (CN=proxy) is created.
 func NewProxy(t testing.TB, issuer *Cert, rfc bool, notAfter time.Time) *Cert {
 	t.Helper()
+	return NewProxyWith(t, issuer, ProxyOptions{Legacy: !rfc, PathLen: -1, NotAfter: notAfter})
+}
+
+// Proxy policy languages
+var (
+	PolicyInheritAll  = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 21, 1}
+	PolicyIndependent = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 21, 2}
+	PolicyLimited     = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 3536, 1, 1, 1, 9}
+)
+
+// ProxyOptions describes a proxy certificate
+type ProxyOptions struct {
+	Legacy   bool                  // Globus legacy proxy: no extension, CN "proxy" (or "limited proxy")
+	Limited  bool                  // with Legacy: CN "limited proxy"
+	Draft    bool                  // pre-RFC (GT3) ProxyCertInfo extension and encoding
+	Policy   asn1.ObjectIdentifier // policy language; default inheritAll
+	PathLen  int                   // path length constraint; -1 for none
+	NotAfter time.Time             // default one hour from now
+	KeyUsage x509.KeyUsage         // default digitalSignature and keyEncipherment
+}
+
+// NewProxyWith issues a proxy certificate signed by issuer
+func NewProxyWith(t testing.TB, issuer *Cert, o ProxyOptions) *Cert {
+	t.Helper()
 	var rdns pkix.RDNSequence
 	if _, err := asn1.Unmarshal(issuer.Cert.RawSubject, &rdns); err != nil {
 		t.Fatal(err)
 	}
+	if o.NotAfter.IsZero() {
+		o.NotAfter = time.Now().Add(time.Hour)
+	}
 	cn := "proxy"
+	if o.Limited {
+		cn = "limited proxy"
+	}
 	var exts []pkix.Extension
-	if rfc {
+	if !o.Legacy {
 		cn = serial(t).String()
-		type proxyPolicy struct{ Language asn1.ObjectIdentifier }
-		val, err := asn1.Marshal(struct{ Policy proxyPolicy }{proxyPolicy{oidInheritAllPolicy}})
-		if err != nil {
-			t.Fatal(err)
+		if o.Policy == nil {
+			o.Policy = PolicyInheritAll
 		}
-		exts = append(exts, pkix.Extension{Id: oidProxyCertInfo, Critical: true, Value: val})
+		policy := mustMarshal(t, struct{ Language asn1.ObjectIdentifier }{o.Policy})
+		var elems []byte
+		switch {
+		case o.Draft && o.PathLen >= 0:
+			pathLen := mustMarshal(t, asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 1, IsCompound: true, Bytes: mustMarshal(t, o.PathLen)})
+			elems = append(policy, pathLen...)
+		case !o.Draft && o.PathLen >= 0:
+			elems = append(mustMarshal(t, o.PathLen), policy...)
+		default:
+			elems = policy
+		}
+		id := oidProxyCertInfo
+		if o.Draft {
+			id = oidProxyCertInfoDraft
+		}
+		val := mustMarshal(t, asn1.RawValue{Tag: asn1.TagSequence, IsCompound: true, Bytes: elems})
+		exts = append(exts, pkix.Extension{Id: id, Critical: true, Value: val})
+	}
+	notAfter := o.NotAfter
+	if o.KeyUsage == 0 {
+		o.KeyUsage = x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment
 	}
 	rdns = append(rdns, pkix.RelativeDistinguishedNameSET{{Type: oidCN, Value: cn}})
 	subject, err := asn1.Marshal(rdns)
@@ -165,7 +213,7 @@ func NewProxy(t testing.TB, issuer *Cert, rfc bool, notAfter time.Time) *Cert {
 		RawSubject:      subject,
 		NotBefore:       time.Now().Add(-time.Minute),
 		NotAfter:        notAfter,
-		KeyUsage:        x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		KeyUsage:        o.KeyUsage,
 		ExtraExtensions: exts,
 	}, issuer)
 }
@@ -177,4 +225,13 @@ func Pool(cas ...*Cert) *x509.CertPool {
 		p.AddCert(ca.Cert)
 	}
 	return p
+}
+
+func mustMarshal(t testing.TB, v interface{}) []byte {
+	t.Helper()
+	b, err := asn1.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

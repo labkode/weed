@@ -129,6 +129,11 @@ var (
 	oidCommonName         = asn1.ObjectIdentifier{2, 5, 4, 3}
 	oidProxyCertInfo      = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 14}     // RFC 3820
 	oidProxyCertInfoDraft = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 3536, 1, 222} // pre-RFC (GT3) proxies
+
+	// Proxy policy languages (RFC 3820 section 3.8.2, and the Globus limited proxy)
+	oidPolicyInheritAll  = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 21, 1}
+	oidPolicyIndependent = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 21, 2}
+	oidPolicyLimited     = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 3536, 1, 1, 1, 9}
 )
 
 // IsProxyOf reports whether cert is a grid proxy certificate (RFC 3820, or a legacy
@@ -182,18 +187,40 @@ func VerifyChain(chain []*x509.Certificate, roots *x509.CertPool, now time.Time)
 	}
 
 	i := 0
+	var infos []proxyInfo // infos[j] is chain[j], issued by chain[j+1]
 	for i+1 < len(chain) && IsProxyOf(chain[i], chain[i+1]) {
 		proxy, issuer := chain[i], chain[i+1]
+		dn := GetDNParts(proxy)
 		if now.Before(proxy.NotBefore) || now.After(proxy.NotAfter) {
 			return nil, 0, fmt.Errorf("proxy certificate %q expired or not yet valid (valid from %v to %v)",
-				GetDNParts(proxy), proxy.NotBefore, proxy.NotAfter)
+				dn, proxy.NotBefore, proxy.NotAfter)
+		}
+		if issuer.KeyUsage != 0 && issuer.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+			return nil, 0, fmt.Errorf("proxy certificate %q was issued by a certificate that may not sign", dn)
 		}
 		// CheckSignatureFrom would reject the issuer for not being a CA, which is
 		// exactly what a proxy issuer is not; check the signature directly
 		if err := issuer.CheckSignature(proxy.SignatureAlgorithm, proxy.RawTBSCertificate, proxy.Signature); err != nil {
-			return nil, 0, fmt.Errorf("proxy certificate %q has an invalid signature: %w", GetDNParts(proxy), err)
+			return nil, 0, fmt.Errorf("proxy certificate %q has an invalid signature: %w", dn, err)
 		}
+		info, err := parseProxyInfo(proxy)
+		if err != nil {
+			return nil, 0, fmt.Errorf("proxy certificate %q: %w", dn, err)
+		}
+		// i proxies follow this one in the chain
+		if info.pathLen >= 0 && i > info.pathLen {
+			return nil, 0, fmt.Errorf("proxy certificate %q allows %d further proxies, but %d follow", dn, info.pathLen, i)
+		}
+		infos = append(infos, info)
 		i++
+	}
+	for j := 0; j+1 < len(infos); j++ {
+		if infos[j].legacy != infos[j+1].legacy {
+			return nil, 0, errors.New("proxy chain mixes legacy and RFC 3820 proxies")
+		}
+		if infos[j+1].limited && !infos[j].limited {
+			return nil, 0, fmt.Errorf("limited proxy issued unrestricted proxy %q", GetDNParts(chain[j]))
+		}
 	}
 
 	eec = chain[i]
@@ -211,4 +238,86 @@ func VerifyChain(chain []*x509.Certificate, roots *x509.CertPool, now time.Time)
 		return nil, 0, fmt.Errorf("certificate verification failed: %w", err)
 	}
 	return eec, i, nil
+}
+
+// proxyInfo is what a relying party must know about a proxy certificate
+type proxyInfo struct {
+	legacy  bool // Globus legacy proxy, identified by its CN only
+	limited bool // Globus limited proxy: fine for data access, cannot issue unrestricted proxies
+	pathLen int  // how many proxies may follow this one; -1 means no limit
+}
+
+// parseProxyInfo classifies a certificate already known to be a proxy (see IsProxyOf)
+func parseProxyInfo(cert *x509.Certificate) (proxyInfo, error) {
+	for _, ext := range cert.Extensions {
+		if ext.Id.Equal(oidProxyCertInfo) || ext.Id.Equal(oidProxyCertInfoDraft) {
+			return parseProxyCertInfo(ext.Value)
+		}
+	}
+	names := cert.Subject.Names
+	cn, _ := names[len(names)-1].Value.(string)
+	return proxyInfo{legacy: true, limited: cn == "limited proxy", pathLen: -1}, nil
+}
+
+// parseProxyCertInfo parses the ProxyCertInfo extension. RFC 3820 puts the optional
+// path length first:
+//
+//	SEQUENCE { pCPathLenConstraint INTEGER OPTIONAL, proxyPolicy ProxyPolicy }
+//
+// while pre-RFC (GT3) proxies put it last, explicitly tagged:
+//
+//	SEQUENCE { proxyPolicy ProxyPolicy, pCPathLenConstraint [1] EXPLICIT INTEGER OPTIONAL }
+func parseProxyCertInfo(der []byte) (proxyInfo, error) {
+	info := proxyInfo{pathLen: -1}
+	var elems []asn1.RawValue
+	if rest, err := asn1.Unmarshal(der, &elems); err != nil || len(rest) > 0 {
+		return info, errors.New("malformed ProxyCertInfo extension")
+	}
+	var policy []byte
+	for i, e := range elems {
+		var err error
+		switch {
+		case i == 0 && e.Class == asn1.ClassUniversal && e.Tag == asn1.TagInteger:
+			info.pathLen, err = parsePathLen(e.FullBytes)
+		case policy == nil && e.Class == asn1.ClassUniversal && e.Tag == asn1.TagSequence:
+			policy = e.FullBytes
+		case policy != nil && i == len(elems)-1 && e.Class == asn1.ClassContextSpecific && e.Tag == 1 && e.IsCompound:
+			info.pathLen, err = parsePathLen(e.Bytes)
+		default:
+			err = errors.New("malformed ProxyCertInfo extension")
+		}
+		if err != nil {
+			return info, err
+		}
+	}
+	if policy == nil {
+		return info, errors.New("ProxyCertInfo extension has no proxy policy")
+	}
+
+	var p struct {
+		Language asn1.ObjectIdentifier
+		Policy   []byte `asn1:"optional"`
+	}
+	if rest, err := asn1.Unmarshal(policy, &p); err != nil || len(rest) > 0 {
+		return info, errors.New("malformed proxy policy")
+	}
+	switch {
+	case p.Language.Equal(oidPolicyInheritAll):
+	case p.Language.Equal(oidPolicyLimited):
+		info.limited = true
+	case p.Language.Equal(oidPolicyIndependent):
+		return info, errors.New("independent proxies do not carry the identity of their issuer")
+	default:
+		// A restricted proxy whose policy we cannot evaluate must not be accepted
+		return info, fmt.Errorf("unsupported proxy policy language %s", p.Language)
+	}
+	return info, nil
+}
+
+func parsePathLen(der []byte) (int, error) {
+	var n int
+	if rest, err := asn1.Unmarshal(der, &n); err != nil || len(rest) > 0 || n < 0 {
+		return 0, errors.New("malformed proxy path length constraint")
+	}
+	return n, nil
 }
