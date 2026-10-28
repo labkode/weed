@@ -5,6 +5,7 @@ package fsuser
 
 import (
 	"fmt"
+	"log/slog"
 	"os/user"
 	"strconv"
 )
@@ -20,6 +21,11 @@ type User struct {
 
 func (u *User) String() string {
 	return fmt.Sprintf("%s (uid %d, gid %d, groups %v)", u.Name, u.UID, u.GID, u.Groups)
+}
+
+// LogValue describes the account in log records
+func (u *User) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("name", u.Name), slog.Int("uid", u.UID), slog.Int("gid", u.GID), slog.Any("groups", u.Groups))
 }
 
 // Lookup finds a local account by name. The superuser is refused: acting as root

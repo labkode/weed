@@ -9,7 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"slices"
@@ -223,7 +223,7 @@ func LoadGridmap(filename string) (map[string]string, error) {
 		// Format: "DN" username
 		dn, username, ok := parseGridmapLine(line)
 		if !ok {
-			log.Printf("[GRIDMAP] Ignoring malformed line %d in %s", lineNo, filename)
+			slog.Warn("ignoring a malformed grid-mapfile line", "file", filename, "line", lineNo)
 			continue
 		}
 		result[dn] = username
@@ -256,7 +256,7 @@ func LoadHtpasswd(filename string) (map[string]string, error) {
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) == 2 {
 			if _, err := bcrypt.Cost([]byte(parts[1])); err != nil {
-				log.Printf("[HTPASSWD] Warning: user %s does not have a bcrypt hash and will not be able to log in (use: weed utils password)", parts[0])
+				slog.Warn("htpasswd entry without a bcrypt hash: the user cannot log in (weed utils password sets one)", "file", filename, "user", parts[0])
 			}
 			result[parts[0]] = parts[1]
 		}
@@ -580,20 +580,17 @@ func (as *AuthStore) challenge(w http.ResponseWriter, msg string) {
 // BasicAuthMiddleware provides HTTP Basic Authentication and stores username in context
 func (as *AuthStore) BasicAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqID := logger.GetRequestID(r.Context())
-
 		info, err := as.authenticateBasic(r)
 		if info == nil {
-			if err == nil {
-				err = errors.New("no Basic credentials provided")
+			if err != nil {
+				slog.InfoContext(r.Context(), "authentication failed", "method", "basic", "error", err)
 			}
-			log.Printf("[BASIC-AUTH] [%s] %v - requesting credentials", reqID, err)
 			w.Header().Set("WWW-Authenticate", `Basic realm="WebDAV Server"`)
 			http.Error(w, "Authorization required", http.StatusUnauthorized)
 			return
 		}
 
-		log.Printf("[BASIC-AUTH] [%s] User authenticated: %s (method: %s)", reqID, info.Username, info.Details["auth_type"])
+		slog.DebugContext(r.Context(), "authenticated", "method", "basic", "user", info.Username, "kind", info.Details["auth_type"])
 		next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(r.Context(), info)))
 	})
 }
@@ -601,14 +598,12 @@ func (as *AuthStore) BasicAuthMiddleware(next http.Handler) http.Handler {
 // X509AuthMiddleware provides X.509 client certificate authentication and stores username in context
 func (as *AuthStore) X509AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqID := logger.GetRequestID(r.Context())
-
 		info, err := as.authenticateX509(r)
 		if info == nil {
 			if err == nil {
 				err = errors.New("no client certificate provided")
 			}
-			log.Printf("[X509-AUTH] [%s] %v - denying access", reqID, err)
+			slog.InfoContext(r.Context(), "authentication failed", "method", "x509", "error", err)
 			if errors.Is(err, errForbidden) {
 				http.Error(w, "Certificate not authorized", http.StatusForbidden)
 				return
@@ -617,7 +612,7 @@ func (as *AuthStore) X509AuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		log.Printf("[X509-AUTH] [%s] Certificate authenticated - DN: %s -> Username: %s", reqID, info.Details["distinguished_name"], info.Username)
+		slog.DebugContext(r.Context(), "authenticated", "method", "x509", "user", info.Username, "dn", info.Details["distinguished_name"])
 		next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(r.Context(), info)))
 	})
 }
@@ -629,25 +624,24 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 		authenticate func(*http.Request) (*AuthInfo, error)
 	}
 	methods := []method{
-		{"X509", as.authenticateX509},
-		{"OIDC", as.authenticateOIDC},
-		{"TOKEN", as.authenticateToken},
-		{"MACAROON", as.authenticateMacaroon},
-		{"BASIC", as.authenticateBasic},
+		{"x509", as.authenticateX509},
+		{"oidc", as.authenticateOIDC},
+		{"token", as.authenticateToken},
+		{"macaroon", as.authenticateMacaroon},
+		{"basic", as.authenticateBasic},
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqID := logger.GetRequestID(r.Context())
-
-		// Track authentication attempts for logging
-		// SKIP = not provided, FAIL = error/invalid, OK = success
+		ctx := r.Context()
+		// What each method made of the request, for debugging: skip (no credentials
+		// of its kind), fail or ok
 		status := make([]string, len(methods))
-		flow := func() string {
-			parts := make([]string, len(methods))
+		flow := func() slog.Attr {
+			attrs := make([]any, len(methods))
 			for i, m := range methods {
-				parts[i] = m.name + "=" + status[i]
+				attrs[i] = slog.String(m.name, status[i])
 			}
-			return strings.Join(parts, " ")
+			return slog.Group("auth", attrs...)
 		}
 
 		forbiddenBy := ""
@@ -660,38 +654,38 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 			}
 			switch {
 			case info != nil:
-				status[i] = "OK"
-				log.Printf("[AUTH-FLOW] [%s] %s -> SUCCESS (%s) user=%s", reqID, flow(), m.name, info.Username)
-				metrics.Auth.Inc(strings.ToLower(m.name), "success")
-				next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(r.Context(), info)))
+				status[i] = "ok"
+				slog.DebugContext(ctx, "authenticated", "method", m.name, "user", info.Username, flow())
+				metrics.Auth.Inc(m.name, "success")
+				next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(ctx, info)))
 				return
 			case err != nil:
-				status[i] = "FAIL"
+				status[i] = "fail"
 				if forbiddenBy == "" && errors.Is(err, errForbidden) {
-					forbiddenBy = strings.ToLower(m.name)
+					forbiddenBy = m.name
 				}
-				log.Printf("[%s-AUTH] [%s] %v - trying next auth method", m.name, reqID, err)
+				slog.InfoContext(ctx, "authentication failed", "method", m.name, "error", err)
 			default:
-				status[i] = "SKIP"
+				status[i] = "skip"
 			}
 		}
 
 		// Requests without credentials may be anonymous (only on loopback, see config)
-		if as.Anonymous && !slices.ContainsFunc(status, func(s string) bool { return s != "SKIP" }) {
-			log.Printf("[AUTH-FLOW] [%s] %s -> ANONYMOUS", reqID, flow())
+		if as.Anonymous && !slices.ContainsFunc(status, func(s string) bool { return s != "skip" }) {
+			slog.DebugContext(ctx, "anonymous request", flow())
 			metrics.Auth.Inc("anonymous", "success")
-			next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(r.Context(), &AuthInfo{Username: "anonymous", Method: "anonymous"})))
+			next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(ctx, &AuthInfo{Username: "anonymous", Method: "anonymous"})))
 			return
 		}
 
 		// Valid credentials that do not cover this request get 403, not a login prompt
 		if forbiddenBy != "" {
-			log.Printf("[AUTH-FLOW] [%s] %s -> DENIED (403)", reqID, flow())
+			slog.DebugContext(ctx, "forbidden", "method", forbiddenBy, flow())
 			metrics.Auth.Inc(forbiddenBy, "forbidden")
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-		log.Printf("[AUTH-FLOW] [%s] %s -> DENIED (401)", reqID, flow())
+		slog.DebugContext(ctx, "authentication required", flow())
 		metrics.Auth.Inc("none", "unauthorized")
 		as.challenge(w, "Authorization required")
 	})

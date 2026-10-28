@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -87,6 +87,12 @@ func (wk *worker) String() string {
 	return fmt.Sprintf("worker of %s (pid %d)", wk.user.Name, wk.pid)
 }
 
+// LogValue identifies the worker in log records: worker.user and worker.pid (only
+// once it has started)
+func (wk *worker) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("user", wk.user.Name), slog.Int("pid", wk.pid))
+}
+
 // New creates a pool. Workers are started on demand.
 func New(opts Options) (*Pool, error) {
 	if opts.IdleTimeout <= 0 {
@@ -133,7 +139,7 @@ func (p *Pool) Check() error {
 func (p *Pool) ServeHTTP(w http.ResponseWriter, r *http.Request, u *fsuser.User) {
 	wk, err := p.acquire(u)
 	if err != nil {
-		log.Printf("[WORKER] [%s] %v", logger.GetRequestID(r.Context()), err)
+		slog.WarnContext(r.Context(), "no worker for the request", "user", u.Name, "error", err)
 		w.Header().Set("Retry-After", "10")
 		http.Error(w, "No worker process is available for this account", http.StatusServiceUnavailable)
 		return
@@ -151,7 +157,8 @@ func (p *Pool) acquire(u *fsuser.User) (*worker, error) {
 	}
 	wk := p.workers[u.Name]
 	if wk != nil && !sameAccount(&wk.user, u) {
-		log.Printf("[WORKER] Account %s changed (now %s): replacing its worker", u.Name, u)
+		// Not wk itself, whose pid is not set while it is starting
+		slog.Info("account changed, replacing its worker", "account", u, "previous", &wk.user)
 		p.retireLocked(wk)
 		wk = nil
 	}
@@ -214,7 +221,7 @@ func (p *Pool) retireIdlestLocked() bool {
 	if idlest == nil {
 		return false
 	}
-	log.Printf("[WORKER] Stopping the %s to make room (unix_users.max_workers)", idlest)
+	slog.Info("stopping the idlest worker to make room (unix_users.max_workers)", "worker", idlest)
 	p.retireLocked(idlest)
 	return true
 }
@@ -249,7 +256,7 @@ func (p *Pool) reap() {
 		p.mu.Lock()
 		for _, wk := range p.workers {
 			if wk.active == 0 && time.Since(wk.lastUsed) >= p.opts.IdleTimeout {
-				log.Printf("[WORKER] Stopping the idle %s", wk)
+				slog.Info("stopping an idle worker", "worker", wk)
 				p.retireLocked(wk)
 			}
 		}
@@ -298,7 +305,7 @@ func (p *Pool) Close(ctx context.Context) {
 		case <-ctx.Done():
 			<-wk.ready
 			if wk.err == nil {
-				log.Printf("[WORKER] Killing the %s", wk)
+				slog.Warn("killing a worker that did not stop in time", "worker", wk)
 				wk.cmd.Process.Kill()
 			}
 			<-wk.exited
@@ -310,7 +317,7 @@ func (p *Pool) Close(ctx context.Context) {
 func (p *Pool) start(wk *worker) {
 	if err := p.spawn(wk); err != nil {
 		wk.err = fmt.Errorf("cannot start a worker for %s: %w", wk.user.Name, err)
-		log.Printf("[WORKER] %v", wk.err)
+		slog.Error("cannot start a worker", "account", &wk.user, "error", err)
 		metrics.WorkerStarts.Inc("failure")
 		p.mu.Lock()
 		if p.workers[wk.user.Name] == wk {
@@ -322,7 +329,7 @@ func (p *Pool) start(wk *worker) {
 		close(wk.ready)
 		return
 	}
-	log.Printf("[WORKER] Started the %s as %s", wk, &wk.user)
+	slog.Info("started a worker", "worker", wk, "account", &wk.user)
 	metrics.WorkerStarts.Inc("success")
 	metrics.Workers.Inc()
 	close(wk.ready)
@@ -386,7 +393,7 @@ func (p *Pool) spawn(wk *worker) (err error) {
 		return err
 	}
 	wk.cmd, wk.pid = cmd, cmd.Process.Pid
-	go relayLog(logs, fmt.Sprintf("[worker %s %d] ", wk.user.Name, wk.pid))
+	go relayLog(logs, wk)
 	stop := func(err error) error {
 		cmd.Process.Kill()
 		cmd.Wait()
@@ -429,7 +436,7 @@ func (p *Pool) spawn(wk *worker) (err error) {
 		BufferPool: buffers,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if r.Context().Err() == nil {
-				log.Printf("[WORKER] [%s] %s: %v", logger.GetRequestID(r.Context()), wk, err)
+				slog.WarnContext(r.Context(), "cannot forward the request to its worker", "worker", wk, "error", err)
 			}
 			http.Error(w, "The worker process of this account failed", http.StatusBadGateway)
 		},
@@ -446,7 +453,7 @@ func (p *Pool) watch(wk *worker) {
 			break
 		}
 		if err := wk.remote.Apply(buf[:n]); err != nil {
-			log.Printf("[WORKER] Killing the %s: %v", wk, err)
+			slog.Error("killing a worker that sent invalid metrics", "worker", wk, "error", err)
 			wk.cmd.Process.Kill()
 			break
 		}
@@ -468,13 +475,13 @@ func (p *Pool) watch(wk *worker) {
 		p.cgroups.remove(&wk.user)
 	}
 	if expected && err == nil {
-		log.Printf("[WORKER] The %s has stopped", wk)
+		slog.Info("worker stopped", "worker", wk)
 		metrics.WorkerExits.Inc("stopped")
 	} else {
 		if err == nil {
 			err = errors.New("exited without being asked to")
 		}
-		log.Printf("[WORKER] The %s failed: %v", wk, err)
+		slog.Error("worker failed", "worker", wk, "error", err)
 		metrics.WorkerExits.Inc("failed")
 	}
 	close(wk.exited)
@@ -575,15 +582,15 @@ func environment() []string {
 	return env
 }
 
-// relayLog logs what a worker writes to its standard output and error, each line
-// marked as the worker's
-func relayLog(r *os.File, prefix string) {
+// relayLog logs what a worker writes to its standard output and error (its log
+// records, see RunWorker), each record marked as the worker's
+func relayLog(r *os.File, wk *worker) {
 	defer r.Close()
 	br := bufio.NewReaderSize(r, maxMessage)
 	for {
 		line, err := br.ReadSlice('\n')
 		if line = bytes.TrimRight(line, "\n"); len(line) > 0 {
-			log.Printf("%s%s", prefix, line)
+			logger.Relay(line, slog.Any("worker", wk))
 		}
 		if err != nil && err != bufio.ErrBufferFull {
 			return

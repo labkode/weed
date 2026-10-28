@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -496,10 +496,10 @@ func (k *tokenKeys) find(client *http.Client, kid string, now time.Time) ([]jose
 		keys, err := fetchIssuerKeys(ctx, client, k.issuer)
 		cancel()
 		if err != nil {
-			log.Printf("[TOKEN] Cannot fetch the signing keys of %s (keeping %d known keys): %v", k.issuer, len(k.keys), err)
+			slog.Warn("cannot fetch the signing keys of a token issuer, keeping the known ones", "issuer", k.issuer, "keys", len(k.keys), "error", err)
 			k.err = err
 		} else {
-			log.Printf("[TOKEN] Fetched %d signing keys of %s", len(keys), k.issuer)
+			slog.Info("fetched the signing keys of a token issuer", "issuer", k.issuer, "keys", len(keys))
 			k.keys, k.fetched, k.err = keys, now, nil
 		}
 	}

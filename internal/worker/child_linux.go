@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/labkode/weed/internal/fsuser"
+	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 	"golang.org/x/sys/unix"
 )
@@ -103,7 +103,7 @@ func (c *Child) Serve(h http.Handler, reload func()) error {
 	srv := &http.Server{
 		Handler:     Handler(h, &c.Settings.User),
 		IdleTimeout: 5 * time.Minute,
-		ErrorLog:    log.Default(),
+		ErrorLog:    logger.ErrorLog(),
 	}
 	if _, err := c.ctl.Write([]byte("ready")); err != nil {
 		return err

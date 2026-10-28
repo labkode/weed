@@ -4,6 +4,8 @@ package config
 
 import (
 	"errors"
+	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -37,6 +39,8 @@ type Config struct {
 	HtpasswdFile       string
 	AppTokensFile      string
 	LogFile            string
+	LogLevel           string // debug, info, warn or error
+	LogFormat          string // text or json
 	// ReloadInterval is how often credential files are re-read (0: only on SIGHUP)
 	ReloadInterval time.Duration
 	// MetricsAddress serves /metrics and /healthz without authentication ("" disables)
@@ -72,6 +76,16 @@ const (
 	CRLIfValid = "if-valid"
 )
 
+// Level is the log level (server.log_level)
+func (c *Config) Level() (slog.Level, error) {
+	var l slog.Level
+	switch strings.ToLower(c.LogLevel) {
+	case "debug", "info", "warn", "error":
+		return l, l.UnmarshalText([]byte(c.LogLevel))
+	}
+	return l, errors.New(`server.log_level must be "debug", "info", "warn" or "error"`)
+}
+
 // Validate checks that the configuration is consistent
 func (c *Config) Validate() error {
 	if c.X509Auth && !c.TLS {
@@ -88,6 +102,18 @@ func (c *Config) Validate() error {
 	}
 	if c.CRLMode != CRLRequire && c.CRLMode != CRLIfValid {
 		return errors.New(`x509.crl_mode must be "require" or "if-valid"`)
+	}
+	if c.LogLevel == "" {
+		c.LogLevel = "info"
+	}
+	if _, err := c.Level(); err != nil {
+		return err
+	}
+	if c.LogFormat == "" {
+		c.LogFormat = "text"
+	}
+	if c.LogFormat != "text" && c.LogFormat != "json" {
+		return errors.New(`server.log_format must be "text" or "json"`)
 	}
 	if c.ReloadInterval < 0 {
 		return errors.New("server.reload_interval cannot be negative")

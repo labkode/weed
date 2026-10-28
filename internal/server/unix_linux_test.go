@@ -3,11 +3,14 @@
 package server
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +27,7 @@ import (
 
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/fsuser"
+	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/testutil"
 	"golang.org/x/sys/unix"
@@ -327,6 +331,73 @@ func TestWorkerProcesses(t *testing.T) {
 	n.mu.Unlock()
 	if code := n.status("GET", "/alice/f", "", n.as("toor")...); code != 503 {
 		t.Errorf("worker running as root: %d", code)
+	}
+}
+
+// lockedBuffer is a bytes.Buffer that the worker log relay can write to while the
+// test reads it
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Workers log at weed's level, and weed logs their records as theirs, with the IDs
+// of the requests they serve
+func TestWorkerLogs(t *testing.T) {
+	var out lockedBuffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(logger.NewHandler(&out, logger.FormatJSON, slog.LevelDebug)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	n := newUnixNode(t, func(cfg *config.Config) { cfg.LogLevel = "debug" })
+	n.setup("/alice/", 0755, 6001, 6001)
+
+	if code := n.status("PUT", "/alice/logged", "data", n.as("alice")...); code != 201 {
+		t.Fatalf("PUT: %d", code)
+	}
+	pid := workerOf(t, "alice")
+	type record struct {
+		Msg       string `json:"msg"`
+		Level     string `json:"level"`
+		RequestID string `json:"request_id"`
+		Path      string `json:"path"`
+		Worker    *struct {
+			User string `json:"user"`
+			PID  int    `json:"pid"`
+		} `json:"worker"`
+	}
+	// find returns the first record with msg, of user's worker if user is set
+	find := func(msg, user string) *record {
+		for _, line := range strings.Split(out.String(), "\n") {
+			var r record
+			if json.Unmarshal([]byte(line), &r) == nil && r.Msg == msg && (user == "" || r.Worker != nil && r.Worker.User == user) {
+				return &r
+			}
+		}
+		return nil
+	}
+	eventually(t, "the worker's record of the upload", func() bool { return find("stored an upload", "") != nil })
+	stored, request := find("stored an upload", ""), find("request", "")
+	if stored.Level != "DEBUG" || stored.Path != "/webdav/alice/logged" || stored.Worker == nil ||
+		stored.Worker.User != "alice" || stored.Worker.PID != pid {
+		t.Errorf("worker record %+v (worker pid %d)", stored, pid)
+	}
+	if request == nil || request.Worker != nil || stored.RequestID == "" || stored.RequestID != request.RequestID {
+		t.Errorf("worker record with request ID %q, access log %+v", stored.RequestID, request)
+	}
+	if started := find("started a worker", "alice"); started == nil || started.Worker.PID != pid {
+		t.Errorf("start of the worker: %+v", started)
 	}
 }
 

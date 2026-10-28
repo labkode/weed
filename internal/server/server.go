@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,7 +68,7 @@ func (s *Server) Initialize() error {
 	if s.Config.UnixUsers {
 		s.AuthStore.UnixUsers = true
 	} else if os.Geteuid() == 0 {
-		log.Printf("[UNIX-USERS] WARNING: running as root without unix_users: every client has root's access to the files")
+		slog.Warn("running as root without unix_users: every client has root's access to the files")
 	}
 	if s.Config.TokenCAPath != "" {
 		pool, err := x509utils.SystemPoolWith(s.Config.TokenCAPath)
@@ -90,7 +91,6 @@ func (s *Server) Initialize() error {
 			return fmt.Errorf("failed to initialize OIDC: %w", err)
 		}
 		s.AuthStore.OIDCEnabled = true
-		log.Printf("[OIDC] Successfully initialized OIDC authentication")
 	}
 
 	// Initialize Macaroon if enabled
@@ -99,7 +99,6 @@ func (s *Server) Initialize() error {
 			return fmt.Errorf("failed to initialize macaroon: %w", err)
 		}
 		s.AuthStore.MacaroonEnabled = true
-		log.Printf("[MACAROON] Successfully initialized macaroon authentication")
 	}
 
 	// Initialize third-party copy if enabled
@@ -107,12 +106,11 @@ func (s *Server) Initialize() error {
 		if s.Handler.TPC, err = newTPCEngine(s.Config); err != nil {
 			return err
 		}
-		log.Printf("[TPC] Third-party copy enabled (max %d concurrent transfers)", s.Config.TPCMaxTransfers)
 	}
 
 	if s.Config.UnixUsers {
 		if err := s.startWorkers(); err != nil {
-			return fmt.Errorf("-unix-users: %w", err)
+			return fmt.Errorf("unix_users: %w", err)
 		}
 	}
 	return nil
@@ -154,22 +152,22 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (c *auth.Credentials, c
 		if errors.Is(err, fs.ErrNotExist) && len(*dst) == 0 {
 			// Not configured (e.g. the default .app-tokens does not exist): not a problem
 			if startup {
-				log.Printf("[CREDENTIALS] No %s file %s", what, file)
+				slog.Info("no "+what+" file", "file", file)
 			}
 			return
 		}
 		if err != nil {
-			log.Printf("[CREDENTIALS] Cannot read %s %s, keeping %d previous entries: %v", what, file, len(*dst), err)
+			slog.Warn("cannot read "+what+" file, keeping the previous entries", "file", file, "entries", len(*dst), "error", err)
 			complete = false
 			return
 		}
 		*dst = m
-		log.Printf("[CREDENTIALS] Loaded %d %s entries from %s", len(m), what, file)
+		slog.Info("loaded "+what+" file", "file", file, "entries", len(m))
 	}
 
 	if s.Config.BasicAuth {
 		loadMap("htpasswd", s.Config.HtpasswdFile, auth.LoadHtpasswd, &next.Htpasswd)
-		loadMap("app token", s.Config.AppTokensFile, auth.LoadAppTokens, &next.AppTokens)
+		loadMap("app tokens", s.Config.AppTokensFile, auth.LoadAppTokens, &next.AppTokens)
 	}
 	if s.Config.X509Auth {
 		// Only certificates listed in the grid-mapfile are accepted, so X.509 needs one
@@ -177,11 +175,11 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (c *auth.Credentials, c
 		switch {
 		case err == nil:
 			c.Gridmap = gridmap
-			log.Printf("[CREDENTIALS] Loaded %d grid-mapfile entries from %s", len(gridmap), s.Config.GridmapFile)
+			slog.Info("loaded grid-mapfile", "file", s.Config.GridmapFile, "entries", len(gridmap))
 		case startup:
 			return nil, false, fmt.Errorf("failed to load the grid-mapfile: %w", err)
 		default:
-			log.Printf("[CREDENTIALS] Cannot read grid-mapfile %s, keeping %d previous entries: %v", s.Config.GridmapFile, len(prev.Gridmap), err)
+			slog.Warn("cannot read grid-mapfile, keeping the previous entries", "file", s.Config.GridmapFile, "entries", len(prev.Gridmap), "error", err)
 			complete = false
 		}
 
@@ -189,11 +187,11 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (c *auth.Credentials, c
 		switch {
 		case err == nil:
 			c.Roots = roots
-			log.Printf("[CREDENTIALS] Loaded %d CA certificates from %s", n, s.Config.CACert)
+			slog.Info("loaded CA certificates", "path", s.Config.CACert, "certificates", n)
 		case prev.Roots == nil:
 			return nil, false, fmt.Errorf("failed to load CA certificates: %w", err)
 		default:
-			log.Printf("[CREDENTIALS] Cannot read CA certificates from %s, keeping the previous ones: %v", s.Config.CACert, err)
+			slog.Warn("cannot read CA certificates, keeping the previous ones", "path", s.Config.CACert, "error", err)
 			complete = false
 		}
 
@@ -202,11 +200,11 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (c *auth.Credentials, c
 			switch {
 			case err == nil:
 				c.CRLs = crls
-				log.Printf("[CREDENTIALS] Loaded %d CRLs from %s (mode %s)", crls.Len(), s.Config.CRLPath, s.Config.CRLMode)
+				slog.Info("loaded CRLs", "path", s.Config.CRLPath, "crls", crls.Len(), "mode", s.Config.CRLMode)
 			case prev.CRLs == nil:
 				return nil, false, fmt.Errorf("failed to load CRLs: %w", err)
 			default:
-				log.Printf("[CREDENTIALS] Cannot read CRLs from %s, keeping the previous ones: %v", s.Config.CRLPath, err)
+				slog.Warn("cannot read CRLs, keeping the previous ones", "path", s.Config.CRLPath, "error", err)
 				complete = false
 			}
 		}
@@ -216,11 +214,11 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (c *auth.Credentials, c
 		switch {
 		case err == nil:
 			c.TokenIssuers = issuers
-			log.Printf("[CREDENTIALS] Loaded %d token issuers from %s", len(issuers), s.Config.TokenIssuers)
+			slog.Info("loaded token issuers", "file", s.Config.TokenIssuers, "issuers", len(issuers))
 		case startup:
 			return nil, false, fmt.Errorf("failed to load token issuers: %w", err)
 		default:
-			log.Printf("[CREDENTIALS] Cannot read token issuers from %s, keeping the previous ones: %v", s.Config.TokenIssuers, err)
+			slog.Warn("cannot read token issuers, keeping the previous ones", "file", s.Config.TokenIssuers, "error", err)
 			complete = false
 		}
 	}
@@ -243,11 +241,11 @@ func (s *Server) loadCertificate() error {
 func (s *Server) Reload() {
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
-	log.Printf("[RELOAD] Reloading credentials")
+	slog.Info("reloading credentials")
 
 	creds, complete, err := s.loadCredentials(s.AuthStore.Credentials())
 	if err != nil {
-		log.Printf("[RELOAD] %v", err) // only possible at startup
+		slog.Warn("cannot reload credentials", "error", err) // only possible at startup
 		complete = false
 	} else {
 		s.AuthStore.SetCredentials(creds)
@@ -258,13 +256,13 @@ func (s *Server) Reload() {
 	}
 	if s.Config.TLS && s.cert.Load() != nil {
 		if err := s.loadCertificate(); err != nil {
-			log.Printf("[RELOAD] Cannot read TLS certificate, keeping the previous one: %v", err)
+			slog.Warn("cannot read the TLS certificate, keeping the previous one", "cert", s.Config.TLSCert, "error", err)
 			complete = false
 		}
 	}
 	if s.Handler.TPC != nil && s.Config.TPCCAPath != "" {
 		if pool, err := x509utils.SystemPoolWith(s.Config.TPCCAPath); err != nil {
-			log.Printf("[RELOAD] Cannot read TPC CA certificates, keeping the previous ones: %v", err)
+			slog.Warn("cannot read the CA certificates of TPC endpoints, keeping the previous ones", "path", s.Config.TPCCAPath, "error", err)
 			complete = false
 		} else {
 			s.Handler.TPC.SetRootCAs(pool)
@@ -272,7 +270,7 @@ func (s *Server) Reload() {
 	}
 	if s.Config.TokenCAPath != "" {
 		if pool, err := x509utils.SystemPoolWith(s.Config.TokenCAPath); err != nil {
-			log.Printf("[RELOAD] Cannot read token issuer CA certificates, keeping the previous ones: %v", err)
+			slog.Warn("cannot read the CA certificates of token issuers, keeping the previous ones", "path", s.Config.TokenCAPath, "error", err)
 			complete = false
 		} else {
 			s.AuthStore.SetTokenRootCAs(pool)
@@ -298,12 +296,16 @@ func (s *Server) writeGauges(w io.Writer) {
 		metrics.WriteGauge(w, "weed_tls_certificate_expiry_timestamp_seconds", "When the TLS server certificate expires.",
 			float64(cert.Leaf.NotAfter.Unix()), nil, nil)
 	}
-	version, goVersion := "unknown", runtime.Version()
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		version = bi.Main.Version
-	}
 	metrics.WriteGauge(w, "weed_build_info", "Version of weed and of Go it was built with.", 1,
-		[]string{"version", "goversion"}, []string{version, goVersion})
+		[]string{"version", "goversion"}, []string{buildVersion(), runtime.Version()})
+}
+
+// buildVersion is the version of weed's module, as built
+func buildVersion() string {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		return bi.Main.Version
+	}
+	return "unknown"
 }
 
 // healthz reports whether the exported directory responds (a hung network
@@ -386,12 +388,6 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 	if s.Config.OIDCAuth {
 		mux.Handle("/auth/oidc", logger.Middleware(s.Handler.OIDCHandler(s.AuthStore)))
 		mux.Handle("/oidc_redirect", logger.Middleware(s.Handler.OIDCRedirectHandler(s.AuthStore)))
-		log.Printf("[OIDC] Added OIDC routes: /auth/oidc and /oidc_redirect")
-	}
-
-	// Macaroon routes if macaroon auth is enabled
-	if s.Config.MacaroonAuth {
-		log.Printf("[MACAROON] Macaroon requests handled via WebDAV POST with application/macaroon-request content-type")
 	}
 
 	// Utility routes
@@ -408,7 +404,6 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 		mux.HandleFunc("/proc/whoami", s.Handler.WhoAmIHandler)
 	}
 
-	log.Printf("[ROUTES] Added routes: / (public), /webdav/* (protected), /proc/whoami, /proc/x509")
 	return mux
 }
 
@@ -430,35 +425,9 @@ func (s *Server) SetupTLS() (*tls.Config, error) {
 		// to other methods
 		tlsConfig.ClientCAs = s.AuthStore.Credentials().Roots
 		tlsConfig.ClientAuth = tls.RequestClientCert
-		log.Printf("[TLS] X.509 client authentication enabled with CA verification: %s", s.Config.CACert)
-		log.Printf("[TLS] Client certificates will be validated in authentication middleware")
 	}
 
 	return tlsConfig, nil
-}
-
-// createCustomErrorLogger creates a custom logger for HTTP server errors
-func (s *Server) createCustomErrorLogger() *log.Logger {
-	return log.New(&customLogWriter{}, "", 0)
-}
-
-// customLogWriter formats HTTP server errors to match our logging style
-type customLogWriter struct{}
-
-func (w *customLogWriter) Write(p []byte) (n int, err error) {
-	msg := string(p)
-	// Remove trailing newline if present
-	msg = strings.TrimSuffix(msg, "\n")
-
-	// Format TLS handshake errors consistently
-	if strings.Contains(msg, "TLS handshake error") {
-		log.Printf("[TLS] %s", msg)
-	} else {
-		// Format other HTTP server errors
-		log.Printf("[HTTP-SERVER] %s", msg)
-	}
-
-	return len(p), nil
 }
 
 // Run serves until ctx is cancelled, then shuts down gracefully: new connections are
@@ -474,7 +443,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.server = &http.Server{
 		Addr:     address,
 		Handler:  mux,
-		ErrorLog: s.createCustomErrorLogger(),
+		ErrorLog: logger.ErrorLog(),
 		// No ReadTimeout/WriteTimeout: transfers of large files legitimately take long
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       2 * time.Minute,
@@ -501,16 +470,16 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}
 		s.server.TLSConfig = tlsConfig
-		log.Printf("[STARTUP] Starting HTTPS server on %s (serving directory: %s)", address, s.Config.Directory)
+		slog.Info("listening", "address", address, "scheme", "https")
 		go func() { errCh <- s.server.ListenAndServeTLS("", "") }()
 	} else {
-		log.Printf("[STARTUP] Starting HTTP server on %s (serving directory: %s)", address, s.Config.Directory)
+		slog.Info("listening", "address", address, "scheme", "http")
 		go func() { errCh <- s.server.ListenAndServe() }()
 	}
 
 	if s.Config.MetricsAddress != "" {
 		ms := &http.Server{Addr: s.Config.MetricsAddress, Handler: s.MetricsHandler(), ReadHeaderTimeout: 10 * time.Second}
-		log.Printf("[STARTUP] Serving metrics on http://%s/metrics", s.Config.MetricsAddress)
+		slog.Info("serving metrics", "address", s.Config.MetricsAddress)
 		go func() {
 			if err := ms.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- fmt.Errorf("metrics server: %w", err)
@@ -539,11 +508,11 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
-	log.Printf("[SHUTDOWN] Shutting down (waiting up to %v for in-flight requests)", shutdownGrace)
+	slog.Info("shutting down, waiting for requests in progress", "grace", shutdownGrace)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	if err := s.server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("[SHUTDOWN] Cancelling remaining requests: %v", err)
+		slog.Warn("cancelling the remaining requests", "error", err)
 		cancelBase()
 		s.server.Close()
 	}
@@ -560,56 +529,50 @@ func (s *Server) Close() {
 	}
 }
 
-// LogStartupInfo logs the server startup information
+// LogStartupInfo logs what the configuration enables
 func (s *Server) LogStartupInfo() {
-	log.Println("=== WebDAV Server Starting ===")
-	log.Printf("Configuration:")
-	log.Printf("  - Port: %d", s.Config.Port)
-	log.Printf("  - Address: %s", s.Config.Address)
-	log.Printf("  - Directory: %s", s.Config.Directory)
-	log.Printf("  - TLS: %t", s.Config.TLS)
-	log.Printf("  - X.509 Auth: %t", s.Config.X509Auth)
-	if s.Config.Anonymous {
-		log.Printf("  - Anonymous: true (requests without credentials are served, read-write)")
-	}
-	log.Printf("  - Basic Auth: %t", s.Config.BasicAuth)
-	log.Printf("  - OIDC Auth: %t", s.Config.OIDCAuth)
-	log.Printf("  - Macaroon Auth: %t", s.Config.MacaroonAuth)
-	log.Printf("  - Third-party copy: %t", s.Config.TPC)
-	if s.Config.BasicAuth {
-		log.Printf("  - Htpasswd File: %s", s.Config.HtpasswdFile)
-		log.Printf("  - App Tokens File: %s", s.Config.AppTokensFile)
-	}
-	if s.Config.OIDCAuth {
-		log.Printf("  - OIDC Issuer: %s", s.Config.OIDCIssuer)
-		log.Printf("  - OIDC Client ID: %s", s.Config.OIDCClientID)
-		log.Printf("  - OIDC Redirect URL: %s", s.Config.OIDCRedirectURL)
-	}
-	if s.Config.TokenIssuers != "" {
-		for _, iss := range s.AuthStore.Credentials().TokenIssuers {
-			log.Printf("  - Token issuer: %s (base path %s, audiences %v and %s)", iss.Issuer, iss.BasePath, iss.Audiences, auth.AudienceAny)
+	c := s.Config
+	var methods []string
+	for _, m := range []struct {
+		name    string
+		enabled bool
+	}{
+		{"x509", c.X509Auth}, {"oidc", c.OIDCAuth}, {"tokens", c.TokenIssuers != ""},
+		{"macaroons", c.MacaroonAuth}, {"basic", c.BasicAuth}, {"anonymous", c.Anonymous},
+	} {
+		if m.enabled {
+			methods = append(methods, m.name)
 		}
 	}
-	if s.Config.MacaroonAuth {
-		log.Printf("  - Macaroon Max Validity: %v", s.Config.MacaroonMaxValidity)
-	}
-	if s.Config.X509Auth {
-		log.Printf("  - CA certificates: %s", s.Config.CACert)
-		if s.Config.CRLPath != "" {
-			log.Printf("  - CRLs: %s (mode %s)", s.Config.CRLPath, s.Config.CRLMode)
-		} else {
-			log.Printf("  - CRLs: none (revoked certificates are accepted; see x509.crl_path)")
+	slog.Info("starting weed", "version", buildVersion(), "go", runtime.Version(), "dir", c.Directory, "tls", c.TLS,
+		"authentication", strings.Join(methods, ","), "tpc", c.TPC, "unix_users", c.UnixUsers,
+		"reload_interval", c.ReloadInterval)
+	if c.X509Auth {
+		slog.Info("X.509 authentication", "ca", c.CACert, "gridmap", c.GridmapFile, "crl_path", c.CRLPath, "crl_mode", c.CRLMode)
+		if c.CRLPath == "" {
+			slog.Warn("no CRLs (x509.crl_path): revoked certificates are accepted")
 		}
 	}
-	if s.Config.ReloadInterval > 0 {
-		log.Printf("  - Reload interval: %v (and on SIGHUP)", s.Config.ReloadInterval)
+	for _, iss := range s.AuthStore.Credentials().TokenIssuers {
+		slog.Info("token issuer", "issuer", iss.Issuer, "base_path", iss.BasePath, "audiences", append(slices.Clone(iss.Audiences), auth.AudienceAny))
 	}
-	if s.Config.TPC && (s.Config.TPCAllowHTTP || s.Config.TPCAllowLocal || s.Config.TPCAllowPrivate) {
-		log.Printf("  - TPC allow http: %t, allow local addresses: %t, allow private addresses: %t",
-			s.Config.TPCAllowHTTP, s.Config.TPCAllowLocal, s.Config.TPCAllowPrivate)
+	if c.OIDCAuth {
+		slog.Info("OIDC login", "issuer", c.OIDCIssuer, "client_id", c.OIDCClientID, "redirect_url", c.OIDCRedirectURL)
 	}
-	if !s.Config.TLS && (s.Config.BasicAuth || s.Config.MacaroonAuth || s.Config.OIDCAuth || s.Config.TokenIssuers != "") {
-		log.Printf("WARNING: TLS is disabled; passwords and tokens are sent in clear text")
+	if c.MacaroonAuth {
+		slog.Info("macaroons", "location", c.MacaroonLocation, "max_validity", c.MacaroonMaxValidity)
 	}
-	log.Println("===============================")
+	if c.BasicAuth {
+		slog.Info("Basic authentication", "htpasswd", c.HtpasswdFile, "app_tokens", c.AppTokensFile)
+	}
+	if c.TPC {
+		slog.Info("third-party copy", "max_transfers", c.TPCMaxTransfers, "allow_http", c.TPCAllowHTTP,
+			"allow_local", c.TPCAllowLocal, "allow_private", c.TPCAllowPrivate)
+	}
+	if c.Anonymous {
+		slog.Warn("requests without credentials are served, read-write, as anonymous (server.anonymous)", "address", c.Address)
+	}
+	if !c.TLS && (c.BasicAuth || c.MacaroonAuth || c.OIDCAuth || c.TokenIssuers != "") {
+		slog.Warn("TLS is disabled: passwords and tokens are sent in clear text")
+	}
 }

@@ -2,13 +2,15 @@ package server
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 
 	"github.com/labkode/weed/internal/auth"
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/davreq"
 	"github.com/labkode/weed/internal/handlers"
+	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/worker"
 	"github.com/labkode/weed/internal/x509utils"
 )
@@ -33,7 +35,8 @@ func (s *Server) startWorkers() error {
 		return err
 	}
 	s.Workers = pool
-	log.Printf("[WORKER] Files are accessed by a worker process per Unix account")
+	slog.Info("files are accessed by a worker process per Unix account",
+		"idle_timeout", s.Config.WorkerIdleTimeout, "max_workers", s.Config.MaxWorkers, "cgroups", s.Config.WorkerCgroups || len(s.Config.WorkerCgroupLimits) > 0)
 	return nil
 }
 
@@ -42,6 +45,7 @@ func (s *Server) startWorkers() error {
 func workerConfig(c *config.Config) config.Config {
 	return config.Config{
 		Directory:         c.Directory,
+		LogLevel:          c.LogLevel,
 		UnixUsers:         true,
 		TPC:               c.TPC,
 		TPCCAPath:         c.TPCCAPath,
@@ -91,12 +95,17 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 // which weed starts with unix_users: it serves the requests forwarded to it, as the
 // account, until the front process stops it
 func RunWorker() error {
-	log.SetFlags(0) // the front process adds the time and which worker it is
+	// JSON records, which the front process logs as the worker's
+	level := new(slog.LevelVar)
+	slog.SetDefault(slog.New(logger.NewHandler(os.Stderr, logger.FormatJSON, level)))
 	c, err := worker.Attach()
 	if err != nil {
 		return err
 	}
 	cfg := c.Settings.Config
+	if l, err := cfg.Level(); err == nil {
+		level.Set(l)
+	}
 	h := handlers.NewWebDAVHandler(cfg.Directory, &cfg, nil)
 	if cfg.TPC {
 		if h.TPC, err = newTPCEngine(&cfg); err != nil {
@@ -106,7 +115,7 @@ func RunWorker() error {
 	return c.Serve(h, func() {
 		if h.TPC != nil && cfg.TPCCAPath != "" {
 			if pool, err := x509utils.SystemPoolWith(cfg.TPCCAPath); err != nil {
-				log.Printf("[RELOAD] Cannot read TPC CA certificates, keeping the previous ones: %v", err)
+				slog.Warn("cannot read the CA certificates of TPC endpoints, keeping the previous ones", "path", cfg.TPCCAPath, "error", err)
 			} else {
 				h.TPC.SetRootCAs(pool)
 			}

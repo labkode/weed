@@ -63,12 +63,13 @@ printf '[{"issuer": "%s", "audiences": ["https://localhost:8443", "https://local
 printf '"%s" interop\n"%s" revoked\n' "$USER_DN" "$REVOKED_DN" >gridmap
 issue unmapped "/DC=org/DC=weed/OU=Users/CN=Unmapped User" ca.pem ca.key 5 "keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n"
 mkdir -p /srv/a /srv/b
-start_weed() { # name port [lines of further tables]; METRICS, ISSUERS
+start_weed() { # name port [lines of further tables]; METRICS, ISSUERS, LOG_FORMAT
 	(umask 077 && cat >weed-$1.toml) <<TOML
 [server]
 port = $2
 dir = "/srv/$1"
 log_file = "$W/weed-$1.log"
+log_format = "${LOG_FORMAT:-text}"
 metrics_address = "${METRICS:-}"
 [tls]
 enabled = true
@@ -102,7 +103,7 @@ start_weed b 8444
 useradd -M -u 7001 interop && useradd -M -u 7002 robot
 mkdir -p /srv/c/interop /srv/c/robot && chown interop: /srv/c/interop && chown robot: /srv/c/robot && chmod 700 /srv/c/robot
 printf '[{"issuer": "%s", "audiences": ["https://localhost:8447"], "users": [{"group": "/interop/robots", "user": "robot"}]}]' $ISS >issuers-c.json
-ISSUERS=issuers-c.json start_weed c 8447 '[unix_users]' 'enabled = true' 'idle_timeout = "3s"'
+ISSUERS=issuers-c.json LOG_FORMAT=json start_weed c 8447 '[unix_users]' 'enabled = true' 'idle_timeout = "3s"'
 
 # XRootD as a production-like WLCG endpoint: X.509 over HTTPS, macaroons, tokens, HTTP-TPC.
 # It runs as the xrootd user, which needs a writable working directory.
@@ -300,6 +301,7 @@ check "another account's private directory cannot be listed" sh -c "! gfal-ls $C
 check "...nor written to" sh -c "! gfal-copy -f file://$W/f.bin $C/robot/f.bin"
 check "gfal2 TPC pull from weed A" gfal-copy -f "${TPC[@]}" $A/g.bin $C/interop/pulled.bin
 check "...owned by the account" owned interop /srv/c/interop/pulled.bin
+check "...logged by its worker, in weed's log" grep -q '"msg":"third-party copy completed","worker":{"user":"interop","pid":[0-9]*}.*"request_id":' $W/weed-c.log
 ROBOT=$(token -aud https://localhost:8447 -scope "storage.read:/ storage.modify:/" -groups /interop/robots)
 check "token mapped by its group writes as robot" http_status 201 -H "Authorization: Bearer $ROBOT" -T f.bin $(https $C)/robot/t.bin
 check "...owned by robot" owned robot /srv/c/robot/t.bin
@@ -326,7 +328,7 @@ ssl ca -config ca.cnf -revoke revoked.pem -keyfile ca.key -cert ca.pem
 gencrl
 pkill -HUP -f 'weed -config weed-a.toml'
 # wait for the reload to be logged (once at startup, once after SIGHUP)
-for i in $(seq 50); do [ "$(grep -c 'Loaded 1 CRLs' $W/weed-a.log)" -ge 2 ] && break; sleep 0.1; done
+for i in $(seq 50); do [ "$(grep -c 'msg="loaded CRLs" .* crls=1 ' $W/weed-a.log)" -ge 2 ] && break; sleep 0.1; done
 check "revoked certificate rejected after SIGHUP" sh -c "[ \$($RCURL https://localhost:8443/webdav/g.bin) = 401 ]"
 check "other users unaffected" $CURL -o /dev/null https://localhost:8443/webdav/g.bin
 

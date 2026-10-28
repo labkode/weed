@@ -311,9 +311,8 @@ is handed on.
 A worker starts with the first request of its account and stops after
 unix_users.idle_timeout (default 10m) without one; a worker that dies is replaced on
 the next request. At most unix_users.max_workers (default 256) take requests; when
-they are all
-busy, requests of other accounts get 503. Workers write to weed's log, each line
-marked "[worker alice 1630]", with the request IDs of the access log. Each worker
+they are all busy, requests of other accounts get 503. Workers log through weed,
+their records marked worker.user=alice worker.pid=1630 (see Logging). Each worker
 checks that all its threads run as the account, with no capabilities and
 no_new_privs, and refuses to serve otherwise; weed starts one as nobody (65534) at
 startup to find problems before the first request. Workers get none of weed's
@@ -375,6 +374,31 @@ processes of unix_users) and token issuers, and looks Unix accounts up again. Th
 configuration file itself is only read at startup. A file that
 cannot be read keeps its previous contents, so a file being rewritten neither locks
 everybody out nor lets anybody in. New connections and requests use the new data.
+
+
+Logging
+
+weed logs with Go's log/slog to standard error, or to server.log_file, one record per
+line: key=value text, or JSON with server.log_format = "json". server.log_level is
+the least severe level logged (default "info"):
+
+  error  what weed could not do, such as storing an upload, or a worker that failed
+  warn   credentials it cannot reload, failed third-party copies, aborted uploads
+  info   a "request" record per HTTP request, failed authentications and why,
+         workers starting and stopping, third-party copies, credentials loaded
+  debug  how each request was authenticated, uploads stored (with their adler32)
+
+    time=2026-10-28T16:26:43.533+01:00 level=INFO msg=request method=PUT
+      path=/webdav/hosts proto=HTTP/1.1 status=204 bytes=0 duration=12.60425ms
+      user=alice remote=192.0.2.1:65278 user_agent=gfal2 request_id=c016524f
+
+(one line in the log). Records logged while serving a request carry its request_id,
+also when a worker process logs them: workers send their records to weed, which logs
+them with worker.user and worker.pid. Values are quoted or escaped, so clients cannot
+forge records with crafted paths or headers, and X-Forwarded-For is logged as
+forwarded_for, never in place of the client's address. On SIGHUP weed reopens
+server.log_file, so that logrotate can move it (postrotate: systemctl kill -s HUP
+weed); under systemd, standard error goes to the journal.
 
 
 Monitoring

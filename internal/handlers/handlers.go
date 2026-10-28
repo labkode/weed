@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"html"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -61,16 +61,15 @@ func NewWebDAVHandler(directory string, cfg *config.Config, authStore *auth.Auth
 		FileSystem: fs,
 		LockSystem: webdav.NewMemLS(),
 		Logger: func(r *http.Request, err error) {
-			if err != nil {
-				reqID := logger.GetRequestID(r.Context())
-
-				var userInfo string
-				if username, authenticated := auth.GetUsernameFromContext(r.Context()); authenticated {
-					userInfo = fmt.Sprintf(" [user: %s]", username)
-				}
-
-				log.Printf("[WEBDAV-ERROR] [%s]%s %s", reqID, userInfo, err)
+			if err == nil {
+				return
 			}
+			// Missing and existing files are the clients' business
+			level := slog.LevelInfo
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrExist) {
+				level = slog.LevelDebug
+			}
+			slog.Log(r.Context(), level, "WebDAV request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		},
 	}
 
@@ -86,18 +85,15 @@ func NewWebDAVHandler(directory string, cfg *config.Config, authStore *auth.Auth
 // ServeHTTP serves the WebDAV namespace, after authentication. With unix_users it
 // runs in the worker process of the identity's Unix account (see internal/worker).
 func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	reqID := logger.GetRequestID(r.Context())
-
 	// Encoded dot segments survive ServeMux path cleaning; never serve them
 	if !davreq.IsClean(r.URL.Path) {
-		log.Printf("[SECURITY] [%s] Non-canonical path rejected: %q", reqID, r.URL.Path)
+		slog.WarnContext(r.Context(), "non-canonical path refused", "path", r.URL.Path)
 		http.Error(w, "Non-canonical path", http.StatusBadRequest)
 		return
 	}
 
 	// Macaroon minting requests (POST with application/macaroon-request content-type)
 	if davreq.IsMacaroonRequest(r) {
-		log.Printf("[MACAROON-MINTING] [%s] Processing authenticated macaroon minting request to %s", reqID, r.URL.Path)
 		h.handleMacaroonRequest(w, r)
 		return
 	}
@@ -107,7 +103,7 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Reject infinite depth PROPFIND requests (an absent Depth means infinity)
 		depth := r.Header.Get("Depth")
 		if depth == "infinity" || depth == "" {
-			log.Printf("[SECURITY] [%s] Infinite depth PROPFIND request denied from %s", reqID, r.RemoteAddr)
+			slog.InfoContext(r.Context(), "PROPFIND with infinite depth refused", "path", r.URL.Path)
 			http.Error(w, "Infinite depth PROPFIND requests are not allowed", http.StatusForbidden)
 			return
 		}
@@ -257,8 +253,7 @@ func expectedDigests(w http.ResponseWriter, r *http.Request) (digest.Set, string
 // handlePut stores uploads atomically: the data goes to a temporary file that is
 // verified against any Repr-Digest and only then renamed into place
 func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
-	reqID := logger.GetRequestID(r.Context())
-
+	ctx := r.Context()
 	name, ok := davreq.Strip(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
@@ -311,7 +306,7 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Parent collection does not exist", http.StatusConflict)
 			return
 		}
-		log.Printf("[PUT] [%s] Cannot create %s: %v", reqID, localPath, err)
+		slog.ErrorContext(ctx, "cannot create the upload's temporary file", "path", r.URL.Path, "file", localPath, "error", err)
 		http.Error(w, "Cannot create file", http.StatusForbidden)
 		return
 	}
@@ -321,19 +316,20 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	hasher := digest.NewHasher(append([]string{digest.Adler}, expected.Algorithms()...)...)
 	n, readErr, writeErr := digest.Copy(af, r.Body, hasher)
 	if writeErr != nil {
-		log.Printf("[PUT] [%s] Write error on %s after %d bytes: %v", reqID, r.URL.Path, n, writeErr)
+		slog.ErrorContext(ctx, "cannot write an upload", "path", r.URL.Path, "bytes", n, "error", writeErr)
 		http.Error(w, "Failed to store file", http.StatusInternalServerError)
 		return
 	}
 	if readErr != nil {
-		log.Printf("[PUT] [%s] Upload of %s aborted after %d bytes: %v", reqID, r.URL.Path, n, readErr)
+		slog.WarnContext(ctx, "upload aborted", "path", r.URL.Path, "bytes", n, "error", readErr)
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
 
 	sums := hasher.Sums()
 	if alg, bad := digest.Mismatch(expected, sums); bad {
-		log.Printf("[PUT] [%s] Repr-Digest mismatch for %s (%s): client %x, received %x", reqID, r.URL.Path, alg, expected[alg], sums[alg])
+		slog.WarnContext(ctx, "upload does not match its Repr-Digest", "path", r.URL.Path, "algorithm", alg,
+			"expected", fmt.Sprintf("%x", expected[alg]), "received", fmt.Sprintf("%x", sums[alg]))
 		metrics.ChecksumMismatches.Inc("put")
 		http.Error(w, fmt.Sprintf("File not saved: client/server checksum mismatch (%s)", alg), http.StatusPreconditionFailed)
 		return
@@ -350,12 +346,12 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		err = af.Commit()
 	}
 	if err != nil {
-		log.Printf("[PUT] [%s] Cannot commit %s: %v", reqID, r.URL.Path, err)
+		slog.ErrorContext(ctx, "cannot store an upload", "path", r.URL.Path, "error", err)
 		http.Error(w, "Failed to store file", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("[PUT] [%s] Stored %s (%d bytes, adler32 %x)", reqID, r.URL.Path, n, sums[digest.Adler])
+	slog.DebugContext(ctx, "stored an upload", "path", r.URL.Path, "bytes", n, "adler32", fmt.Sprintf("%x", sums[digest.Adler]))
 	metrics.UploadBytes.Add(n)
 	w.Header().Set("ETag", etagFor(newFi))
 	w.Header().Set("Repr-Digest", digest.FormatReprDigest(sums))
@@ -395,7 +391,7 @@ func (h *WebDAVHandler) addDigestHeaders(w http.ResponseWriter, r *http.Request)
 	}
 	sums, err := digest.File(localPath, algs)
 	if err != nil {
-		log.Printf("[DIGEST] [%s] Cannot compute digest of %s: %v", logger.GetRequestID(r.Context()), r.URL.Path, err)
+		slog.ErrorContext(r.Context(), "cannot compute a digest", "path", r.URL.Path, "error", err)
 		return
 	}
 	if len(want) > 0 {
@@ -622,8 +618,6 @@ func (h *WebDAVHandler) IndexHandler(w http.ResponseWriter, r *http.Request) {
 
 // ProcX509Handler shows X.509 certificate information
 func (h *WebDAVHandler) ProcX509Handler(w http.ResponseWriter, r *http.Request) {
-	reqID := logger.GetRequestID(r.Context())
-
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	// This route is public, so there is never an authenticated user in context
@@ -632,7 +626,6 @@ func (h *WebDAVHandler) ProcX509Handler(w http.ResponseWriter, r *http.Request) 
 
 	if r.TLS == nil {
 		fmt.Fprint(w, "No TLS connection\n")
-		log.Printf("[X509-INFO] [%s] /proc/x509 accessed over non-TLS connection", reqID)
 		return
 	}
 
@@ -647,7 +640,6 @@ func (h *WebDAVHandler) ProcX509Handler(w http.ResponseWriter, r *http.Request) 
 		if h.Config.X509Auth {
 			fmt.Fprint(w, "X.509 Authentication Status: Would FAIL (no certificate)\n")
 		}
-		log.Printf("[X509-INFO] [%s] /proc/x509 - no client certificate", reqID)
 		return
 	}
 
@@ -670,7 +662,7 @@ func (h *WebDAVHandler) ProcX509Handler(w http.ResponseWriter, r *http.Request) 
 	eec, proxies, err := h.AuthStore.VerifyClientCertificate(r.TLS.PeerCertificates)
 	if err != nil {
 		fmt.Fprintf(w, "Authentication Status: Would FAIL (%v)\n", err)
-		log.Printf("[X509-INFO] [%s] /proc/x509 - verification failed: %v", reqID, err)
+		slog.DebugContext(r.Context(), "/proc/x509: certificate not verified", "error", err)
 		return
 	}
 	dn := x509utils.GetDNParts(eec)
@@ -678,7 +670,7 @@ func (h *WebDAVHandler) ProcX509Handler(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		fmt.Fprintf(w, "Authentication Status: Would FAIL (not in the grid-mapfile)\n")
 		fmt.Fprintf(w, "Identity DN: %s\n", dn)
-		log.Printf("[X509-INFO] [%s] /proc/x509 - DN not in the grid-mapfile: %s", reqID, dn)
+		slog.DebugContext(r.Context(), "/proc/x509: DN not in the grid-mapfile", "dn", dn)
 		return
 	}
 	fmt.Fprintf(w, "Authentication Status: Would SUCCEED\n")
@@ -690,7 +682,6 @@ func (h *WebDAVHandler) ProcX509Handler(w http.ResponseWriter, r *http.Request) 
 	fmt.Fprintf(w, "Method: X.509 Certificate\n")
 	fmt.Fprintf(w, "To authenticate: Visit /auth/x509 or any protected route\n")
 
-	log.Printf("[X509-INFO] [%s] /proc/x509 accessed - DN: %s", reqID, dn)
 }
 
 // WhoAmIHandler shows information about the current authenticated user
@@ -738,19 +729,16 @@ func (h *WebDAVHandler) WhoAmIHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "  Certificate Subject: %s\n", r.TLS.PeerCertificates[0].Subject.String())
 	}
 
-	log.Printf("[WHOAMI] [%s] /whoami accessed from %s", reqID, r.RemoteAddr)
 }
 
 // OIDCHandler handles the initial OIDC authentication request
 func (h *WebDAVHandler) OIDCHandler(authStore *auth.AuthStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		reqID := logger.GetRequestID(r.Context())
-
 		// State protects against CSRF and is bound to this browser by a cookie; the
 		// nonce binds the ID token to this login
 		state, nonce, err := authStore.StartOIDCLogin()
 		if err != nil {
-			log.Printf("[OIDC] [%s] Cannot start login: %v", reqID, err)
+			slog.ErrorContext(r.Context(), "cannot start an OIDC login", "error", err)
 			http.Error(w, "Too many logins in progress, try again later", http.StatusServiceUnavailable)
 			return
 		}
@@ -766,7 +754,6 @@ func (h *WebDAVHandler) OIDCHandler(authStore *auth.AuthStore) http.HandlerFunc 
 
 		// Redirect to OIDC provider
 		authURL := authStore.OAuth2Config.AuthCodeURL(state, oidc.Nonce(nonce))
-		log.Printf("[OIDC] [%s] Redirecting to OIDC provider: %s", reqID, authStore.OAuth2Config.Endpoint.AuthURL)
 
 		http.Redirect(w, r, authURL, http.StatusFound)
 	}
@@ -843,10 +830,8 @@ func (h *WebDAVHandler) X509AuthSuccessHandler(w http.ResponseWriter, r *http.Re
 // OIDCRedirectHandler handles the OIDC callback/redirect
 func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		reqID := logger.GetRequestID(r.Context())
-
 		if e := r.URL.Query().Get("error"); e != "" {
-			log.Printf("[OIDC] [%s] Provider returned error: %s", reqID, e)
+			slog.InfoContext(r.Context(), "OIDC login failed: the provider returned an error", "error", e)
 			http.Error(w, "Authentication failed at the identity provider", http.StatusUnauthorized)
 			return
 		}
@@ -856,13 +841,13 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 		state := r.URL.Query().Get("state")
 
 		if code == "" {
-			log.Printf("[OIDC] [%s] No authorization code received", reqID)
+			slog.InfoContext(r.Context(), "OIDC login failed: no authorization code")
 			http.Error(w, "Authorization code not received", http.StatusBadRequest)
 			return
 		}
 
 		if state == "" {
-			log.Printf("[OIDC] [%s] No state parameter received", reqID)
+			slog.InfoContext(r.Context(), "OIDC login failed: no state")
 			http.Error(w, "State parameter not received", http.StatusBadRequest)
 			return
 		}
@@ -870,7 +855,7 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 		// The state must come back to the browser that started the login
 		cookie, err := r.Cookie("oidc_state")
 		if err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(state)) != 1 {
-			log.Printf("[OIDC] [%s] State does not match this browser's login", reqID)
+			slog.WarnContext(r.Context(), "OIDC login failed: the state is not this browser's")
 			http.Error(w, "Invalid or expired state", http.StatusBadRequest)
 			return
 		}
@@ -878,7 +863,7 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 
 		nonce, ok := authStore.FinishOIDCLogin(state)
 		if !ok {
-			log.Printf("[OIDC] [%s] Invalid or expired state", reqID)
+			slog.InfoContext(r.Context(), "OIDC login failed: invalid or expired state")
 			http.Error(w, "Invalid or expired state", http.StatusBadRequest)
 			return
 		}
@@ -888,7 +873,7 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 		defer cancel()
 		token, err := authStore.OAuth2Config.Exchange(ctx, code)
 		if err != nil {
-			log.Printf("[OIDC] [%s] Failed to exchange code for token: %v", reqID, err)
+			slog.WarnContext(r.Context(), "OIDC login failed: cannot exchange the code for a token", "error", err)
 			http.Error(w, "Failed to exchange authorization code", http.StatusInternalServerError)
 			return
 		}
@@ -896,7 +881,7 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 		// Extract ID token
 		rawIDToken, ok := token.Extra("id_token").(string)
 		if !ok {
-			log.Printf("[OIDC] [%s] No ID token in response", reqID)
+			slog.WarnContext(r.Context(), "OIDC login failed: no ID token")
 			http.Error(w, "No ID token received", http.StatusInternalServerError)
 			return
 		}
@@ -904,12 +889,12 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 		// Verify ID token
 		idToken, err := authStore.OIDCVerifier.Verify(ctx, rawIDToken)
 		if err != nil {
-			log.Printf("[OIDC] [%s] Failed to verify ID token: %v", reqID, err)
+			slog.WarnContext(r.Context(), "OIDC login failed: invalid ID token", "error", err)
 			http.Error(w, "Failed to verify ID token", http.StatusUnauthorized)
 			return
 		}
 		if subtle.ConstantTimeCompare([]byte(idToken.Nonce), []byte(nonce)) != 1 {
-			log.Printf("[OIDC] [%s] ID token nonce does not match the login", reqID)
+			slog.WarnContext(r.Context(), "OIDC login failed: the ID token's nonce is not the login's")
 			http.Error(w, "Failed to verify ID token", http.StatusUnauthorized)
 			return
 		}
@@ -923,7 +908,7 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 		}
 
 		if err := idToken.Claims(&claims); err != nil {
-			log.Printf("[OIDC] [%s] Failed to extract claims: %v", reqID, err)
+			slog.WarnContext(r.Context(), "OIDC login failed: cannot read the ID token's claims", "error", err)
 			http.Error(w, "Failed to extract user information", http.StatusInternalServerError)
 			return
 		}
@@ -939,7 +924,7 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 
 		sessionID, err := authStore.CreateOIDCSession(username, oidcSessionTTL)
 		if err != nil {
-			log.Printf("[OIDC] [%s] Cannot create session: %v", reqID, err)
+			slog.ErrorContext(r.Context(), "cannot create an OIDC session", "error", err)
 			http.Error(w, "Cannot create session, try again later", http.StatusServiceUnavailable)
 			return
 		}
@@ -955,7 +940,7 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 			MaxAge:   int(oidcSessionTTL.Seconds()),
 		})
 
-		log.Printf("[OIDC] [%s] Authentication successful - Username: %s", reqID, username)
+		slog.InfoContext(r.Context(), "OIDC login", "user", username)
 
 		// Redirect to root path
 		http.Redirect(w, r, "/", http.StatusFound)
@@ -964,8 +949,6 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 
 // handleMacaroonRequest handles POST requests with application/macaroon-request content-type
 func (h *WebDAVHandler) handleMacaroonRequest(w http.ResponseWriter, r *http.Request) {
-	reqID := logger.GetRequestID(r.Context())
-
 	if h.AuthStore == nil || !h.AuthStore.MacaroonEnabled {
 		http.Error(w, "Macaroons are not enabled on this server", http.StatusNotImplemented)
 		return
@@ -973,7 +956,7 @@ func (h *WebDAVHandler) handleMacaroonRequest(w http.ResponseWriter, r *http.Req
 
 	authInfo, authenticated := auth.GetAuthInfoFromContext(r.Context())
 	if !authenticated || authInfo.Username == "" {
-		log.Printf("[MACAROON-REQUEST] [%s] No authenticated user found in context", reqID)
+		slog.ErrorContext(r.Context(), "macaroon request without an authenticated user")
 		http.Error(w, "Authentication required for macaroon creation", http.StatusUnauthorized)
 		return
 	}
@@ -989,7 +972,7 @@ func (h *WebDAVHandler) handleMacaroonRequest(w http.ResponseWriter, r *http.Req
 		Validity string   `json:"validity,omitempty"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxMacaroonRequest)).Decode(&req); err != nil {
-		log.Printf("[MACAROON-REQUEST] [%s] Failed to parse request body: %v", reqID, err)
+		slog.InfoContext(r.Context(), "invalid macaroon request", "error", err)
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -1008,7 +991,7 @@ func (h *WebDAVHandler) handleMacaroonRequest(w http.ResponseWriter, r *http.Req
 	if req.Validity != "" {
 		d, err := parseISODuration(req.Validity)
 		if err != nil {
-			log.Printf("[MACAROON-REQUEST] [%s] Failed to parse validity duration: %v", reqID, err)
+			slog.InfoContext(r.Context(), "invalid macaroon validity", "error", err)
 			http.Error(w, "Invalid validity duration", http.StatusBadRequest)
 			return
 		}
@@ -1036,12 +1019,12 @@ func (h *WebDAVHandler) handleMacaroonRequest(w http.ResponseWriter, r *http.Req
 		token, err = h.AuthStore.CreateMacaroon(append([]string{"id:" + authInfo.Username}, caveats...))
 	}
 	if err != nil {
-		log.Printf("[MACAROON-REQUEST] [%s] Failed to create macaroon: %v", reqID, err)
+		slog.ErrorContext(r.Context(), "cannot create a macaroon", "error", err)
 		http.Error(w, "Failed to create macaroon", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("[MACAROON-REQUEST] [%s] Created macaroon for user %s with caveats %v", reqID, authInfo.Username, caveats)
+	slog.InfoContext(r.Context(), "minted a macaroon", "user", authInfo.Username, "path", r.URL.Path, "caveats", caveats)
 
 	// Return the macaroon as JSON
 	w.Header().Set("Content-Type", "application/json")

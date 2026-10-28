@@ -163,6 +163,11 @@ func TestValidate(t *testing.T) {
 		"TPC without transfers":  {func(c *Config) { c.TPC, c.TPCMaxTransfers = true, 0 }, "tpc.max_transfers"},
 		"token CAs, no issuers":  {func(c *Config) { c.TokenCAPath = "ca.pem" }, "tokens.issuers"},
 		"negative reload period": {func(c *Config) { c.ReloadInterval = -time.Second }, "server.reload_interval"},
+		"log level":              {func(c *Config) { c.LogLevel = "DEBUG" }, ""},
+		"unknown log level":      {func(c *Config) { c.LogLevel = "verbose" }, "server.log_level"},
+		"offset log level":       {func(c *Config) { c.LogLevel = "info+2" }, "server.log_level"},
+		"log format":             {func(c *Config) { c.LogFormat = "json" }, ""},
+		"unknown log format":     {func(c *Config) { c.LogFormat = "logfmt" }, "server.log_format"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := Default()

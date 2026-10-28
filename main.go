@@ -5,13 +5,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/labkode/weed/cmd/utils"
 	"github.com/labkode/weed/internal/config"
+	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/server"
 )
 
@@ -24,7 +25,7 @@ func main() {
 	// Worker processes, started by weed with unix_users enabled
 	if len(os.Args) > 1 && os.Args[1] == "worker" {
 		if err := server.RunWorker(); err != nil {
-			log.Fatal(err)
+			logger.Fatal("worker failed", err)
 		}
 		return
 	}
@@ -42,39 +43,33 @@ func main() {
 	case errors.Is(err, config.ErrUsage):
 		os.Exit(2)
 	case err != nil:
-		log.Fatal(err)
+		logger.Fatal("cannot read the configuration", err)
 	}
-
-	// Set up logging
-	if cfg.LogFile != "" {
-		logFile, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
-		if err != nil {
-			log.Fatalf("Failed to open log file %s: %v", cfg.LogFile, err)
-		}
-		log.SetOutput(logFile)
-	}
-
-	// Validate configuration
 	if err := cfg.Validate(); err != nil {
-		log.Fatalf("Configuration validation failed: %v", err)
+		logger.Fatal("invalid configuration", err)
+	}
+	level, _ := cfg.Level()
+	reopenLog, err := logger.Setup(logger.Options{Level: level, Format: cfg.LogFormat, File: cfg.LogFile})
+	if err != nil {
+		logger.Fatal("cannot open the log file", err)
 	}
 
-	// Create and configure server
 	srv := server.New(cfg)
-
-	// Initialize server components
 	if err := srv.Initialize(); err != nil {
-		log.Fatalf("Failed to initialize server: %v", err)
+		logger.Fatal("cannot start", err)
 	}
 
 	// Print startup information
 	srv.LogStartupInfo()
 
-	// Reload credentials on SIGHUP
+	// Reopen the log file (for logrotate) and reload credentials on SIGHUP
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	go func() {
 		for range hup {
+			if err := reopenLog(); err != nil {
+				slog.Error("cannot reopen the log file, logging to the previous one", "file", cfg.LogFile, "error", err)
+			}
 			srv.Reload()
 		}
 	}()
@@ -83,6 +78,6 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := srv.Run(ctx); err != nil {
-		log.Fatal(err)
+		logger.Fatal("cannot serve", err)
 	}
 }

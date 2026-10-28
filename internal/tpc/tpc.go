@@ -20,7 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -34,7 +34,6 @@ import (
 
 	"github.com/labkode/weed/internal/davfs"
 	"github.com/labkode/weed/internal/digest"
-	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 )
 
@@ -282,8 +281,6 @@ func (e *Engine) Reserve(w http.ResponseWriter) (release func(), ok bool) {
 // Serve answers a TPC COPY: 202, performance markers, then the final status line.
 // All checks that can be done synchronously must have been done by the caller.
 func (e *Engine) Serve(w http.ResponseWriter, r *http.Request, job *Job) {
-	reqID := logger.GetRequestID(r.Context())
-
 	release, ok := e.Reserve(w)
 	if !ok {
 		return
@@ -301,7 +298,7 @@ func (e *Engine) Serve(w http.ResponseWriter, r *http.Request, job *Job) {
 	done := make(chan error, 1)
 	go func() { done <- e.run(ctx, job, p) }()
 
-	log.Printf("[TPC] [%s] Started %s %s <-> %s", reqID, job.Mode, job.LocalPath, redact(job.Remote))
+	slog.InfoContext(r.Context(), "third-party copy started", "mode", job.Mode, "local", job.LocalPath, "remote", redact(job.Remote))
 	w.Header().Set("Content-Type", "text/perf-marker-stream")
 	w.WriteHeader(http.StatusAccepted)
 	rc := http.NewResponseController(w)
@@ -320,11 +317,11 @@ func (e *Engine) Serve(w http.ResponseWriter, r *http.Request, job *Job) {
 				if errors.Is(err, ErrChecksumMismatch) {
 					metrics.ChecksumMismatches.Inc("tpc_" + mode)
 				}
-				log.Printf("[TPC] [%s] Failed %s after %d bytes (%v): %v", reqID, job.Mode, n, time.Since(start), err)
+				slog.WarnContext(r.Context(), "third-party copy failed", "mode", job.Mode, "bytes", n, "duration", time.Since(start), "error", err)
 				fmt.Fprintf(w, "failure: %s\n", oneLine(err.Error()))
 			} else {
 				metrics.TPCTransfers.Inc(mode, "success")
-				log.Printf("[TPC] [%s] Completed %s: %d bytes in %v", reqID, job.Mode, n, time.Since(start))
+				slog.InfoContext(r.Context(), "third-party copy completed", "mode", job.Mode, "bytes", n, "duration", time.Since(start))
 				fmt.Fprint(w, "success: Created\n")
 			}
 			rc.Flush()
