@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -97,12 +98,55 @@ func Writable(p string) error {
 	return f.Close()
 }
 
-// Check verifies that the process can act as other users: it must run as root, or
-// with the CAP_SETUID and CAP_SETGID capabilities
+// overridingCapabilities bypass file permission checks. The kernel drops them from a
+// thread whose filesystem UID changes from 0 to another, but not when it changes
+// between two other UIDs, nor with the no_setuid_fixup securebit.
+var overridingCapabilities = []struct {
+	bit  uint
+	name string
+}{
+	{unix.CAP_CHOWN, "CAP_CHOWN"},
+	{unix.CAP_DAC_OVERRIDE, "CAP_DAC_OVERRIDE"},
+	{unix.CAP_DAC_READ_SEARCH, "CAP_DAC_READ_SEARCH"},
+	{unix.CAP_FOWNER, "CAP_FOWNER"},
+	{unix.CAP_FSETID, "CAP_FSETID"},
+	{unix.CAP_LINUX_IMMUTABLE, "CAP_LINUX_IMMUTABLE"},
+	{unix.CAP_MAC_OVERRIDE, "CAP_MAC_OVERRIDE"},
+	{unix.CAP_MKNOD, "CAP_MKNOD"},
+}
+
+// effectiveCapabilities returns the calling thread's effective capability set
+func effectiveCapabilities() (uint64, error) {
+	hdr := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3} // Pid 0: this thread
+	var data [2]unix.CapUserData
+	if err := unix.Capget(&hdr, &data[0]); err != nil {
+		return 0, fmt.Errorf("capget: %w", err)
+	}
+	return uint64(data[0].Effective) | uint64(data[1].Effective)<<32, nil
+}
+
+// Check verifies that the process can act as other users, which needs root or the
+// CAP_SETUID and CAP_SETGID capabilities, and that acting as a user leaves it no
+// capability that would bypass the user's permissions
 func Check() error {
 	nobody := &User{Name: "nobody", UID: 65534, GID: 65534, Groups: []int{65534}}
-	if err := nobody.Run(func() {}); err != nil {
+	var caps uint64
+	var capErr error
+	if err := nobody.Run(func() { caps, capErr = effectiveCapabilities() }); err != nil {
 		return fmt.Errorf("%w (run as root, or with CAP_SETUID and CAP_SETGID)", err)
+	}
+	if capErr != nil {
+		return capErr
+	}
+	var kept []string
+	for _, c := range overridingCapabilities {
+		if caps&(1<<c.bit) != 0 {
+			kept = append(kept, c.name)
+		}
+	}
+	if len(kept) > 0 {
+		return fmt.Errorf("acting as a user keeps %s, which would bypass the user's file permissions: run as root without the no_setuid_fixup securebit, or as another user with only CAP_SETUID and CAP_SETGID",
+			strings.Join(kept, ", "))
 	}
 	return nil
 }

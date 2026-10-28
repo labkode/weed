@@ -9,9 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // needRoot skips tests that switch identities unless they run as root
@@ -142,5 +145,21 @@ func TestCheck(t *testing.T) {
 	needRoot(t)
 	if err := Check(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// With the no_setuid_fixup securebit, root keeps CAP_DAC_OVERRIDE and the like when
+// its filesystem UID changes, so a "switched" thread could read anything
+func TestCheckRefusesCapabilitiesThatBypassPermissions(t *testing.T) {
+	needRoot(t)
+	const secbitNoSetuidFixup = 1 << 2
+	// Securebits belong to the thread: lock it, and let it end with this test
+	// rather than return it to the pool
+	runtime.LockOSThread()
+	if err := unix.Prctl(unix.PR_SET_SECUREBITS, secbitNoSetuidFixup, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := Check(); err == nil || !strings.Contains(err.Error(), "CAP_DAC_OVERRIDE") {
+		t.Fatalf("Check with no_setuid_fixup: %v", err)
 	}
 }

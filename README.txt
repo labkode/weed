@@ -255,11 +255,16 @@ so the kernel checks permissions and ACLs as for the user, and new files and
 directories belong to the user. Third-party copies read and write the local file as
 the user too. Token scopes and macaroon caveats still apply on top.
 
-weed must run as root, or with the CAP_SETUID and CAP_SETGID capabilities (it checks
-at startup), for example in a systemd unit:
+weed must run as root, or with the CAP_SETUID and CAP_SETGID capabilities, for
+example in a systemd unit:
 
     User=weed
     AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE
+
+It checks at startup that it can switch, and that acting as a user leaves it no
+capability that bypasses file permissions: the kernel removes those (CAP_DAC_OVERRIDE
+and the like) when root switches, but not when another user holding them does, nor
+under the no_setuid_fixup securebit, and weed refuses to start in those cases.
 
 The users need search permission on the exported directory and its parents.
 Accounts are looked up again after a minute, and on reload. Operations the filesystem
