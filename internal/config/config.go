@@ -38,6 +38,9 @@ type Config struct {
 	MacaroonSecretKey   string
 	MacaroonLocation    string
 	MacaroonMaxValidity time.Duration
+	// WLCG and SciTokens JWTs
+	TokenIssuers string
+	TokenCAPath  string
 	// WLCG third-party copy configuration
 	TPC               bool
 	TPCCAPath         string
@@ -86,6 +89,8 @@ func ParseFlags() *Config {
 
 	// Macaroon flags
 	flag.BoolVar(&cfg.MacaroonAuth, "macaroon-auth", false, "enable Macaroon bearer token authentication")
+	flag.StringVar(&cfg.TokenIssuers, "token-issuers", "", `accept WLCG and SciTokens JWT bearer tokens from the issuers in this JSON file: [{"issuer": "https://...", "audiences": ["https://this.server"], "base_path": "/"}] (default: disabled)`)
+	flag.StringVar(&cfg.TokenCAPath, "token-ca-path", "", "extra CA certificates (file or directory) for fetching token issuers' signing keys, in addition to the system roots")
 	flag.StringVar(&cfg.MacaroonSecretKey, "macaroon-secret-key", "", "secret key for signing macaroons (required for macaroon auth)")
 	flag.StringVar(&cfg.MacaroonLocation, "macaroon-location", "weed-webdav", "macaroon location identifier")
 	flag.DurationVar(&cfg.MacaroonMaxValidity, "macaroon-max-validity", 24*time.Hour, "maximum (and default) lifetime of minted macaroons")
@@ -123,6 +128,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ReloadInterval < 0 {
 		return fmt.Errorf("-reload-interval cannot be negative")
+	}
+	if c.TokenCAPath != "" && c.TokenIssuers == "" {
+		return fmt.Errorf("-token-ca-path requires -token-issuers")
 	}
 	if c.OIDCAuth {
 		if c.OIDCIssuer == "" {

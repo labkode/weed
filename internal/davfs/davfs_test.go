@@ -82,3 +82,36 @@ func TestTemporaryFilesDoNotExist(t *testing.T) {
 		}
 	}
 }
+
+func TestCommitNoReplace(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "f")
+
+	af, err := CreateAtomic(target, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	af.Write([]byte("new"))
+	if err := af.CommitNoReplace(); err != nil {
+		t.Fatalf("new file: %v", err)
+	}
+
+	// The target appears while the file is being written
+	af, err = CreateAtomic(target+"2", 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	af.Write([]byte("late"))
+	os.WriteFile(target+"2", []byte("first"), 0644)
+	if err := af.CommitNoReplace(); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("existing target: %v", err)
+	}
+	for name, want := range map[string]string{"f": "new", "f2": "first"} {
+		if b, _ := os.ReadFile(filepath.Join(dir, name)); string(b) != want {
+			t.Errorf("%s = %q, want %q", name, b, want)
+		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 2 {
+		t.Errorf("leftover temporary files: %v", entries)
+	}
+}

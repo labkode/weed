@@ -2,6 +2,8 @@ package auth
 
 import (
 	"path"
+
+	"github.com/labkode/weed/internal/davreq"
 	"strings"
 	"testing"
 	"unicode"
@@ -72,6 +74,24 @@ func FuzzVerifyMacaroon(f *testing.F) {
 		access.Paths = []string{"/webdav/b"}
 		if _, err := as.VerifyMacaroon(token, access); err == nil {
 			t.Fatal("token valid outside its path")
+		}
+	})
+}
+
+// Grants never reach outside the issuer's base path, whatever the scopes say
+func FuzzParseScopes(f *testing.F) {
+	f.Add("storage.read:/a storage.create:/../b read:/c/./d write", "/vo")
+	f.Add("storage.modify:../../etc storage.stage:/x//y", "vo/../")
+	f.Fuzz(func(t *testing.T, scope, basePath string) {
+		base := path.Clean("/" + basePath)
+		root := path.Join(davreq.Prefix, base)
+		for _, g := range parseScopes(strings.Fields(scope), base) {
+			if !pathMatches(g.path, root) || g.path != path.Clean(g.path) {
+				t.Fatalf("scope %q with base %q granted %q", scope, base, g.path)
+			}
+			if g.cap == 0 || g.cap&^(capRead|capCreate|capModify) != 0 {
+				t.Fatalf("capability %b", g.cap)
+			}
 		}
 	})
 }

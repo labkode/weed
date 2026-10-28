@@ -1,6 +1,7 @@
 #!/bin/bash
 # Runs inside the weed-interop container (see interop.sh): two weed servers (A, B) and
-# an XRootD server (X), exercised with gfal2, davix and curl using an RFC 3820 proxy.
+# an XRootD server (X), exercised with gfal2, davix and curl using an RFC 3820 proxy,
+# macaroons and tokens from a WLCG token issuer (I).
 set -uo pipefail
 W=/work
 mkdir -p $W && cd $W || exit 1
@@ -48,6 +49,14 @@ printf '[ca]\ndefault_ca = d\n[d]\ndatabase = ca/index.txt\ncrlnumber = ca/crlnu
 gencrl() { ssl ca -config ca.cnf -gencrl -keyfile ca.key -cert ca.pem -out $CERTS/$(openssl x509 -hash -noout -in ca.pem).r0; }
 gencrl
 
+# --- WLCG token issuer; XRootD (scitokens-cpp) fetches its keys trusting the system CAs
+cp ca.pem /etc/pki/ca-trust/source/anchors/interop-ca.pem && update-ca-trust
+ssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out issuer.key
+ISS=https://localhost:8446
+issuer serve -url $ISS -signing-key issuer.key -cert host.pem -key host.key 2>$W/issuer.log &
+token() { issuer mint -url $ISS -signing-key issuer.key "$@"; } # -aud AUD -scope SCOPES [-lifetime D]
+printf '[{"issuer": "%s", "audiences": ["https://localhost:8443", "https://localhost:8444"]}]' $ISS >issuers.json
+
 # --- servers
 echo "\"$USER_DN\" interop" >gridmap
 mkdir -p /srv/a /srv/b
@@ -56,20 +65,33 @@ start_weed() { # name port [flags]
 		-x509-auth -ca-cert $CERTS -crl-path $CERTS -gridmap-file gridmap \
 		-macaroon-auth -macaroon-secret-key "$(openssl rand -hex 32)" \
 		-tpc -tpc-ca-path $CERTS -tpc-allow-local -tpc-marker-interval 20ms \
+		-token-issuers issuers.json -token-ca-path ca.pem \
 		"${@:3}" -log-file $W/weed-$1.log &
 }
 start_weed a 8443 -metrics-address localhost:9100
 start_weed b 8444
 
-# XRootD as a production-like WLCG endpoint: X.509 over HTTPS, macaroons, HTTP-TPC.
+# XRootD as a production-like WLCG endpoint: X.509 over HTTPS, macaroons, tokens, HTTP-TPC.
 # It runs as the xrootd user, which needs a writable working directory.
 XRD=/var/run/xrootd-interop
 mkdir -p /srv/x /etc/xrootd/tls $XRD
 cp host.pem host.key /etc/xrootd/tls/
 openssl rand -base64 -out /etc/xrootd/macaroon-secret 64
-echo "u * /srv/x a" >/etc/xrootd/Authfile
-chown -R xrootd /srv/x /etc/xrootd/tls /etc/xrootd/macaroon-secret /etc/xrootd/Authfile $XRD
+# Only the mapped X.509 user may do anything without a token, or token checks would
+# prove nothing
+cp gridmap /etc/xrootd/gridmap
+echo "u interop /srv/x a" >/etc/xrootd/Authfile
+chown -R xrootd /srv/x /etc/xrootd/tls /etc/xrootd/macaroon-secret /etc/xrootd/Authfile /etc/xrootd/gridmap $XRD
 chmod 400 /etc/xrootd/tls/host.key /etc/xrootd/macaroon-secret
+cat >/etc/xrootd/scitokens.cfg <<CFG
+[Global]
+audience = https://localhost:8445
+
+[Issuer interop]
+issuer = $ISS
+base_path = /srv/x
+default_user = xrootd
+CFG
 cat >xrootd.cfg <<CFG
 all.sitename interop
 all.export /srv/x
@@ -79,6 +101,9 @@ xrd.tls /etc/xrootd/tls/host.pem /etc/xrootd/tls/host.key
 xrd.tlsca certdir $CERTS
 ofs.authorize 1
 acc.authdb /etc/xrootd/Authfile
+http.gridmap /etc/xrootd/gridmap
+ofs.authlib ++ libXrdAccSciTokens.so config=/etc/xrootd/scitokens.cfg
+http.header2cgi Authorization authz
 ofs.authlib ++ libXrdMacaroons.so
 http.exthandler xrdmacaroons libXrdMacaroons.so
 macaroons.secretkey /etc/xrootd/macaroon-secret
@@ -176,6 +201,58 @@ check "weed pushes with Repr-Digest; destination verifies" tpc_curl $A/g.bin -H 
 MACB=$(mint $B/pushed-bad.bin UPLOAD)
 check "push with wrong digest fails with 412 from destination" sh -c "$CURL -X COPY -H 'Destination: $(https $B)/pushed-bad.bin' \
 	-H 'TransferHeaderAuthorization: Bearer $MACB' -H 'Repr-Digest: adler=:AAAAAA==:' $(https $A)/g.bin | tail -1 | grep -q 'checksum mismatch reported by destination'"
+
+echo "== WLCG tokens (no client certificate)"
+mv /tmp/x509up_u0 proxy.off
+mkdir -p /srv/a/tok/up /srv/b/tok/up /srv/x/tok/up && cp f.bin /srv/a/tok/f.bin && cp f.bin /srv/x/tok/f.bin && chown -R xrootd /srv/x/tok
+AUDS=https://localhost:8443,https://localhost:8444,https://localhost:8445
+READ=$(token -aud $AUDS -scope storage.read:/tok)
+CREATE=$(token -aud $AUDS -scope "storage.read:/tok storage.create:/tok/up")
+MODIFY=$(token -aud $AUDS -scope storage.modify:/tok/up)
+status() { # want token curl-args...: the HTTP status is want
+	local got
+	got=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $2" "${@:3}")
+	[ "$got" = "$1" ] || { echo "HTTP $got, want $1"; return 1; }
+}
+# A token for another audience is invalid for weed (401), and forbidden for XRootD
+for srv in "weed https://localhost:8443/webdav 401" "XRootD https://localhost:8445/srv/x 403"; do
+	set -- $srv
+	check "$1: storage.read allows reading" status 200 $READ $2/tok/f.bin -o /dev/null
+	check "$1: storage.read does not allow writing" status 403 $READ -T f.bin $2/tok/up/r.bin
+	check "$1: storage.create allows creating" status 201 $CREATE -T f.bin $2/tok/up/c.bin
+	check "$1: storage.create does not allow overwriting" status 403 $CREATE -T f.bin $2/tok/up/c.bin
+	check "$1: token for another service refused" status $3 "$(token -aud https://other.example -scope storage.read:/tok)" $2/tok/f.bin
+done
+check "weed: expired token refused" status 401 "$(token -aud $AUDS -scope storage.read:/tok -lifetime -1h)" https://localhost:8443/webdav/tok/f.bin
+check "weed: storage.modify allows overwriting" status 204 $MODIFY -T f.bin https://localhost:8443/webdav/tok/up/c.bin
+check "davix: download with a token" sh -c "env -u X509_USER_PROXY davix-get -H 'Authorization: Bearer $READ' https://localhost:8443/webdav/tok/f.bin dl-tok.bin && cmp f.bin dl-tok.bin"
+check "gfal2: list with a token" env -u X509_USER_PROXY BEARER_TOKEN=$READ gfal-ls $A/tok
+check "gfal2: upload with storage.create, checksum verified" env -u X509_USER_PROXY BEARER_TOKEN=$CREATE gfal-copy -K ADLER32 file://$W/f.bin $A/tok/up/g.bin
+check "gfal2: storage.create does not allow replacing" sh -c "! env -u X509_USER_PROXY BEARER_TOKEN=$CREATE gfal-copy -f file://$W/f.bin $A/tok/up/g.bin"
+check "gfal2: storage.modify allows replacing" env -u X509_USER_PROXY BEARER_TOKEN=$MODIFY gfal-copy -f file://$W/f.bin $A/tok/up/g.bin
+# One token, accepted by all three servers, for third-party copies driven by gfal2
+for t in "A $A B $B" "A $A X $X" "X $X A $A"; do
+	set -- $t
+	for mode in pull push; do
+		dst=$4/tok/up/$1-$3-$mode.bin
+		check "gfal2 TPC $mode with a token: $1 -> $3" env -u X509_USER_PROXY BEARER_TOKEN=$CREATE \
+			gfal-copy --copy-mode $mode -K ADLER32 "${TPC[@]}" $2/tok/f.bin $dst
+		check "copy matches" cmp f.bin /srv/$(echo $3 | tr ABX abx)/tok/up/$1-$3-$mode.bin
+	done
+done
+# weed as the passive party: the token arrives from XRootD in TransferHeaderAuthorization
+xrootd_push() { # name: XRootD pushes tok/f.bin to weed's tok/up/name; prints the final marker line
+	curl -sS -X COPY -H "Authorization: Bearer $CREATE" -H "Destination: https://localhost:8443/webdav/tok/up/$1" \
+		-H "TransferHeaderAuthorization: Bearer $CREATE" https://localhost:8445/srv/x/tok/f.bin | tail -1
+}
+pushed() { local last; last=$(xrootd_push $1); [ "$last" = "success: Created" ] || { echo "$last"; return 1; }; }
+refused() { local last; last=$(xrootd_push $1); echo "$last"; [[ $last == failure* ]]; }
+check "XRootD pushes to weed with a token" pushed x-push.bin
+check "copy matches" cmp f.bin /srv/a/tok/up/x-push.bin
+check "...and cannot replace it with storage.create" refused x-push.bin
+check "weed refuses a pull onto an existing file with storage.create" status 403 $CREATE -X COPY \
+	-H "Source: https://localhost:8445/srv/x/tok/f.bin" -H "TransferHeaderAuthorization: Bearer $READ" https://localhost:8443/webdav/tok/up/g.bin
+mv proxy.off /tmp/x509up_u0
 
 echo "== revocation and reloading"
 check "valid certificate with an openssl CRL" $CURL -o /dev/null https://localhost:8443/webdav/g.bin

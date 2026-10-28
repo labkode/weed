@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -131,6 +132,15 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Handler.ServeHTTP(w, r)
 }
 
+const errNoOverwrite = "The token allows creating this file, not replacing it (storage.create without storage.modify)"
+
+// mayNotOverwrite reports whether the request's credentials only allow writing
+// files that do not exist yet
+func mayNotOverwrite(r *http.Request) bool {
+	info, ok := auth.GetAuthInfoFromContext(r.Context())
+	return ok && info.NoOverwrite
+}
+
 // errWriter remembers write errors so they can be told apart from read errors
 type errWriter struct {
 	w   io.Writer
@@ -243,6 +253,11 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Precondition failed", http.StatusPreconditionFailed)
 		return
 	}
+	noOverwrite := mayNotOverwrite(r)
+	if exists && noOverwrite {
+		http.Error(w, errNoOverwrite, http.StatusForbidden)
+		return
+	}
 
 	af, err := davfs.CreateAtomic(localPath, 0666)
 	if err != nil {
@@ -282,7 +297,13 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 	digest.StoreCache(af.File, sums)
 	newFi, err := af.Stat()
-	if err == nil {
+	if err == nil && noOverwrite {
+		err = af.CommitNoReplace()
+		if errors.Is(err, os.ErrExist) {
+			http.Error(w, errNoOverwrite, http.StatusForbidden)
+			return
+		}
+	} else if err == nil {
 		err = af.Commit()
 	}
 	if err != nil {
@@ -373,6 +394,17 @@ func (h *WebDAVHandler) handleCopyMove(w http.ResponseWriter, r *http.Request) {
 		// RFC 4918 section 10.6: an absent Overwrite means T; x/net/webdav assumes F for MOVE
 		r.Header.Set("Overwrite", "T")
 	}
+	if mayNotOverwrite(r) {
+		if name, ok := davreq.Strip(target.Local); ok {
+			if p, err := h.FS.Resolve(name); err == nil {
+				if _, err := os.Lstat(p); err == nil {
+					http.Error(w, errNoOverwrite, http.StatusForbidden)
+					return
+				}
+			}
+		}
+		r.Header.Set("Overwrite", "F") // x/net/webdav checks again just before writing
+	}
 	h.Handler.ServeHTTP(w, r)
 }
 
@@ -423,6 +455,11 @@ func (h *WebDAVHandler) handleTPC(w http.ResponseWriter, r *http.Request, target
 		}
 		if statErr == nil && r.Header.Get("Overwrite") == "F" {
 			http.Error(w, "Destination exists and Overwrite is F", http.StatusPreconditionFailed)
+			return
+		}
+		job.NoReplace = mayNotOverwrite(r)
+		if statErr == nil && job.NoReplace {
+			http.Error(w, errNoOverwrite, http.StatusForbidden)
 			return
 		}
 		if _, err := os.Stat(filepath.Dir(localPath)); err != nil {
@@ -882,6 +919,11 @@ func (h *WebDAVHandler) handleMacaroonRequest(w http.ResponseWriter, r *http.Req
 	if !authenticated || authInfo.Username == "" {
 		log.Printf("[MACAROON-REQUEST] [%s] No authenticated user found in context", reqID)
 		http.Error(w, "Authentication required for macaroon creation", http.StatusUnauthorized)
+		return
+	}
+	if authInfo.Method == "token" {
+		// The macaroon would not be bound by the token's scopes (also refused by auth)
+		http.Error(w, "A macaroon cannot be requested with a token", http.StatusForbidden)
 		return
 	}
 

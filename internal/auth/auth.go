@@ -50,6 +50,9 @@ type AuthInfo struct {
 	// Macaroon is the verified token when Method is "macaroon"; new macaroons minted
 	// with it are attenuations of it, so they can never carry more rights
 	Macaroon *macaroon.Macaroon `json:"-"`
+	// NoOverwrite is set when the request may create the file it writes but not
+	// replace an existing one (a token with storage.create but not storage.modify)
+	NoOverwrite bool `json:"-"`
 }
 
 // OIDCSession represents an authenticated browser session
@@ -96,6 +99,7 @@ type AuthStore struct {
 	X509Enabled     bool
 	OIDCEnabled     bool
 	MacaroonEnabled bool
+	TokenEnabled    bool // WLCG and SciTokens JWTs, from Credentials.TokenIssuers
 
 	// File-based credentials, replaced as a whole on reload
 	creds atomic.Pointer[Credentials]
@@ -110,6 +114,10 @@ type AuthStore struct {
 	// Macaroon configuration
 	MacaroonSecretKey []byte
 	MacaroonLocation  string
+	// Token issuers' signing keys, and the client fetching them
+	tokenKeysMu sync.Mutex
+	tokenKeys   map[string]*tokenKeys
+	tokenClient atomic.Pointer[http.Client]
 
 	// dummyHash is compared against when a user does not exist, so that response
 	// times do not reveal which usernames are valid
@@ -125,6 +133,8 @@ type Credentials struct {
 	AppTokens map[string]string // token -> user
 	Roots     *x509.CertPool    // CAs trusted for X.509 client authentication
 	CRLs      *x509utils.CRLSet // nil disables revocation checks
+
+	TokenIssuers map[string]*TokenIssuer // by issuer
 }
 
 // NewAuthStore creates a new authentication store
@@ -497,11 +507,10 @@ func (as *AuthStore) authenticateMacaroon(r *http.Request) (*AuthInfo, error) {
 	if !as.MacaroonEnabled {
 		return nil, nil
 	}
-	authz := r.Header.Get("Authorization")
-	if len(authz) < 7 || !strings.EqualFold(authz[:7], "Bearer ") {
+	token, ok := bearerToken(r)
+	if !ok || (as.TokenEnabled && IsJWT(token)) {
 		return nil, nil
 	}
-	token := strings.TrimSpace(authz[7:])
 	if token == "" {
 		return nil, errors.New("empty bearer token")
 	}
@@ -550,7 +559,7 @@ func (as *AuthStore) challenge(w http.ResponseWriter, msg string) {
 	if as.BasicEnabled {
 		w.Header().Add("WWW-Authenticate", `Basic realm="WebDAV Server"`)
 	}
-	if as.MacaroonEnabled {
+	if as.MacaroonEnabled || as.TokenEnabled {
 		w.Header().Add("WWW-Authenticate", `Bearer realm="WebDAV Server"`)
 	}
 	http.Error(w, msg, http.StatusUnauthorized)
@@ -606,6 +615,7 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 	methods := []method{
 		{"X509", as.authenticateX509},
 		{"OIDC", as.authenticateOIDC},
+		{"TOKEN", as.authenticateToken},
 		{"MACAROON", as.authenticateMacaroon},
 		{"BASIC", as.authenticateBasic},
 	}

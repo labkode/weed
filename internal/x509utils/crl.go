@@ -56,6 +56,23 @@ func LoadCertificates(path string) ([]*x509.Certificate, error) {
 	return certs, nil
 }
 
+// SystemPoolWith builds a pool from the system roots plus the PEM certificates in
+// path, which may be a file or a directory such as /etc/grid-security/certificates
+func SystemPoolWith(path string) (*x509.CertPool, error) {
+	certs, err := LoadCertificates(path)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		pool = x509.NewCertPool()
+	}
+	for _, c := range certs {
+		pool.AddCert(c)
+	}
+	return pool, nil
+}
+
 // filesIn returns path itself if it is a file, or the files in the directory path
 // whose names match pattern
 func filesIn(path string, pattern *regexp.Regexp) ([]string, error) {

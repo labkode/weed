@@ -36,7 +36,6 @@ import (
 	"github.com/labkode/weed/internal/digest"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
-	"github.com/labkode/weed/internal/x509utils"
 )
 
 // Mode is the direction of a transfer
@@ -93,6 +92,8 @@ type Job struct {
 	Expected digest.Set
 	// ReprDigest is the client's Repr-Digest field, forwarded verbatim on push
 	ReprDigest string
+	// NoReplace makes a pull fail rather than replace an existing local file
+	NoReplace bool
 }
 
 // Engine runs transfers
@@ -116,23 +117,6 @@ func New(cfg Config) *Engine {
 	}
 	e.client.Store(newClient(cfg))
 	return e
-}
-
-// LoadCAs builds a pool from the system roots plus the PEM certificates in path,
-// which may be a file or a directory such as /etc/grid-security/certificates
-func LoadCAs(path string) (*x509.CertPool, error) {
-	certs, err := x509utils.LoadCertificates(path)
-	if err != nil {
-		return nil, err
-	}
-	pool, err := x509.SystemCertPool()
-	if err != nil {
-		pool = x509.NewCertPool()
-	}
-	for _, c := range certs {
-		pool.AddCert(c)
-	}
-	return pool, nil
 }
 
 // SetRootCAs makes new transfers verify remote endpoints with pool; transfers in
@@ -446,7 +430,14 @@ func (e *Engine) pull(ctx context.Context, job *Job, p *progress) error {
 			alg, sums[alg], job.Expected[alg])
 	}
 	digest.StoreCache(af.File, sums)
-	if err := af.Commit(); err != nil {
+	commit := af.Commit
+	if job.NoReplace {
+		commit = af.CommitNoReplace
+	}
+	if err := commit(); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return errors.New("file not saved: it was created during the transfer, and the token does not allow replacing it")
+		}
 		return fmt.Errorf("cannot store local file: %w", err)
 	}
 	return nil

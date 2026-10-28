@@ -1,6 +1,7 @@
 #!/bin/sh
 # Interoperability tests: runs weed against real WLCG clients (gfal2, davix) and a
-# reference HTTP-TPC implementation (XRootD) in a container. Needs Go and Docker.
+# reference HTTP-TPC implementation (XRootD) in a container, with X.509 proxies,
+# macaroons and WLCG tokens. Needs Go and Docker.
 #
 #     test/interop/interop.sh
 set -eu
@@ -14,10 +15,12 @@ case $(docker info --format '{{.Architecture}}') in
 esac
 build=$(mktemp -d)
 trap 'rm -rf "$build"' EXIT
-(cd "$root" && GOOS=linux GOARCH=$goarch CGO_ENABLED=0 go build -o "$build/weed" .)
+(cd "$root" && GOOS=linux GOARCH=$goarch CGO_ENABLED=0 go build -o "$build/weed" . &&
+	GOOS=linux GOARCH=$goarch CGO_ENABLED=0 go build -o "$build/issuer" ./test/interop/issuer)
 
 docker build -q -t weed-interop "$here" >/dev/null
 docker run --rm \
 	-v "$build/weed:/usr/local/bin/weed:ro" \
+	-v "$build/issuer:/usr/local/bin/issuer:ro" \
 	-v "$here/run.sh:/run.sh:ro" \
 	weed-interop bash /run.sh

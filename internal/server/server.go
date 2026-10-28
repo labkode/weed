@@ -59,6 +59,14 @@ func (s *Server) Initialize() error {
 		s.AuthStore.PrepareBasicAuth()
 	}
 	s.AuthStore.X509Enabled = s.Config.X509Auth
+	s.AuthStore.TokenEnabled = s.Config.TokenIssuers != ""
+	if s.Config.TokenCAPath != "" {
+		pool, err := x509utils.SystemPoolWith(s.Config.TokenCAPath)
+		if err != nil {
+			return fmt.Errorf("failed to load token issuer CA certificates: %w", err)
+		}
+		s.AuthStore.SetTokenRootCAs(pool)
+	}
 	creds, _, err := s.loadCredentials(nil)
 	if err != nil {
 		return err
@@ -96,7 +104,7 @@ func (s *Server) Initialize() error {
 			AllowPrivate:   s.Config.TPCAllowPrivate,
 		}
 		if s.Config.TPCCAPath != "" {
-			pool, err := tpc.LoadCAs(s.Config.TPCCAPath)
+			pool, err := x509utils.SystemPoolWith(s.Config.TPCCAPath)
 			if err != nil {
 				return fmt.Errorf("failed to load TPC CA certificates: %w", err)
 			}
@@ -171,6 +179,19 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (c *auth.Credentials, c
 			}
 		}
 	}
+	if s.Config.TokenIssuers != "" {
+		issuers, err := auth.LoadTokenIssuers(s.Config.TokenIssuers)
+		switch {
+		case err == nil:
+			c.TokenIssuers = issuers
+			log.Printf("[CREDENTIALS] Loaded %d token issuers from %s", len(issuers), s.Config.TokenIssuers)
+		case startup:
+			return nil, false, fmt.Errorf("failed to load token issuers: %w", err)
+		default:
+			log.Printf("[CREDENTIALS] Cannot read token issuers from %s, keeping the previous ones: %v", s.Config.TokenIssuers, err)
+			complete = false
+		}
+	}
 	return c, complete, nil
 }
 
@@ -206,11 +227,19 @@ func (s *Server) Reload() {
 		}
 	}
 	if s.Handler.TPC != nil && s.Config.TPCCAPath != "" {
-		if pool, err := tpc.LoadCAs(s.Config.TPCCAPath); err != nil {
+		if pool, err := x509utils.SystemPoolWith(s.Config.TPCCAPath); err != nil {
 			log.Printf("[RELOAD] Cannot read TPC CA certificates, keeping the previous ones: %v", err)
 			complete = false
 		} else {
 			s.Handler.TPC.SetRootCAs(pool)
+		}
+	}
+	if s.Config.TokenCAPath != "" {
+		if pool, err := x509utils.SystemPoolWith(s.Config.TokenCAPath); err != nil {
+			log.Printf("[RELOAD] Cannot read token issuer CA certificates, keeping the previous ones: %v", err)
+			complete = false
+		} else {
+			s.AuthStore.SetTokenRootCAs(pool)
 		}
 	}
 	if complete {
@@ -507,6 +536,11 @@ func (s *Server) LogStartupInfo() {
 		log.Printf("  - OIDC Client ID: %s", s.Config.OIDCClientID)
 		log.Printf("  - OIDC Redirect URL: %s", s.Config.OIDCRedirectURL)
 	}
+	if s.Config.TokenIssuers != "" {
+		for _, iss := range s.AuthStore.Credentials().TokenIssuers {
+			log.Printf("  - Token issuer: %s (base path %s, audiences %v and %s)", iss.Issuer, iss.BasePath, iss.Audiences, auth.AudienceAny)
+		}
+	}
 	if s.Config.MacaroonAuth {
 		log.Printf("  - Macaroon Max Validity: %v", s.Config.MacaroonMaxValidity)
 	}
@@ -525,7 +559,7 @@ func (s *Server) LogStartupInfo() {
 		log.Printf("  - TPC allow http: %t, allow local addresses: %t, allow private addresses: %t",
 			s.Config.TPCAllowHTTP, s.Config.TPCAllowLocal, s.Config.TPCAllowPrivate)
 	}
-	if !s.Config.TLS && (s.Config.BasicAuth || s.Config.MacaroonAuth || s.Config.OIDCAuth) {
+	if !s.Config.TLS && (s.Config.BasicAuth || s.Config.MacaroonAuth || s.Config.OIDCAuth || s.Config.TokenIssuers != "") {
 		log.Printf("WARNING: TLS is disabled; passwords and tokens are sent in clear text")
 	}
 	log.Println("===============================")

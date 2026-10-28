@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -149,7 +150,13 @@ func CreateAtomic(target string, perm os.FileMode) (*AtomicFile, error) {
 }
 
 // Commit flushes the data to stable storage and moves the file into place
-func (a *AtomicFile) Commit() error {
+func (a *AtomicFile) Commit() error { return a.commit(true) }
+
+// CommitNoReplace is Commit, but fails with an error matching os.ErrExist if the
+// target exists, even if it was created while the file was being written
+func (a *AtomicFile) CommitNoReplace() error { return a.commit(false) }
+
+func (a *AtomicFile) commit(replace bool) error {
 	if a.done {
 		return os.ErrClosed
 	}
@@ -164,12 +171,32 @@ func (a *AtomicFile) Commit() error {
 		os.Remove(tmp)
 		return err
 	}
-	if err := os.Rename(tmp, a.target); err != nil {
+	if replace {
+		if err := os.Rename(tmp, a.target); err != nil {
+			os.Remove(tmp)
+			return err
+		}
+	} else if err := linkNoReplace(tmp, a.target); err != nil {
 		os.Remove(tmp)
 		return err
 	}
 	syncDir(filepath.Dir(a.target))
 	return nil
+}
+
+// linkNoReplace moves tmp to target unless target exists. A hard link is created
+// atomically or not at all; on filesystems without hard links the check and the
+// rename are separate steps.
+func linkNoReplace(tmp, target string) error {
+	err := os.Link(tmp, target)
+	if err == nil || errors.Is(err, fs.ErrExist) {
+		os.Remove(tmp)
+		return err
+	}
+	if _, statErr := os.Lstat(target); statErr == nil {
+		return &os.PathError{Op: "create", Path: target, Err: fs.ErrExist}
+	}
+	return os.Rename(tmp, target)
 }
 
 // Abort discards the upload. It is a no-op after Commit.
