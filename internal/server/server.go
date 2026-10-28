@@ -348,30 +348,22 @@ func (s *Server) handleMonitoring(mux *http.ServeMux) {
 // applyAuthMiddleware applies the unified authentication middleware to a handler
 func (s *Server) applyAuthMiddleware(handler http.Handler) http.Handler {
 	// Unified authentication tries X.509 -> token -> macaroon -> Basic in order
-	handler = s.AuthStore.UnifiedAuthMiddleware(handler)
-
-	// Apply logging middleware
-	handler = logger.Middleware(handler)
-
-	return handler
+	return s.AuthStore.UnifiedAuthMiddleware(handler)
 }
 
 // applyBasicAuthMiddleware applies only basic authentication middleware
 func (s *Server) applyBasicAuthMiddleware(handler http.Handler) http.Handler {
-	handler = s.AuthStore.BasicAuthMiddleware(handler)
-	handler = logger.Middleware(handler)
-	return handler
+	return s.AuthStore.BasicAuthMiddleware(handler)
 }
 
 // applyX509AuthMiddleware applies only X.509 authentication middleware
 func (s *Server) applyX509AuthMiddleware(handler http.Handler) http.Handler {
-	handler = s.AuthStore.X509AuthMiddleware(handler)
-	handler = logger.Middleware(handler)
-	return handler
+	return s.AuthStore.X509AuthMiddleware(handler)
 }
 
-// SetupRoutes sets up the HTTP routes
-func (s *Server) SetupRoutes() *http.ServeMux {
+// SetupRoutes sets up the HTTP routes of the main port. Every request is logged
+// ("request") and counted (weed_http_requests_total) once, whatever it is for.
+func (s *Server) SetupRoutes() http.Handler {
 	mux := http.NewServeMux()
 
 	// Index page is publicly accessible (no auth required)
@@ -395,12 +387,12 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 
 	// The OIDC login page, and the provider's redirect back to weed
 	if s.Config.OIDCAuth {
-		mux.Handle("/auth/oidc", logger.Middleware(s.Handler.OIDCHandler(s.AuthStore)))
-		mux.Handle("/oidc_redirect", logger.Middleware(s.Handler.OIDCRedirectHandler(s.AuthStore)))
+		mux.Handle("/auth/oidc", s.Handler.OIDCHandler(s.AuthStore))
+		mux.Handle("/oidc_redirect", s.Handler.OIDCRedirectHandler(s.AuthStore))
 	}
 
 	// Utility routes
-	mux.Handle("/proc/x509", logger.Middleware(http.HandlerFunc(s.Handler.ProcX509Handler)))
+	mux.HandleFunc("/proc/x509", s.Handler.ProcX509Handler)
 	mux.HandleFunc("/healthz", s.healthz)
 	if s.MonitorOnMainPort {
 		s.handleMonitoring(mux)
@@ -416,7 +408,7 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 		mux.HandleFunc("/proc/whoami", s.Handler.WhoAmIHandler)
 	}
 
-	return mux
+	return logger.Middleware(mux)
 }
 
 // SetupTLS configures TLS if enabled

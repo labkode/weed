@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/labkode/weed/internal/config"
+	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/version"
 )
 
@@ -354,6 +356,46 @@ func TestQuickStartMonitoring(t *testing.T) {
 	for _, path := range []string{"/status", "/metrics"} {
 		if w := get(config.Default(), path); w.Code != 404 {
 			t.Errorf("configured server's main port serves %s: %d", path, w.Code)
+		}
+	}
+}
+
+// Every request on the main port is logged once and counted once, whatever it is for:
+// WebDAV, the index page, /healthz, unknown paths, and /status and /metrics there
+func TestEveryRequestLogged(t *testing.T) {
+	n := newNode(t, nil)
+	n.srv.MonitorOnMainPort = true // as without a configuration file
+	n.ts.Config.Handler = n.srv.SetupRoutes()
+	log := captureLog(t)
+	for _, c := range []struct {
+		method, path, user string
+		code               int
+	}{
+		{"PUT", "/webdav/f", basicUser, 201},
+		{"GET", "/webdav/f", basicUser, 200},
+		{"GET", "/", "-", 200},
+		{"GET", "/healthz", "-", 200},
+		{"GET", "/status", "-", 200},
+		{"GET", "/metrics", "-", 200},
+		{"GET", "/nothing-here", "-", 404},
+		{"GET", "/proc/whoami", basicUser, 200},
+	} {
+		before := metrics.HTTPRequests.Get(metrics.Method(c.method), strconv.Itoa(c.code))
+		log.Reset()
+		auth := []string{"Authorization", "none"}
+		if c.user != "-" {
+			auth = nil
+		}
+		if code := n.status(c.method, n.ts.URL+c.path, "data", auth...); code != c.code {
+			t.Errorf("%s %s: %d", c.method, c.path, code)
+		}
+		records := grepLines(log.String(), "msg=request ")
+		if strings.Count(records, "msg=request ") != 1 || !strings.Contains(records, " path="+c.path+" ") ||
+			!strings.Contains(records, " user="+c.user+" ") || !strings.Contains(records, " status="+strconv.Itoa(c.code)+" ") {
+			t.Errorf("%s %s logged as:\n%s", c.method, c.path, records)
+		}
+		if got := metrics.HTTPRequests.Get(metrics.Method(c.method), strconv.Itoa(c.code)) - before; got != 1 {
+			t.Errorf("%s %s counted %d times", c.method, c.path, got)
 		}
 	}
 }

@@ -427,10 +427,13 @@ the least severe level logged (default "info"):
       path=/webdav/hosts proto=HTTP/1.1 status=204 bytes=0 duration=12.60425ms
       user=alice remote=192.0.2.1:65278 user_agent=gfal2 request_id=c016524f
 
-(one line in the log). Records logged while serving a request carry its request_id,
-also when a worker process logs them: workers send their records to weed, which logs
-them with worker.user and worker.pid. Values are quoted or escaped, so clients cannot
-forge records with crafted paths or headers, and X-Forwarded-For is logged as
+(one line in the log). Every request to the main port gets one, and is counted in
+weed_http_requests_total, whatever it is for: /webdav/, /healthz, the index page,
+unknown paths. Requests to server.metrics_address (Prometheus scrapes) get neither.
+Records logged while serving a request carry its request_id, also when a worker
+process logs them: workers send their records to weed, which logs them with
+worker.user and worker.pid. Values are quoted or escaped, so clients cannot forge
+records with crafted paths or headers, and X-Forwarded-For is logged as
 forwarded_for, never in place of the client's address. On SIGHUP weed reopens
 server.log_file, so that logrotate can move it (postrotate: systemctl kill -s HUP
 weed); under systemd, standard error goes to the journal.
