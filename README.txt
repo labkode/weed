@@ -316,16 +316,18 @@ than the slowest of network, disk and hashing. On an M1 Pro over loopback (2 GiB
 files, MB/s): PUT or TPC pull with adler32 ~2450, + sha-256 ~1900, + md5 ~620 (md5
 itself hashes at ~650); GET ~3000; the disk writes ~3800. Measure on your hardware:
 
-    WEED_BENCH_MIB=4096 go test ./internal/server -run '^$' -bench . -benchtime 3x
-    go test ./internal/digest -run '^$' -bench Hasher
+    WEED_BENCH_MIB=4096 make bench
 
 
 Testing
 
-    go test -race ./...           unit and end-to-end tests
-    go test -exec sudo -run 'TestUnixUsers|TestRun|TestCheck' ./internal/fsuser ./internal/server
-                                  tests that switch identities (Linux, as root)
-    test/interop/interop.sh       interoperability tests, needs Docker
+    make test          unit and end-to-end tests (go test -race ./...)
+    make test-root     the same as root, adding the tests that switch Unix identities
+                       (Linux, uses sudo)
+    make test-linux    the same as root in a Linux container, e.g. from macOS (Docker)
+    make interop       interoperability tests (test/interop/interop.sh, Docker)
+    make check         gofmt and go vet; make fuzz, make cross, make vulncheck and
+                       make bench run the rest; make help lists every target
 
 The interoperability tests run weed in a container against real WLCG software:
 gfal2, davix and curl as clients; XRootD (with its macaroons, SciTokens and HTTP-TPC
