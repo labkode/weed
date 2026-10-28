@@ -458,20 +458,43 @@ func (e *Engine) push(ctx context.Context, job *Job, p *progress) error {
 	type attempt struct {
 		counter *atomic.Int64
 		hasher  *digest.Hasher
+		body    io.Closer
+		done    chan struct{} // closed once the hasher has seen everything it will see
 	}
-	var last attempt
+	var last *attempt
 	newBody := func() (io.ReadCloser, error) {
 		f, err := os.Open(job.LocalPath)
 		if err != nil {
 			return nil, err
 		}
-		last = attempt{counter: new(atomic.Int64), hasher: digest.NewHasher(job.Expected.Algorithms()...)}
-		p.counter.Store(last.counter)
-		r := &countingReader{r: io.TeeReader(f, last.hasher), n: last.counter}
+		a := &attempt{counter: new(atomic.Int64), hasher: digest.NewHasher(job.Expected.Algorithms()...), done: make(chan struct{})}
+		last = a
+		p.counter.Store(a.counter)
+		if len(job.Expected) == 0 {
+			close(a.done)
+			a.body = f
+			return struct {
+				io.Reader
+				io.Closer
+			}{&countingReader{r: f, n: a.counter}, f}, nil
+		}
+		// The file is read ahead and hashed while the transport sends what was read
+		pr, pw := io.Pipe()
+		go func() {
+			defer close(a.done)
+			defer f.Close()
+			_, readErr, writeErr := digest.Copy(pw, f, a.hasher)
+			if readErr != nil {
+				pw.CloseWithError(readErr)
+			} else {
+				pw.CloseWithError(writeErr) // nil: the reader sees io.EOF
+			}
+		}()
+		a.body = pr
 		return struct {
 			io.Reader
 			io.Closer
-		}{r, f}, nil
+		}{&countingReader{r: pr, n: a.counter}, pr}, nil
 	}
 	body, err := newBody()
 	if err != nil {
@@ -506,8 +529,10 @@ func (e *Engine) push(ctx context.Context, job *Job, p *progress) error {
 		return remoteError("PUT", job.Remote, resp)
 	}
 
-	// The counter is updated after the hasher, so reading the full size here means
-	// the hasher has seen every byte
+	// Closing the body stops the hasher from reading past what was sent (if the file
+	// grew); once it is done it has seen every byte sent
+	last.body.Close()
+	<-last.done
 	if sent := last.counter.Load(); sent != size {
 		return fmt.Errorf("destination answered %s after %d of %d bytes", resp.Status, sent, size)
 	}

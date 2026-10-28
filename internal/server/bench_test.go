@@ -170,3 +170,36 @@ func BenchmarkDiskWrite(b *testing.B) {
 		os.Remove(f.Name())
 	}
 }
+
+func BenchmarkTPCPush(b *testing.B) {
+	size := benchSize(b)
+	active, passive := newNode(b, nil), newNode(b, nil)
+	f, _ := os.Create(active.dir + "/f")
+	io.Copy(f, &patternReader{n: size})
+	f.Close()
+	mac, _ := passive.mint("/", `{"caveats":["activity:UPLOAD"]}`)
+	for _, c := range checksumCases {
+		reprDigest := digestsOf(size, c.algs...)
+		b.Run(c.name, func(b *testing.B) {
+			b.SetBytes(size)
+			for b.Loop() {
+				req, _ := http.NewRequest("COPY", active.url("/f"), nil)
+				req.SetBasicAuth(basicUser, basicPass)
+				req.Header.Set("Destination", passive.url("/pushed"))
+				req.Header.Set("TransferHeaderAuthorization", "Bearer "+mac)
+				if reprDigest != "" {
+					req.Header.Set("Repr-Digest", reprDigest)
+				}
+				resp, err := active.ts.Client().Do(req)
+				if err != nil {
+					b.Fatal(err)
+				}
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if !strings.HasSuffix(string(body), "success: Created\n") {
+					b.Fatalf("TPC: %d %s", resp.StatusCode, body)
+				}
+			}
+		})
+	}
+}

@@ -1,11 +1,17 @@
 package server
 
 import (
+	"bufio"
+	"crypto/md5"
+	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -337,4 +343,68 @@ func TestTPCRefusesUnsafeRemoteBehaviour(t *testing.T) {
 	defer moved.Close()
 	code, body = copyTPC(t, active, "/empty", "Destination", moved.URL+"/f")
 	expectFailure(t, code, body, "refusing redirect")
+}
+
+// With a destination that does not verify digests, weed checks the data it sent
+// against the client's digests itself
+func TestTPCPushVerifiesSourceDigests(t *testing.T) {
+	active := newNode(t, nil)
+	data := make([]byte, 4<<20-1) // several chunks, the last one big: hashed while it is sent
+	rand.Read(data)
+	os.WriteFile(filepath.Join(active.dir, "f"), data, 0644)
+	dst := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer dst.Close()
+	md5sum := md5.Sum(data)
+	sha := sha256.Sum256(data)
+	good := fmt.Sprintf("md5=:%s:, sha-256=:%s:", b64(md5sum[:]), b64(sha[:]))
+
+	code, body := copyTPC(t, active, "/f", "Destination", dst.URL+"/f", "Repr-Digest", good)
+	expectSuccess(t, code, body)
+	code, body = copyTPC(t, active, "/f", "Destination", dst.URL+"/f", "Repr-Digest", "md5=:"+b64(make([]byte, 16))+":")
+	expectFailure(t, code, body, "source file does not match the client checksum")
+}
+
+// A destination that answers before reading the data, then stops reading, must not
+// leave the push waiting forever
+func TestTPCPushDestinationAnswersEarly(t *testing.T) {
+	active := newNode(t, nil)
+	data := make([]byte, 64<<20) // more than socket buffers hold
+	os.WriteFile(filepath.Join(active.dir, "f"), data, 0644)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, err := http.ReadRequest(bufio.NewReader(conn)); err != nil {
+			return
+		}
+		conn.Write([]byte("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n"))
+		<-stop
+	}()
+
+	result := make(chan string, 1)
+	go func() {
+		code, body := copyTPC(t, active, "/f", "Destination", "http://"+ln.Addr().String()+"/f",
+			"Repr-Digest", "adler=:"+b64(adler(string(data)))+":")
+		result <- fmt.Sprintf("%d %s", code, finalLine(body))
+	}()
+	select {
+	case got := <-result:
+		if !strings.Contains(got, "failure: ") || !strings.Contains(got, "after") {
+			t.Fatalf("got %q", got)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("push still waiting for the destination")
+	}
 }
