@@ -4,7 +4,9 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -88,6 +90,9 @@ func (c *Config) Level() (slog.Level, error) {
 	return l, errors.New(`server.log_level must be "debug", "info", "warn" or "error"`)
 }
 
+// cgroupLimitFile is the name of a cgroup interface file that limits may be written to
+var cgroupLimitFile = regexp.MustCompile(`^[a-z]+\.[a-z0-9_.]+$`)
+
 // Validate checks that the configuration is consistent
 func (c *Config) Validate() error {
 	if c.X509Auth && !c.TLS {
@@ -130,6 +135,11 @@ func (c *Config) Validate() error {
 	}
 	if (c.WorkerCgroups || len(c.WorkerCgroupLimits) > 0) && !c.UnixUsers {
 		return errors.New("unix_users.cgroups and unix_users.cgroup_limits need unix_users.enabled")
+	}
+	for _, l := range c.WorkerCgroupLimits {
+		if file, _, ok := strings.Cut(l, "="); !ok || !cgroupLimitFile.MatchString(file) || strings.HasPrefix(file, "cgroup.") {
+			return fmt.Errorf("invalid unix_users.cgroup_limits entry %q: want file=value, e.g. memory.max=4G", l)
+		}
 	}
 	if c.TokenCAPath != "" && c.TokenIssuers == "" {
 		return errors.New("tokens.ca_path needs tokens.issuers")

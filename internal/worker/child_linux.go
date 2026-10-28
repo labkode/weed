@@ -16,6 +16,7 @@ import (
 	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
+	"github.com/labkode/weed/internal/version"
 	"golang.org/x/sys/unix"
 )
 
@@ -26,7 +27,7 @@ const shutdownGrace = 30 * time.Second
 type Child struct {
 	Settings Settings
 	ctl      *net.UnixConn
-	build    string // see executableBuild
+	build    string // of its executable (see version.Build)
 }
 
 // Attach takes over the control socket that the front process passed as file
@@ -59,7 +60,9 @@ func Attach() (*Child, error) {
 	if err := checkConfinement(&child.Settings.User); err != nil {
 		return nil, child.Fail(fmt.Errorf("refusing to serve: %w", err))
 	}
-	if child.build, err = executableBuild(); err != nil {
+	// Workers are started from /proc/self/exe: the front process's binary, unless it
+	// was overwritten in place, which the front process detects from the build
+	if child.build, err = version.ExecutableBuild(); err != nil {
 		return nil, child.Fail(fmt.Errorf("cannot identify the build of its executable: %w", err))
 	}
 	return child, nil

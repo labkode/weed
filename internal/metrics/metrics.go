@@ -137,7 +137,16 @@ func Handler(extra func(w io.Writer)) http.Handler {
 
 // WriteGauge writes a single gauge sample with its metadata
 func WriteGauge(w io.Writer, name, help string, value float64, labelNames, labelValues []string) {
-	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n%s%s %g\n", name, help, name, name, Labels(labelNames, labelValues), value)
+	WriteGaugeSamples(w, name, help, labelNames, [][]string{labelValues}, []float64{value})
+}
+
+// WriteGaugeSamples writes the samples of a gauge, one per set of label values, with
+// its metadata
+func WriteGaugeSamples(w io.Writer, name, help string, labelNames []string, labelValues [][]string, values []float64) {
+	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n", name, help, name)
+	for i, v := range values {
+		fmt.Fprintf(w, "%s%s %g\n", name, Labels(labelNames, labelValues[i]), v)
+	}
 }
 
 // The metrics weed records

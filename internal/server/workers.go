@@ -20,13 +20,20 @@ import (
 
 // startWorkers prepares the workers, and starts one to check that they can start
 func (s *Server) startWorkers() error {
-	pool, err := worker.New(worker.Options{
+	opts := worker.Options{
 		Config:       workerConfig(s.Config),
 		IdleTimeout:  s.Config.WorkerIdleTimeout,
 		MaxWorkers:   s.Config.MaxWorkers,
 		Cgroups:      s.Config.WorkerCgroups,
 		CgroupLimits: s.Config.WorkerCgroupLimits,
-	})
+	}
+	if s.checking {
+		// Setting cgroups up moves this process and enables controllers in its cgroup,
+		// which would then refuse weed (systemd: ExecStartPre) or the shell weed check
+		// runs in
+		opts.Cgroups, opts.CgroupLimits = false, nil
+	}
+	pool, err := worker.New(opts)
 	if err != nil {
 		return err
 	}

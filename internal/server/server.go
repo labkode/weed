@@ -11,8 +11,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"runtime"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -24,7 +22,9 @@ import (
 	"github.com/labkode/weed/internal/handlers"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
+	"github.com/labkode/weed/internal/systemd"
 	"github.com/labkode/weed/internal/tpc"
+	"github.com/labkode/weed/internal/version"
 	"github.com/labkode/weed/internal/worker"
 	"github.com/labkode/weed/internal/x509utils"
 )
@@ -43,6 +43,9 @@ type Server struct {
 
 	reloadMu sync.Mutex
 	cert     atomic.Pointer[tls.Certificate] // TLS server certificate, replaced on reload
+
+	run      running // what runs, compared to what a restart would run (see status.go)
+	checking bool    // weed check: only find out whether weed would start
 }
 
 // New creates a new server instance
@@ -52,6 +55,7 @@ func New(cfg *config.Config) *Server {
 		Config:    cfg,
 		AuthStore: authStore,
 		Handler:   handlers.NewWebDAVHandler(cfg.Directory, cfg, authStore),
+		run:       newRunning(cfg),
 	}
 }
 
@@ -284,6 +288,7 @@ func (s *Server) Reload() {
 	} else {
 		metrics.Reloads.Inc("partial")
 	}
+	s.reloaded(complete)
 }
 
 // writeGauges writes the metrics computed when scraped: when credentials expire
@@ -299,16 +304,7 @@ func (s *Server) writeGauges(w io.Writer) {
 		metrics.WriteGauge(w, "weed_tls_certificate_expiry_timestamp_seconds", "When the TLS server certificate expires.",
 			float64(cert.Leaf.NotAfter.Unix()), nil, nil)
 	}
-	metrics.WriteGauge(w, "weed_build_info", "Version of weed and of Go it was built with.", 1,
-		[]string{"version", "goversion"}, []string{buildVersion(), runtime.Version()})
-}
-
-// buildVersion is the version of weed's module, as built
-func buildVersion() string {
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		return bi.Main.Version
-	}
-	return "unknown"
+	s.writeStatusGauges(w)
 }
 
 // healthz reports whether the exported directory responds (a hung network
@@ -331,11 +327,12 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// MetricsHandler serves /metrics and /healthz
+// MetricsHandler serves /metrics, /healthz and /status
 func (s *Server) MetricsHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", metrics.Handler(s.writeGauges))
 	mux.HandleFunc("/healthz", s.healthz)
+	mux.HandleFunc("/status", s.statusHandler)
 	return mux
 }
 
@@ -453,13 +450,21 @@ func (s *Server) Run(ctx context.Context) error {
 		BaseContext:       func(net.Listener) context.Context { return baseCtx },
 	}
 
-	errCh := make(chan error, 1)
+	// Listen first, so that a port in use stops weed at once and systemd hears it is
+	// ready only once it is
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		return err
+	}
+	errCh := make(chan error, 2)
 	if s.Config.TLS {
 		tlsConfig, err := s.SetupTLS()
 		if err != nil {
+			ln.Close()
 			return err
 		}
 		if err := s.loadCertificate(); err != nil {
+			ln.Close()
 			return fmt.Errorf("failed to load TLS certificate: %w", err)
 		}
 		// Certificates and the CAs advertised to clients follow reloads
@@ -473,23 +478,30 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}
 		s.server.TLSConfig = tlsConfig
-		slog.Info("listening", "address", address, "scheme", "https")
-		go func() { errCh <- s.server.ListenAndServeTLS("", "") }()
+		slog.Info("listening", "address", ln.Addr().String(), "scheme", "https")
+		go func() { errCh <- s.server.ServeTLS(ln, "", "") }()
 	} else {
-		slog.Info("listening", "address", address, "scheme", "http")
-		go func() { errCh <- s.server.ListenAndServe() }()
+		slog.Info("listening", "address", ln.Addr().String(), "scheme", "http")
+		go func() { errCh <- s.server.Serve(ln) }()
 	}
 
 	if s.Config.MetricsAddress != "" {
-		ms := &http.Server{Addr: s.Config.MetricsAddress, Handler: s.MetricsHandler(), ReadHeaderTimeout: 10 * time.Second}
-		slog.Info("serving metrics", "address", s.Config.MetricsAddress)
+		ml, err := net.Listen("tcp", s.Config.MetricsAddress)
+		if err != nil {
+			s.server.Close()
+			return fmt.Errorf("metrics server: %w", err)
+		}
+		ms := &http.Server{Handler: s.MetricsHandler(), ReadHeaderTimeout: 10 * time.Second}
+		slog.Info("serving metrics", "address", ml.Addr().String())
 		go func() {
-			if err := ms.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := ms.Serve(ml); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- fmt.Errorf("metrics server: %w", err)
 			}
 		}()
 		defer ms.Close()
 	}
+	go s.watchRestart(ctx)
+	systemd.Ready(s.StatusLine())
 	if s.Config.ReloadInterval > 0 {
 		go func() {
 			ticker := time.NewTicker(s.Config.ReloadInterval)
@@ -511,6 +523,7 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
+	systemd.Stopping()
 	slog.Info("shutting down, waiting for requests in progress", "grace", shutdownGrace)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
@@ -520,6 +533,27 @@ func (s *Server) Run(ctx context.Context) error {
 		s.server.Close()
 	}
 	s.Close()
+	return nil
+}
+
+// Check does what starting does, without serving, to report what would keep weed
+// from starting with its configuration (weed check). Listening on the configured
+// addresses is not tried: they are in use while weed runs; nor are worker cgroups set
+// up (see startWorkers).
+func (s *Server) Check() error {
+	defer s.Close()
+	s.checking = true
+	if err := s.Initialize(); err != nil {
+		return err
+	}
+	if s.Config.TLS {
+		if _, err := s.SetupTLS(); err != nil {
+			return err
+		}
+		if err := s.loadCertificate(); err != nil {
+			return fmt.Errorf("failed to load TLS certificate: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -547,9 +581,15 @@ func (s *Server) LogStartupInfo() {
 			methods = append(methods, m.name)
 		}
 	}
-	slog.Info("starting weed", "version", buildVersion(), "go", runtime.Version(), "dir", c.Directory, "tls", c.TLS,
-		"authentication", strings.Join(methods, ","), "tpc", c.TPC, "unix_users", c.UnixUsers,
-		"reload_interval", c.ReloadInterval)
+	v := version.Current()
+	slog.Info("starting weed", "version", v.Version, "commit", v.Revision, "commit_time", v.Time, "modified", v.Modified,
+		"build", v.Build, "go", v.Go, "platform", v.Platform, "pid", os.Getpid(), "executable", executablePath,
+		"dir", c.Directory, "tls", c.TLS, "authentication", strings.Join(methods, ","), "tpc", c.TPC,
+		"unix_users", c.UnixUsers, "reload_interval", c.ReloadInterval)
+	s.run.mu.Lock()
+	src, loaded := s.run.source, s.run.config
+	s.run.mu.Unlock()
+	slog.Info("configuration", "file", src.Path, "sha256", src.SHA256, "config", loaded)
 	if c.X509Auth {
 		slog.Info("X.509 authentication", "ca", c.CACert, "gridmap", c.GridmapFile, "crl_path", c.CRLPath, "crl_mode", c.CRLMode)
 		if c.CRLPath == "" {

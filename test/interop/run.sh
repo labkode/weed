@@ -103,7 +103,7 @@ start_weed b 8444
 useradd -M -u 7001 interop && useradd -M -u 7002 robot
 mkdir -p /srv/c/interop /srv/c/robot && chown interop: /srv/c/interop && chown robot: /srv/c/robot && chmod 700 /srv/c/robot
 printf '[{"issuer": "%s", "audiences": ["https://localhost:8447"], "users": [{"group": "/interop/robots", "user": "robot"}]}]' $ISS >issuers-c.json
-ISSUERS=issuers-c.json LOG_FORMAT=json start_weed c 8447 '[unix_users]' 'enabled = true' 'idle_timeout = "3s"'
+ISSUERS=issuers-c.json LOG_FORMAT=json METRICS=localhost:9101 start_weed c 8447 '[unix_users]' 'enabled = true' 'idle_timeout = "3s"'
 
 # XRootD as a production-like WLCG endpoint: X.509 over HTTPS, macaroons, tokens, HTTP-TPC.
 # It runs as the xrootd user, which needs a writable working directory.
@@ -314,6 +314,8 @@ workers_are() { [ "$(workers)" = "$(printf '%s\n' "$@")" ]; }
 gfal-ls $C/interop >/dev/null; curl -s -o /dev/null --capath $CERTS -H "Authorization: Bearer $ROBOT" $(https $C)/robot/t.bin
 check "ps shows a worker per account, running as it" workers_are "interop weed worker interop" "robot weed worker robot"
 check "...while weed itself runs as root" [ "$(ps -o user= -p $C_PID)" = root ]
+status_workers() { curl -s localhost:9101/status | jq -r '.workers[] | "\(.account) \(.pid)"' | sort; }
+check "/status lists them, with their pids" eval '[ "$(status_workers)" = "$(ps -o user=,pid= --ppid $C_PID | awk "{print \$1, \$2}" | sort)" ]'
 for i in $(seq 100); do [ -z "$(workers)" ] && break; sleep 0.1; done
 check "idle workers stop (unix_users.idle_timeout)" workers_are
 check "...and start again when needed" gfal-ls $C/interop
@@ -338,6 +340,29 @@ check "/healthz" sh -c "[ \"\$(curl -s localhost:9100/healthz)\" = ok ]"
 check "TPC transfers counted" grep -qE '^weed_tpc_transfers_total\{mode="push",result="success"\} [1-9]' metrics.txt
 check "checksum mismatches counted" grep -qE '^weed_checksum_mismatches_total\{operation="tpc_push"\} [1-9]' metrics.txt
 check "CRL and certificate expiry exported" sh -c "grep -q '^weed_crl_expiry_timestamp_seconds ' metrics.txt && grep -q '^weed_tls_certificate_expiry_timestamp_seconds ' metrics.txt"
+
+echo "== what runs: build, start, configuration, pending restart"
+SHA=$(sha256sum weed-a.toml | cut -d' ' -f1)
+curl -s localhost:9100/status >status.json
+check "weed check: A's configuration is valid" sh -c "weed check -config weed-a.toml | grep -q 'sha256 $SHA'"
+check "weed check: C's (unix_users) too" weed check -config weed-c.toml
+check "/status: the configuration's SHA-256 is the file's" sh -c "[ \"\$(jq -r .config.sha256 status.json)\" = $SHA ]"
+check "/status: the build is weed version's" sh -c "weed version | grep -qx \"build    \$(jq -r .version.build status.json)\""
+SECRET=$(sed -n 's/^secret_key = "\(.*\)"$/\1/p' weed-a.toml)
+check "/status: started, settings, no secrets" eval '[ -n "$SECRET" ] && ! grep -qF "$SECRET" status.json &&
+	jq -e ".pid > 0 and .started != null and .config.settings.server.port == 8443 and .config.settings.macaroons.secret_key == \"<redacted>\"" status.json >/dev/null'
+check "no restart pending" grep -qx 'weed_restart_pending{reason="config"} 0' metrics.txt
+check "build and configuration exported" sh -c "grep -q '^weed_build_info{.*build=\"go:' metrics.txt && grep -q \"^weed_config_info{.*sha256=\\\"$SHA\\\"} 1\" metrics.txt && grep -q '^process_start_time_seconds ' metrics.txt"
+cp weed-a.toml weed-a.toml.orig
+sed -i 's/^marker_interval = .*/marker_interval = "5s"/' weed-a.toml
+check "edited configuration: restart pending, naming the option" sh -c "curl -s localhost:9100/metrics | grep -qx 'weed_restart_pending{reason=\"config\"} 1' &&
+	grep -q 'level=WARN msg=\"restart pending: the configuration file has changed: tpc.marker_interval\"' $W/weed-a.log"
+echo '[server' >>weed-a.toml
+check "broken configuration: weed check fails" sh -c "! weed check -config weed-a.toml 2>check.err && grep -q 'weed would not start' check.err"
+check "broken configuration: logged as an error now" sh -c "curl -s localhost:9100/status | jq -e '.restart_pending.config | contains(\"would not start\")' >/dev/null &&
+	grep -q 'level=ERROR msg=\"restart pending: the configuration file has changed, and weed would not start' $W/weed-a.log"
+cp weed-a.toml.orig weed-a.toml
+check "restored configuration: no restart pending" sh -c "curl -s localhost:9100/metrics | grep -qx 'weed_restart_pending{reason=\"config\"} 0'"
 
 echo
 echo "$pass passed, $fail failed"

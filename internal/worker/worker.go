@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labkode/weed/internal/auth"
 	"github.com/labkode/weed/internal/config"
@@ -39,6 +40,16 @@ type Settings struct {
 	User fsuser.User
 	// Config is the configuration it serves with, which holds no credentials
 	Config config.Config
+}
+
+// Info describes a worker process
+type Info struct {
+	Account  string    `json:"account"`
+	UID      int       `json:"uid"`
+	PID      int       `json:"pid"`
+	Started  time.Time `json:"started"`
+	Requests int       `json:"requests"` // in progress
+	Retired  bool      `json:"retired"`  // finishing its requests, taking no new ones
 }
 
 // Messages from the front process to a worker over the control socket, after the settings

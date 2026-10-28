@@ -3,6 +3,7 @@ package worker
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,7 @@ import (
 	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
+	"github.com/labkode/weed/internal/version"
 	"golang.org/x/sys/unix"
 )
 
@@ -55,7 +57,7 @@ type Options struct {
 type Pool struct {
 	opts    Options
 	cgroups *cgroups // nil: workers stay in weed's cgroup
-	build   string   // of this executable, which workers must run (see executableBuild)
+	build   string   // of this executable, which workers must run (see version.Build)
 
 	mu      sync.Mutex
 	workers map[string]*worker // by account name: the workers taking new requests
@@ -72,6 +74,7 @@ type worker struct {
 	exited chan struct{} // closed once the process has exited (or never started)
 
 	pid       int
+	started   time.Time
 	cmd       *exec.Cmd
 	ctl       *net.UnixConn
 	transport *http.Transport
@@ -105,7 +108,7 @@ func New(opts Options) (*Pool, error) {
 	}
 	p := &Pool{opts: opts, workers: make(map[string]*worker), all: make(map[*worker]bool), done: make(chan struct{})}
 	var err error
-	if p.build, err = executableBuild(); err != nil {
+	if p.build, err = version.ExecutableBuild(); err != nil {
 		return nil, fmt.Errorf("cannot identify the build of weed's executable, which workers must run: %w", err)
 	}
 	if opts.Cgroups || len(opts.CgroupLimits) > 0 {
@@ -117,6 +120,27 @@ func New(opts Options) (*Pool, error) {
 	}
 	go p.reap()
 	return p, nil
+}
+
+// Workers describes the worker processes that have started and not exited, by account
+func (p *Pool) Workers() []Info {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var infos []Info
+	for wk := range p.all {
+		select {
+		case <-wk.exited:
+			continue
+		case <-wk.ready: // pid and started are set before
+			if wk.err == nil {
+				infos = append(infos, Info{Account: wk.user.Name, UID: wk.user.UID, PID: wk.pid, Started: wk.started,
+					Requests: wk.active, Retired: wk.retired})
+			}
+		default: // starting
+		}
+	}
+	slices.SortFunc(infos, func(a, b Info) int { return cmp.Or(cmp.Compare(a.Account, b.Account), cmp.Compare(a.PID, b.PID)) })
+	return infos
 }
 
 // Check starts a worker as nobody (65534) and stops it, so that what would keep
@@ -398,7 +422,7 @@ func (p *Pool) spawn(wk *worker) (err error) {
 		}
 		return err
 	}
-	wk.cmd, wk.pid = cmd, cmd.Process.Pid
+	wk.cmd, wk.pid, wk.started = cmd, cmd.Process.Pid, time.Now()
 	go relayLog(logs, wk)
 	stop := func(err error) error {
 		cmd.Process.Kill()

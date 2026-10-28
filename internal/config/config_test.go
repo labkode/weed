@@ -1,8 +1,12 @@
 package config
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -113,9 +117,9 @@ cgroup_limits = ["memory.max=8G", "pids.max=1000"]
 }
 
 func TestFromArgs(t *testing.T) {
-	c, err := FromArgs(nil)
-	if err != nil || !reflect.DeepEqual(c, QuickStart()) {
-		t.Fatalf("without -config: %+v, %v", c, err)
+	c, src, err := FromArgs(nil)
+	if err != nil || !reflect.DeepEqual(c, QuickStart()) || src != (Source{}) {
+		t.Fatalf("without -config: %+v, %+v, %v", c, src, err)
 	}
 	if err := c.Validate(); err != nil || !c.Anonymous || c.Address != "127.0.0.1" {
 		t.Errorf("without -config: anonymous %t on %q: %v", c.Anonymous, c.Address, err)
@@ -123,21 +127,87 @@ func TestFromArgs(t *testing.T) {
 
 	path := write(t, "[server]\nport = 8443\n", 0600)
 	for _, args := range [][]string{{"-config", path}, {"--config=" + path}} {
-		c, err = FromArgs(args)
-		if err != nil || c.Port != 8443 || c.Anonymous || c.Address != "" {
-			t.Errorf("%q: %+v, %v", args, c, err)
+		c, src, err = FromArgs(args)
+		if err != nil || c.Port != 8443 || c.Anonymous || c.Address != "" || src.Path != path {
+			t.Errorf("%q: %+v, %+v, %v", args, c, src, err)
 		}
 	}
 
-	if _, err := FromArgs([]string{"-h"}); !errors.Is(err, flag.ErrHelp) {
+	if _, _, err := FromArgs([]string{"-h"}); !errors.Is(err, flag.ErrHelp) {
 		t.Errorf("-h: %v", err)
 	}
 	// The flags weed had before configuration files
-	if _, err := FromArgs([]string{"-port", "8443"}); !errors.Is(err, ErrUsage) {
+	if _, _, err := FromArgs([]string{"-port", "8443"}); !errors.Is(err, ErrUsage) {
 		t.Errorf("-port: %v", err)
 	}
-	if _, err := FromArgs([]string{"-config", path, "/data"}); err == nil || !strings.Contains(err.Error(), "weed config") {
+	if _, _, err := FromArgs([]string{"-config", path, "/data"}); err == nil || !strings.Contains(err.Error(), "weed config") {
 		t.Errorf("an argument: %v", err)
+	}
+}
+
+// Read says which file, with which content, a configuration comes from
+func TestRead(t *testing.T) {
+	content := "[server]\nport = 8443\n"
+	path := write(t, content, 0600)
+	t.Chdir(filepath.Dir(path))
+	c, src, err := Read(filepath.Base(path))
+	sum := sha256.Sum256([]byte(content))
+	if err != nil || c.Port != 8443 || src.Path != path || src.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("%+v, %+v, %v", c, src, err)
+	}
+	if _, _, err := Read("missing.toml"); err == nil {
+		t.Error("a missing file was read")
+	}
+}
+
+// Settings and log records never show secrets, but say whether they are set
+func TestSettings(t *testing.T) {
+	for key := range secrets {
+		found := false
+		for _, s := range Default().Settings() {
+			found = found || s.Section+"."+s.Key == key
+		}
+		if !found {
+			t.Errorf("secret %s is not an option", key)
+		}
+	}
+
+	c := Default()
+	c.MacaroonSecretKey, c.Port, c.TPCStallTimeout = "0123456789abcdef0123456789abcdef", 8443, 90*time.Second
+	values := map[string]any{}
+	for _, s := range c.Settings() {
+		values[s.Section+"."+s.Key] = s.Value
+	}
+	for key, want := range map[string]any{
+		"macaroons.secret_key": "<redacted>", "oidc.client_secret": "", "server.port": 8443,
+		"tpc.stall_timeout": "1m30s", "server.reload_interval": "1h", "oidc.scopes": []string{"openid", "storage.read:/"},
+	} {
+		if !reflect.DeepEqual(values[key], want) {
+			t.Errorf("%s = %#v, want %#v", key, values[key], want)
+		}
+	}
+	if len(values) != len(c.Settings()) {
+		t.Error("two options have the same name")
+	}
+
+	var buf bytes.Buffer
+	slog.New(slog.NewTextHandler(&buf, nil)).Info("configuration", "config", c)
+	if out := buf.String(); strings.Contains(out, c.MacaroonSecretKey) ||
+		!strings.Contains(out, "config.macaroons.secret_key=<redacted>") || !strings.Contains(out, "config.server.port=8443") {
+		t.Errorf("log record %s", out)
+	}
+}
+
+func TestChanged(t *testing.T) {
+	a, b := Default(), Default()
+	if keys := Changed(a, b); len(keys) != 0 {
+		t.Errorf("defaults differ: %v", keys)
+	}
+	b.Port, b.MacaroonSecretKey, b.WorkerCgroupLimits = 1, "secret", []string{"pids.max=10"}
+	a.OIDCScopes = nil
+	b.OIDCScopes = []string{} // empty either way
+	if keys := Changed(a, b); !reflect.DeepEqual(keys, []string{"server.port", "macaroons.secret_key", "unix_users.cgroup_limits"}) {
+		t.Errorf("changed %v", keys)
 	}
 }
 
@@ -155,11 +225,17 @@ func TestValidate(t *testing.T) {
 		"anonymous Unix users": {func(c *Config) {
 			c.Anonymous, c.Address, c.UnixUsers = true, "127.0.0.1", true
 		}, "unix_users"},
-		"x509 without tls":   {func(c *Config) { c.X509Auth, c.CACert = true, "ca.pem" }, "x509 needs tls"},
-		"crl mode":           {func(c *Config) { c.CRLMode = "sometimes" }, "x509.crl_mode"},
-		"cgroups":            {func(c *Config) { c.WorkerCgroups = true }, "unix_users.enabled"},
-		"short macaroon key": {func(c *Config) { c.MacaroonAuth, c.MacaroonSecretKey = true, "short" }, "macaroons.secret_key"},
-		"incomplete OIDC":    {func(c *Config) { c.OIDCAuth, c.OIDCIssuer = true, "https://issuer" }, "oidc needs"},
+		"x509 without tls": {func(c *Config) { c.X509Auth, c.CACert = true, "ca.pem" }, "x509 needs tls"},
+		"crl mode":         {func(c *Config) { c.CRLMode = "sometimes" }, "x509.crl_mode"},
+		"cgroups":          {func(c *Config) { c.WorkerCgroups = true }, "unix_users.enabled"},
+		"cgroup limits": {func(c *Config) {
+			c.UnixUsers, c.WorkerCgroupLimits = true, []string{"memory.max=8G", "cpu.weight=100", "io.max=8:0 rbps=1048576"}
+		}, ""},
+		"cgroup limit without =":       {func(c *Config) { c.UnixUsers, c.WorkerCgroupLimits = true, []string{"memory.max"} }, "cgroup_limits"},
+		"cgroup limit on cgroup.procs": {func(c *Config) { c.UnixUsers, c.WorkerCgroupLimits = true, []string{"cgroup.procs=1"} }, "cgroup_limits"},
+		"cgroup limit outside":         {func(c *Config) { c.UnixUsers, c.WorkerCgroupLimits = true, []string{"../x.max=1"} }, "cgroup_limits"},
+		"short macaroon key":           {func(c *Config) { c.MacaroonAuth, c.MacaroonSecretKey = true, "short" }, "macaroons.secret_key"},
+		"incomplete OIDC":              {func(c *Config) { c.OIDCAuth, c.OIDCIssuer = true, "https://issuer" }, "oidc needs"},
 		"OIDC without tokens": {func(c *Config) {
 			c.OIDCAuth, c.OIDCIssuer, c.OIDCClientID, c.OIDCClientSecret, c.OIDCRedirectURL = true, "https://issuer", "weed", "s", "https://weed/oidc_redirect"
 		}, "oidc needs tokens.issuers"},

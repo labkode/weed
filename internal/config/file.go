@@ -1,11 +1,17 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,6 +58,9 @@ type option struct {
 	key, doc string
 	value    any // the field of Config it sets
 }
+
+// secrets are the options whose values are never shown (see Settings)
+var secrets = map[string]bool{"macaroons.secret_key": true, "oidc.client_secret": true}
 
 type section struct {
 	name, doc string
@@ -128,13 +137,38 @@ func (c *Config) sections() []section {
 	}
 }
 
+// Source is where a configuration was read from
+type Source struct {
+	Path   string // absolute; "" for QuickStart
+	SHA256 string // of the content that was read, hex encoded
+}
+
 // Load reads a configuration file. What it does not set keeps its default; unknown
 // keys are errors. A file that holds secrets must not be readable by other users.
 func Load(path string) (*Config, error) {
-	b, err := os.ReadFile(path)
+	c, _, err := Read(path)
+	return c, err
+}
+
+// Read is Load, and also says where the configuration came from
+func Read(path string) (*Config, Source, error) {
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil, err
+		return nil, Source{}, err
 	}
+	b, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, Source{}, err
+	}
+	sum := sha256.Sum256(b)
+	c, err := parse(path, b)
+	if err != nil {
+		return nil, Source{}, err
+	}
+	return c, Source{Path: abs, SHA256: hex.EncodeToString(sum[:])}, nil
+}
+
+func parse(path string, b []byte) (*Config, error) {
 	var tables map[string]toml.Primitive
 	md, err := toml.Decode(string(b), &tables)
 	if err != nil {
@@ -165,7 +199,7 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("%s: unknown option %s.%s", path, name, key)
 		}
 	}
-	if c.MacaroonSecretKey != "" || c.OIDCClientSecret != "" {
+	if c.holdsSecrets() {
 		if fi, err := os.Stat(path); err == nil && fi.Mode().Perm()&0o004 != 0 {
 			return nil, fmt.Errorf("%s holds secrets but every user can read it (chmod o-r %s)", path, path)
 		}
@@ -173,7 +207,93 @@ func Load(path string) (*Config, error) {
 	return c, nil
 }
 
+func (c *Config) holdsSecrets() bool {
+	for _, s := range c.sections() {
+		for _, o := range s.options {
+			if v, ok := o.value.(*string); ok && secrets[s.name+"."+o.key] && *v != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Setting is the value of an option, as weed reports it
+type Setting struct {
+	Section, Key string
+	// Value is a string, bool, int or []string; durations are strings such as "1h",
+	// as in the file, and secrets "<redacted>" when they are set
+	Value any
+}
+
+// Settings returns the value of every option, in the order of Example
+func (c *Config) Settings() []Setting {
+	var settings []Setting
+	for _, s := range c.sections() {
+		for _, o := range s.options {
+			settings = append(settings, Setting{s.name, o.key, reported(s.name, o)})
+		}
+	}
+	return settings
+}
+
+func reported(section string, o option) any {
+	switch v := o.value.(type) {
+	case *string:
+		if secrets[section+"."+o.key] && *v != "" {
+			return "<redacted>"
+		}
+		return *v
+	case *bool:
+		return *v
+	case *int:
+		return *v
+	case *time.Duration:
+		return durationString(*v)
+	case *[]string:
+		return slices.Clone(*v)
+	}
+	panic(fmt.Sprintf("config: no reported form for %T", o.value))
+}
+
+// LogValue logs every option, grouped by section (secrets redacted)
+func (c *Config) LogValue() slog.Value {
+	var sections []slog.Attr
+	for _, s := range c.sections() {
+		attrs := make([]slog.Attr, len(s.options))
+		for i, o := range s.options {
+			attrs[i] = slog.Any(o.key, reported(s.name, o))
+		}
+		sections = append(sections, slog.Attr{Key: s.name, Value: slog.GroupValue(attrs...)})
+	}
+	return slog.GroupValue(sections...)
+}
+
+// Changed lists the options (section.key) whose values differ between a and b
+func Changed(a, b *Config) []string {
+	var keys []string
+	sb := b.sections()
+	for i, s := range a.sections() {
+		for j, o := range s.options {
+			if !sameValue(o.value, sb[i].options[j].value) {
+				keys = append(keys, s.name+"."+o.key)
+			}
+		}
+	}
+	return keys
+}
+
+func sameValue(a, b any) bool {
+	if l, ok := a.(*[]string); ok {
+		return slices.Equal(*l, *b.(*[]string)) // nil and empty alike
+	}
+	return reflect.ValueOf(a).Elem().Interface() == reflect.ValueOf(b).Elem().Interface()
+}
+
 const usage = `usage: weed [-config weed.toml]
+       weed check [-config weed.toml]
+                      check that weed would start with a configuration, without serving
+       weed version   print the version, commit and build of weed
        weed config    print a configuration file with every option and its default
        weed utils     helpers for passwords, app tokens and certificates
 
@@ -185,23 +305,23 @@ directory at http://127.0.0.1:9000/webdav/ to local clients, without authenticat
 var ErrUsage = errors.New("invalid command line")
 
 // FromArgs returns the configuration that the command line names (-config), or
-// QuickStart without one
-func FromArgs(args []string) (*Config, error) {
+// QuickStart without one, and where it came from
+func FromArgs(args []string) (*Config, Source, error) {
 	fs := flag.NewFlagSet("weed", flag.ContinueOnError)
 	path := fs.String("config", "", "configuration file (TOML)")
 	fs.Usage = func() { fmt.Fprint(fs.Output(), usage) }
 	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
-		return nil, err
+		return nil, Source{}, err
 	} else if err != nil {
-		return nil, ErrUsage
+		return nil, Source{}, ErrUsage
 	}
 	if fs.NArg() > 0 {
-		return nil, fmt.Errorf("unexpected argument %q: options are set in the configuration file (weed config prints one)", fs.Arg(0))
+		return nil, Source{}, fmt.Errorf("unexpected argument %q: options are set in the configuration file (weed config prints one)", fs.Arg(0))
 	}
 	if *path == "" {
-		return QuickStart(), nil
+		return QuickStart(), Source{}, nil
 	}
-	return Load(*path)
+	return Read(*path)
 }
 
 const exampleHeader = `# weed configuration: weed -config weed.toml
@@ -244,14 +364,7 @@ func tomlValue(v any) string {
 	case *int:
 		return fmt.Sprint(*v)
 	case *time.Duration:
-		d := v.String() // e.g. 1h0m0s
-		if strings.HasSuffix(d, "m0s") {
-			d = strings.TrimSuffix(d, "0s")
-		}
-		if strings.HasSuffix(d, "h0m") {
-			d = strings.TrimSuffix(d, "0m")
-		}
-		return fmt.Sprintf("%q", d)
+		return fmt.Sprintf("%q", durationString(*v))
 	case *[]string:
 		quoted := make([]string, len(*v))
 		for i, s := range *v {
@@ -260,6 +373,18 @@ func tomlValue(v any) string {
 		return "[" + strings.Join(quoted, ", ") + "]"
 	}
 	panic(fmt.Sprintf("config: no TOML form for %T", v))
+}
+
+// durationString formats d as in configuration files: "1h", not "1h0m0s"
+func durationString(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
 }
 
 // wrap breaks text into lines of at most width characters

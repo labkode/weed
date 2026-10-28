@@ -15,7 +15,9 @@ serves the current directory at http://127.0.0.1:9000/webdav/ to local clients,
 without authentication. Anything else is set in a configuration file:
 
     ./weed config >weed.toml     every option, its default and what it does
+    ./weed check -config weed.toml   would weed start with it? (see What runs)
     ./weed -config weed.toml
+    ./weed version
 
 Helpers:
 
@@ -341,8 +343,9 @@ environment.
 
 Workers always run the same build as weed. They are started from /proc/self/exe,
 weed's own binary even after an upgrade has replaced it on disk, so a new version
-only runs once weed is restarted (until then, ls -l /proc/<pid>/exe shows the old
-binary as deleted, for weed and its workers alike). Each worker also reports the Go
+only runs once weed is restarted (until then, weed reports a restart pending, see What
+runs, and ls -l /proc/<pid>/exe shows the old binary as deleted, for weed and its
+workers alike). Each worker also reports the Go
 build ID of its binary, which the linker derives from its content, and weed refuses
 workers whose build is not its own: if the binary is overwritten in place, new
 workers are refused (logged as "cannot start a worker", with both builds; requests
@@ -400,10 +403,11 @@ Reloading credentials
 On SIGHUP, and every server.reload_interval (default 1h, "0s" disables), weed
 re-reads the htpasswd and app tokens files, the grid-mapfile, the CAs and CRLs, the
 token issuers, the TLS certificate, and the CAs for TPC endpoints (also in the worker
-processes of unix_users) and token issuers, and looks Unix accounts up again. The
-configuration file itself is only read at startup. A file that
-cannot be read keeps its previous contents, so a file being rewritten neither locks
-everybody out nor lets anybody in. New connections and requests use the new data.
+processes of unix_users) and token issuers, and looks Unix accounts up again. A file
+that cannot be read keeps its previous contents, so a file being rewritten neither
+locks everybody out nor lets anybody in. New connections and requests use the new
+data. The configuration file itself is only read at startup: weed says when it has
+changed (see What runs).
 
 
 Logging
@@ -444,12 +448,122 @@ Prometheus metrics on /metrics:
   weed_checksum_mismatches_total{operation}   (put, tpc_pull, tpc_push)
   weed_tpc_transfers_total{mode,result}       weed_tpc_bytes_total{mode}
   weed_tpc_active_transfers{mode}             weed_tpc_rejected_total
-  weed_reloads_total{result}                  weed_build_info{version,goversion}
+  weed_reloads_total{result}                  (success, partial)
   weed_workers                                weed_worker_starts_total{result}
   weed_worker_exits_total{reason}             (stopped when asked to, or failed)
   weed_crl_expiry_timestamp_seconds           when the first CA runs out of current
                                               CRLs (alert before it is reached)
   weed_tls_certificate_expiry_timestamp_seconds
+and what runs (see What runs).
+
+
+What runs
+
+So that nothing changes by surprise at runtime, weed says which build runs, since
+when, with which configuration, and whether a restart would change any of it.
+
+    $ weed version
+    weed v1.2.0
+    commit   46a37813bc81d7a1b9a8b1e2a9e1f3c3e6c2a0d4 (2026-10-28T16:07:11Z)
+    go       go1.27.3 linux/amd64
+    build    go:2CX-x4_-THjPR2Dy4JCE/TtMef8lUxfkIJsGhiXwh/3-NbDYhNvYZpdojQpjfp/Dg3...
+
+The version is that of the module: a release tag, or v0.0.0-<time>-<commit> for other
+commits, with +dirty (and "with uncommitted changes") if the tree had changes; built
+without VCS information (go build -buildvcs=false, or outside a git checkout) it is
+"(devel)". The build is the Go build ID, which the linker derives from the binary's
+content: two binaries with the same build are the same.
+
+At startup, weed logs a "starting weed" record with the version, commit, build, pid
+and executable, and a "configuration" record with the configuration file, the SHA-256
+of its content and the value of every option, defaults included (secrets are
+"<redacted>" when set):
+
+    level=INFO msg=configuration file=/etc/weed/weed.toml sha256=b78bbdeed036...
+      config.server.address="" config.server.port=443 config.server.dir=/data ...
+
+Restart pending. The configuration file is only read at startup, and a new binary
+only runs once weed restarts. Every minute, on SIGHUP and on reloads, and when
+/metrics or /status is read, weed looks at both. If the file now sets other values,
+it logs a warning naming them; if weed would not start with the file (a syntax error,
+an unknown option, a file that is gone), an error, now rather than at the next
+restart. Changes to comments and layout only are not reported. If the binary has
+been replaced by another build, weed logs the new one's version, read from the file
+without running it:
+
+    level=WARN msg="restart pending: the configuration file has changed:
+      server.port, tpc.enabled" reason=config
+    level=ERROR msg="restart pending: the configuration file has changed, and weed
+      would not start with it: ..." reason=config
+    level=WARN msg="restart pending: weed's executable /usr/local/bin/weed is now
+      v1.3.0 (commit 9c1e0a2b77d4 of ...) go1.27.3 linux/amd64, build go:..."
+      reason=binary
+
+(one line each in the log).
+Each is logged once, and "restart no longer pending" once the change is undone.
+
+weed check -config weed.toml does what starting does, without serving: it reads the
+configuration and every file it names (credential files, the certificate and its
+key, CAs, CRLs, token issuers), contacts the OIDC provider, and with unix_users starts
+a worker as nobody (without setting cgroups up, which would change the cgroup it runs
+in). It prints the warnings weed would log, and the SHA-256 of the file; if weed
+would not start, it says why and exits with 1. It does not try to listen on the
+configured addresses, which are in use while weed runs. Run it before restarting
+weed, or let systemd do so.
+
+systemd. weed is a Type=notify service: it tells systemd that it is ready once it
+listens (so systemctl start fails when weed cannot start, and units ordered after
+weed start once it serves), when it reloads, and when it stops, and keeps a status
+line up to date:
+
+    [Service]
+    # systemd >= 253; before, Type=notify and ExecReload=kill -HUP $MAINPID
+    Type=notify-reload
+    ExecStartPre=/usr/local/bin/weed check -config /etc/weed/weed.toml
+    ExecStart=/usr/local/bin/weed -config /etc/weed/weed.toml
+
+    $ systemctl status weed
+    ...
+     Status: "Serving since 2026-10-28 16:07:11 UTC: weed v1.2.0, /etc/weed/weed.toml
+              (sha256 b78bbdeed036); restart pending: the configuration file has
+              changed: server.port"
+
+With Type=notify-reload, systemctl reload weed sends SIGHUP and returns once the
+reload is done. Worker processes cannot notify systemd.
+
+Metrics, on server.metrics_address:
+  process_start_time_seconds
+  weed_build_info{version,revision,modified,goversion,build}
+  weed_config_info{file,sha256}
+  weed_restart_pending{reason}               1 if the configuration file (config)
+                                             or the executable (binary) has changed
+  weed_reload_last_success_timestamp_seconds the last complete reload, or startup
+  weed_reload_last_successful                0 if the last reload could not read
+                                             a file, which kept its contents
+For example, alert on weed_restart_pending == 1 for a day, on
+weed_reload_last_successful == 0, and on count(count by (build) (weed_build_info)) > 1
+across servers that should run the same build.
+
+/status, also on server.metrics_address, tells all of it as JSON:
+
+    {
+      "version": {"version": "v1.2.0", "revision": "46a37813...",
+        "time": "2026-10-28T16:07:11Z", "modified": false, "go": "go1.27.3",
+        "platform": "linux/amd64", "build": "go:..."},
+      "pid": 4242, "started": "2026-10-28T16:07:11.52Z", "uptime": "3h2m1s",
+      "config": {"file": "/etc/weed/weed.toml", "sha256": "b78bbdeed036...",
+        "settings": {"server": {"port": 443, ...},
+                     "macaroons": {"secret_key": "<redacted>", ...}, ...}},
+      "reload": {"last": "2026-10-28T18:07:11.6Z",
+        "last_success": "2026-10-28T18:07:11.6Z", "successful": true},
+      "restart_pending": {"config": "the configuration file has changed: server.port"},
+      "workers": [{"account": "alice", "uid": 1001, "pid": 4250, "started": "...",
+        "requests": 1, "retired": false}]
+    }
+
+sha256sum /etc/weed/weed.toml tells whether the file is still the one weed runs with.
+workers lists the worker processes of unix_users; a retired one finishes its requests
+and takes no new ones (its account's groups changed).
 
 
 Performance

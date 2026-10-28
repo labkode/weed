@@ -27,6 +27,7 @@ type Pool struct{}
 func New(Options) (*Pool, error) { return nil, errUnsupported }
 
 func (p *Pool) Check() error                                                     { return errUnsupported }
+func (p *Pool) Workers() []Info                                                  { return nil }
 func (p *Pool) ServeHTTP(w http.ResponseWriter, r *http.Request, u *fsuser.User) {}
 func (p *Pool) Reload()                                                          {}
 func (p *Pool) Close(ctx context.Context)                                        {}

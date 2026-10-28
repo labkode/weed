@@ -28,14 +28,11 @@ type cgroups struct {
 // controllers are enabled for the workers' cgroups when weed's cgroup has them
 var controllers = []string{"cpu", "io", "memory", "pids"}
 
-// limitFile is the name of a cgroup interface file that limits may be written to
-var limitFile = regexp.MustCompile(`^[a-z]+\.[a-z0-9_.]+$`)
-
 func newCgroups(limits []string) (*cgroups, error) {
 	c := &cgroups{}
 	for _, l := range limits {
-		file, value, ok := strings.Cut(l, "=")
-		if !ok || !limitFile.MatchString(file) || strings.HasPrefix(file, "cgroup.") {
+		file, value, ok := strings.Cut(l, "=") // checked by config.Validate
+		if !ok {
 			return nil, fmt.Errorf("invalid cgroup limit %q: want file=value, e.g. memory.max=4G", l)
 		}
 		c.limits = append(c.limits, [2]string{file, value})

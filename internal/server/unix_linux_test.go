@@ -545,6 +545,21 @@ func TestWorkerReplacedDuringRequest(t *testing.T) {
 	if code := n.status("PROPFIND", "/alice/", "", "Depth", "0"); code != 207 {
 		t.Errorf("PROPFIND as alice: %d", code)
 	}
+	// /status shows both: the replaced worker, finishing the upload, and the new one
+	w := httptest.NewRecorder()
+	n.srv.MetricsHandler().ServeHTTP(w, httptest.NewRequest("GET", "/status", nil))
+	var st status
+	json.Unmarshal(w.Body.Bytes(), &st)
+	if len(st.Workers) != 2 {
+		t.Fatalf("/status workers: %+v", st.Workers)
+	}
+	for _, wk := range st.Workers {
+		replaced := wk.PID == pid
+		if wk.Account != "alice" || wk.UID != 6001 || wk.Retired != replaced || wk.Requests != map[bool]int{true: 1, false: 0}[replaced] ||
+			time.Since(wk.Started) > time.Minute {
+			t.Errorf("/status worker %+v (replaced %v)", wk, replaced)
+		}
+	}
 	send.Write([]byte("67890"))
 	send.Close()
 	if code := <-done; code != 201 {
@@ -583,6 +598,18 @@ func TestWorkerCgroups(t *testing.T) {
 	os.Mkdir(delegated, 0755)
 	if err := os.WriteFile(filepath.Join(delegated, "cgroup.procs"), []byte(strconv.Itoa(os.Getpid())), 0); err != nil {
 		t.Fatal(err)
+	}
+
+	// weed check leaves the cgroups alone: controllers enabled in weed's cgroup would
+	// keep systemd from starting weed in it after ExecStartPre=weed check
+	cfg := config.Default()
+	cfg.Directory, cfg.UnixUsers, cfg.WorkerCgroupLimits = t.TempDir(), true, []string{"pids.max=64"}
+	if err := New(cfg).Check(); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	subtree, _ := os.ReadFile(filepath.Join(delegated, "cgroup.subtree_control"))
+	if got := cgroupOf(os.Getpid()); got != filepath.Join(own, "weed") || strings.TrimSpace(string(subtree)) != "" {
+		t.Fatalf("after weed check, weed is in %s, with controllers %q enabled below", got, subtree)
 	}
 
 	n := newUnixNode(t, func(cfg *config.Config) {

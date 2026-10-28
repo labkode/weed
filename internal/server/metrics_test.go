@@ -86,7 +86,7 @@ func TestMetrics(t *testing.T) {
 	for _, re := range []string{
 		`(?m)^weed_http_requests_total\{method="PUT",code="201"\} \d+$`,
 		`(?m)^weed_tpc_transfers_total\{mode="pull",result="success"\} \d+$`,
-		`(?m)^weed_build_info\{version="[^"]*",goversion="go[^"]*"\} 1$`,
+		`(?m)^weed_build_info\{version="[^"]*",revision="[0-9a-f]*",modified="(true|false)",goversion="go[^"]*",build="(go|sha256):[^"]+"\} 1$`,
 	} {
 		if !regexp.MustCompile(re).MatchString(body) {
 			t.Errorf("no match for %s in:\n%s", re, body)
