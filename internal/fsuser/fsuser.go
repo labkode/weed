@@ -1,5 +1,5 @@
 // Package fsuser describes the local Unix accounts that identities are mapped to with
-// -unix-users, whose files are then accessed by a worker process running as the
+// unix_users, whose files are then accessed by a worker process running as the
 // account (see internal/worker).
 package fsuser
 

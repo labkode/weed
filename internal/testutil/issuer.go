@@ -150,7 +150,7 @@ func SignJWT(t *testing.T, key interface{}, kid string, alg jose.SignatureAlgori
 	return tok
 }
 
-// WriteIssuers writes a -token-issuers file trusting iss with the given audience and
+// WriteIssuers writes a tokens.issuers file trusting iss with the given audience and
 // base path, and any extra settings (such as "users")
 func (iss *Issuer) WriteIssuers(audience, basePath string, extra ...map[string]interface{}) string {
 	iss.t.Helper()

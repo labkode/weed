@@ -50,7 +50,7 @@ var tokenAlgs = []jose.SignatureAlgorithm{
 }
 
 // TokenIssuer is an issuer whose tokens are accepted, as configured in the
-// -token-issuers file
+// tokens.issuers file
 type TokenIssuer struct {
 	// Issuer is the iss claim of its tokens, an https URL
 	Issuer string `json:"issuer"`

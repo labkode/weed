@@ -1,5 +1,5 @@
 // Package worker serves the requests of each Unix account from a process of its own
-// (-unix-users).
+// (unix_users).
 //
 // The front process (weed) terminates TLS, authenticates requests and maps each
 // identity to a local account, but never touches the exported files. It hands every

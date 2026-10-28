@@ -118,6 +118,41 @@ func TestMacaroonsDisabled(t *testing.T) {
 	}
 }
 
+// Without a configuration file weed serves local clients without credentials
+func TestAnonymous(t *testing.T) {
+	n := newNode(t, func(cfg *config.Config, _ string) { cfg.Anonymous, cfg.Address = true, "127.0.0.1" })
+	anonymous := []string{"Authorization", "none"}
+
+	if code := n.status("PUT", "/f", "data", anonymous...); code != 201 {
+		t.Fatalf("anonymous PUT: %d", code)
+	}
+	if code := n.status("MKCOL", "/d", "", anonymous...); code != 201 {
+		t.Fatalf("anonymous MKCOL: %d", code)
+	}
+	if resp, body := n.do("GET", "/f", "", anonymous...); resp.StatusCode != 200 || body != "data" {
+		t.Fatalf("anonymous GET: %d %q", resp.StatusCode, body)
+	}
+	if _, body := n.do("GET", n.ts.URL+"/proc/whoami", "", anonymous...); !strings.Contains(body, "Username: anonymous") {
+		t.Fatalf("whoami: %s", body)
+	}
+	// Credentials that an enabled method rejects are refused, not served anonymously
+	if code := n.status("GET", "/f", "", "Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("alice:wrong"))); code != 401 {
+		t.Fatalf("wrong password: %d", code)
+	}
+	if code := n.status("GET", "/f", "", "Authorization", "Bearer not-a-token"); code != 401 {
+		t.Fatalf("invalid bearer token: %d", code)
+	}
+	if _, body := n.do("GET", n.ts.URL+"/proc/whoami", ""); !strings.Contains(body, "Username: alice") {
+		t.Fatalf("whoami with a password: %s", body)
+	}
+
+	// Not without it
+	n = newNode(t, nil)
+	if code := n.status("GET", "/", "", anonymous...); code != 401 {
+		t.Fatalf("without anonymous: %d", code)
+	}
+}
+
 func TestX509WithProxiesAndGridmap(t *testing.T) {
 	ca := testutil.NewCA(t, testutil.Name(t, "DC=ch", "DC=cern", "CN=Test CA"))
 	subject := testutil.Name(t, "DC=ch", "DC=cern", "OU=Organic Units", "OU=Users", "CN=gonzalhu")

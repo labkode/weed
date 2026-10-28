@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -18,7 +21,7 @@ func main() {
 		utils.HandleUtilsCommand(os.Args)
 		return
 	}
-	// Worker processes, started by weed -unix-users
+	// Worker processes, started by weed with unix_users enabled
 	if len(os.Args) > 1 && os.Args[1] == "worker" {
 		if err := server.RunWorker(); err != nil {
 			log.Fatal(err)
@@ -26,8 +29,21 @@ func main() {
 		return
 	}
 
-	// Parse configuration
-	cfg := config.ParseFlags()
+	// Print a configuration file with every option
+	if len(os.Args) > 1 && os.Args[1] == "config" {
+		fmt.Print(config.Example())
+		return
+	}
+
+	cfg, err := config.FromArgs(os.Args[1:])
+	switch {
+	case errors.Is(err, flag.ErrHelp):
+		return
+	case errors.Is(err, config.ErrUsage):
+		os.Exit(2)
+	case err != nil:
+		log.Fatal(err)
+	}
 
 	// Set up logging
 	if cfg.LogFile != "" {

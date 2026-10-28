@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -103,6 +104,8 @@ type AuthStore struct {
 	OIDCEnabled     bool
 	MacaroonEnabled bool
 	TokenEnabled    bool // WLCG and SciTokens JWTs, from Credentials.TokenIssuers
+	// Anonymous serves requests that carry no credentials, as "anonymous"
+	Anonymous bool
 
 	// UnixUsers requires every identity to be a local account (see unix.go), found
 	// with LookupUnixUser (default fsuser.Lookup)
@@ -671,6 +674,14 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 			default:
 				status[i] = "SKIP"
 			}
+		}
+
+		// Requests without credentials may be anonymous (only on loopback, see config)
+		if as.Anonymous && !slices.ContainsFunc(status, func(s string) bool { return s != "SKIP" }) {
+			log.Printf("[AUTH-FLOW] [%s] %s -> ANONYMOUS", reqID, flow())
+			metrics.Auth.Inc("anonymous", "success")
+			next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(r.Context(), &AuthInfo{Username: "anonymous", Method: "anonymous"})))
+			return
 		}
 
 		// Valid credentials that do not cover this request get 403, not a login prompt

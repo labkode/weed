@@ -31,7 +31,7 @@ import (
 
 // Run as root: make test-root, or go test -exec sudo -run 'UnixUsers|Worker' ./internal/server
 
-// unixNode is a node with -unix-users, whose accounts are alice, bob and carol (who
+// unixNode is a node with unix_users, whose accounts are alice, bob and carol (who
 // is also in group 6100); alice authenticates with her password, the others with tokens
 type unixNode struct {
 	*node
@@ -536,7 +536,7 @@ func TestWorkerCgroups(t *testing.T) {
 	})
 }
 
-// -tpc-max-transfers bounds the third-party copies of all accounts together
+// tpc.max_transfers bounds the third-party copies of all accounts together
 func TestWorkersShareTPCLimit(t *testing.T) {
 	n := newUnixNode(t, func(cfg *config.Config) { cfg.TPCMaxTransfers = 1 })
 	n.setup("/alice/", 0755, 6001, 6001)

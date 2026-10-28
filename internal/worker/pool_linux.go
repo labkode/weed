@@ -158,7 +158,7 @@ func (p *Pool) acquire(u *fsuser.User) (*worker, error) {
 	if wk == nil {
 		if len(p.workers) >= p.opts.MaxWorkers && !p.retireIdlestLocked() {
 			p.mu.Unlock()
-			return nil, fmt.Errorf("no worker for %s: the %d workers allowed (-max-workers) are all busy", u.Name, p.opts.MaxWorkers)
+			return nil, fmt.Errorf("no worker for %s: the %d workers allowed (unix_users.max_workers) are all busy", u.Name, p.opts.MaxWorkers)
 		}
 		wk = &worker{user: *u, ready: make(chan struct{}), exited: make(chan struct{})}
 		p.workers[u.Name] = wk
@@ -214,7 +214,7 @@ func (p *Pool) retireIdlestLocked() bool {
 	if idlest == nil {
 		return false
 	}
-	log.Printf("[WORKER] Stopping the %s to make room (-max-workers)", idlest)
+	log.Printf("[WORKER] Stopping the %s to make room (unix_users.max_workers)", idlest)
 	p.retireLocked(idlest)
 	return true
 }

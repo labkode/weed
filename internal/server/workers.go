@@ -13,7 +13,7 @@ import (
 	"github.com/labkode/weed/internal/x509utils"
 )
 
-// With -unix-users, WebDAV requests are served by a worker process per Unix account
+// With unix_users, WebDAV requests are served by a worker process per Unix account
 // (see internal/worker): this process authenticates them and forwards them
 
 // startWorkers prepares the workers, and starts one to check that they can start
@@ -88,7 +88,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 }
 
 // RunWorker is the main function of worker processes ("weed worker <account>"),
-// which weed -unix-users starts: it serves the requests forwarded to it, as the
+// which weed starts with unix_users: it serves the requests forwarded to it, as the
 // account, until the front process stops it
 func RunWorker() error {
 	log.SetFlags(0) // the front process adds the time and which worker it is

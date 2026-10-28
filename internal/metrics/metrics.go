@@ -159,11 +159,11 @@ var (
 	TPCActive = NewGauge("weed_tpc_active_transfers",
 		"Third-party copies in progress, by mode.", "mode")
 	TPCRejected = NewCounter("weed_tpc_rejected_total",
-		"Third-party copies refused because -tpc-max-transfers were already running.")
+		"Third-party copies refused because tpc.max_transfers were already running.")
 	Reloads = NewCounter("weed_reloads_total",
 		"Credential reloads by result (success, or partial when some file could not be read).", "result")
 	Workers = NewGauge("weed_workers",
-		"Worker processes (-unix-users), including those finishing requests after being replaced.")
+		"Worker processes (unix_users), including those finishing requests after being replaced.")
 	WorkerStarts = NewCounter("weed_worker_starts_total",
 		"Worker processes started, by result (success, failure).", "result")
 	WorkerExits = NewCounter("weed_worker_exits_total",

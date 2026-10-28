@@ -21,7 +21,7 @@ func HandleUtilsCommand(args []string) {
 	case "password":
 		HandlePassword()
 	case "token":
-		// Token operations use the same default file as the server (-app-tokens-file)
+		// Token operations use the same default file as the server (basic.app_tokens)
 		cfg := &config.Config{AppTokensFile: ".app-tokens"}
 		HandleToken(cfg)
 	default:

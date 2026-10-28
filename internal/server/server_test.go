@@ -20,7 +20,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// The tests of -unix-users start this binary as their workers
+	// The tests of unix_users start this binary as their workers
 	if len(os.Args) > 1 && os.Args[1] == "worker" {
 		if err := RunWorker(); err != nil {
 			log.Fatal(err)

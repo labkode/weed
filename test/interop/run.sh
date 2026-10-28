@@ -63,15 +63,38 @@ printf '[{"issuer": "%s", "audiences": ["https://localhost:8443", "https://local
 printf '"%s" interop\n"%s" revoked\n' "$USER_DN" "$REVOKED_DN" >gridmap
 issue unmapped "/DC=org/DC=weed/OU=Users/CN=Unmapped User" ca.pem ca.key 5 "keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n"
 mkdir -p /srv/a /srv/b
-start_weed() { # name port [flags]
-	weed -port $2 -dir /srv/$1 -tls -tls-cert host.pem -tls-key host.key \
-		-x509-auth -ca-cert $CERTS -crl-path $CERTS -gridmap-file gridmap \
-		-macaroon-auth -macaroon-secret-key "$(openssl rand -hex 32)" \
-		-tpc -tpc-ca-path $CERTS -tpc-allow-local -tpc-marker-interval 20ms \
-		-token-issuers issuers.json -token-ca-path ca.pem \
-		"${@:3}" -log-file $W/weed-$1.log &
+start_weed() { # name port [lines of further tables]; METRICS, ISSUERS
+	(umask 077 && cat >weed-$1.toml) <<TOML
+[server]
+port = $2
+dir = "/srv/$1"
+log_file = "$W/weed-$1.log"
+metrics_address = "${METRICS:-}"
+[tls]
+enabled = true
+cert = "host.pem"
+key = "host.key"
+[x509]
+enabled = true
+ca = "$CERTS"
+crl_path = "$CERTS"
+gridmap = "gridmap"
+[macaroons]
+enabled = true
+secret_key = "$(openssl rand -hex 32)"
+[tokens]
+issuers = "${ISSUERS:-issuers.json}"
+ca_path = "ca.pem"
+[tpc]
+enabled = true
+ca_path = "$CERTS"
+allow_local = true
+marker_interval = "20ms"
+TOML
+	printf '%s\n' "${@:3}" >>weed-$1.toml
+	weed -config weed-$1.toml &
 }
-start_weed a 8443 -metrics-address localhost:9100
+METRICS=localhost:9100 start_weed a 8443
 start_weed b 8444
 # C accesses files as the Unix account of each identity, from a worker process per
 # account: the grid-mapfile names the account for certificates, and for tokens a user
@@ -79,7 +102,7 @@ start_weed b 8444
 useradd -M -u 7001 interop && useradd -M -u 7002 robot
 mkdir -p /srv/c/interop /srv/c/robot && chown interop: /srv/c/interop && chown robot: /srv/c/robot && chmod 700 /srv/c/robot
 printf '[{"issuer": "%s", "audiences": ["https://localhost:8447"], "users": [{"group": "/interop/robots", "user": "robot"}]}]' $ISS >issuers-c.json
-start_weed c 8447 -unix-users -token-issuers issuers-c.json -worker-idle-timeout 3s
+ISSUERS=issuers-c.json start_weed c 8447 '[unix_users]' 'enabled = true' 'idle_timeout = "3s"'
 
 # XRootD as a production-like WLCG endpoint: X.509 over HTTPS, macaroons, tokens, HTTP-TPC.
 # It runs as the xrootd user, which needs a writable working directory.
@@ -264,7 +287,7 @@ check "weed refuses a pull onto an existing file with storage.create" status 403
 	-H "Source: https://localhost:8445/srv/x/tok/f.bin" -H "TransferHeaderAuthorization: Bearer $READ" https://localhost:8443/webdav/tok/up/g.bin
 mv proxy.off /tmp/x509up_u0
 
-echo "== Unix accounts (-unix-users)"
+echo "== Unix accounts (unix_users)"
 owned() { [ "$(stat -c %U "$2")" = "$1" ]; } # user path
 http_status() { # want curl-args...
 	[ "$(curl -s -o /dev/null -w '%{http_code}' --capath $CERTS "${@:2}")" = "$1" ]
@@ -283,14 +306,14 @@ check "...owned by robot" owned robot /srv/c/robot/t.bin
 check "...and cannot write to interop's directory" http_status 403 -H "Authorization: Bearer $ROBOT" -T f.bin $(https $C)/interop/t.bin
 check "token no rule maps is refused" http_status 403 -H "Authorization: Bearer $(token -aud https://localhost:8447 -scope storage.read:/)" $(https $C)/interop/f.bin
 check "certificate whose account does not exist is refused" http_status 403 --cert revoked.pem --key revoked.key $(https $C)/interop/f.bin
-C_PID=$(pgrep -f 'weed -port 8447')
+C_PID=$(pgrep -f 'weed -config weed-c.toml')
 workers() { ps -o user=,args= --ppid $C_PID | awk '{print $1, $2, $3, $4}' | sort; }
 workers_are() { [ "$(workers)" = "$(printf '%s\n' "$@")" ]; }
 gfal-ls $C/interop >/dev/null; curl -s -o /dev/null --capath $CERTS -H "Authorization: Bearer $ROBOT" $(https $C)/robot/t.bin
 check "ps shows a worker per account, running as it" workers_are "interop weed worker interop" "robot weed worker robot"
 check "...while weed itself runs as root" [ "$(ps -o user= -p $C_PID)" = root ]
 for i in $(seq 100); do [ -z "$(workers)" ] && break; sleep 0.1; done
-check "idle workers stop (-worker-idle-timeout)" workers_are
+check "idle workers stop (unix_users.idle_timeout)" workers_are
 check "...and start again when needed" gfal-ls $C/interop
 
 echo "== grid-mapfile, revocation and reloading"
@@ -301,7 +324,7 @@ RCURL="curl -sS -o /dev/null -w %{http_code} --capath $CERTS --cert revoked.pem 
 check "certificate accepted before revocation" sh -c "[ \$($RCURL https://localhost:8443/webdav/g.bin) = 200 ]"
 ssl ca -config ca.cnf -revoke revoked.pem -keyfile ca.key -cert ca.pem
 gencrl
-pkill -HUP -f 'weed -port 8443'
+pkill -HUP -f 'weed -config weed-a.toml'
 # wait for the reload to be logged (once at startup, once after SIGHUP)
 for i in $(seq 50); do [ "$(grep -c 'Loaded 1 CRLs' $W/weed-a.log)" -ge 2 ] && break; sleep 0.1; done
 check "revoked certificate rejected after SIGHUP" sh -c "[ \$($RCURL https://localhost:8443/webdav/g.bin) = 401 ]"

@@ -36,7 +36,7 @@ type Server struct {
 	Config    *config.Config
 	AuthStore *auth.AuthStore
 	Handler   *handlers.WebDAVHandler
-	// Workers serve the files of each Unix account with -unix-users
+	// Workers serve the files of each Unix account with unix_users
 	Workers *worker.Pool
 	server  *http.Server
 
@@ -62,11 +62,12 @@ func (s *Server) Initialize() error {
 		s.AuthStore.PrepareBasicAuth()
 	}
 	s.AuthStore.X509Enabled = s.Config.X509Auth
+	s.AuthStore.Anonymous = s.Config.Anonymous
 	s.AuthStore.TokenEnabled = s.Config.TokenIssuers != ""
 	if s.Config.UnixUsers {
 		s.AuthStore.UnixUsers = true
 	} else if os.Geteuid() == 0 {
-		log.Printf("[UNIX-USERS] WARNING: running as root without -unix-users: every client has root's access to the files")
+		log.Printf("[UNIX-USERS] WARNING: running as root without unix_users: every client has root's access to the files")
 	}
 	if s.Config.TokenCAPath != "" {
 		pool, err := x509utils.SystemPoolWith(s.Config.TokenCAPath)
@@ -289,7 +290,7 @@ func (s *Server) writeGauges(w io.Writer) {
 	if crls := s.AuthStore.Credentials().CRLs; crls != nil {
 		if t := crls.Expiry(); !t.IsZero() {
 			metrics.WriteGauge(w, "weed_crl_expiry_timestamp_seconds",
-				"When the first CA runs out of current CRLs (with -crl-mode require its users are rejected from then on).",
+				"When the first CA runs out of current CRLs (with x509.crl_mode = \"require\" its users are rejected from then on).",
 				float64(t.Unix()), nil, nil)
 		}
 	}
@@ -421,7 +422,7 @@ func (s *Server) SetupTLS() (*tls.Config, error) {
 
 	if s.Config.X509Auth {
 		if s.AuthStore.Credentials().Roots == nil {
-			return nil, errors.New("CA certificate (-ca-cert) is required when X.509 authentication is enabled")
+			return nil, errors.New("CA certificate (x509.ca) is required when X.509 authentication is enabled")
 		}
 
 		// Request client certificates but validate them in the authentication
@@ -568,6 +569,9 @@ func (s *Server) LogStartupInfo() {
 	log.Printf("  - Directory: %s", s.Config.Directory)
 	log.Printf("  - TLS: %t", s.Config.TLS)
 	log.Printf("  - X.509 Auth: %t", s.Config.X509Auth)
+	if s.Config.Anonymous {
+		log.Printf("  - Anonymous: true (requests without credentials are served, read-write)")
+	}
 	log.Printf("  - Basic Auth: %t", s.Config.BasicAuth)
 	log.Printf("  - OIDC Auth: %t", s.Config.OIDCAuth)
 	log.Printf("  - Macaroon Auth: %t", s.Config.MacaroonAuth)
@@ -594,7 +598,7 @@ func (s *Server) LogStartupInfo() {
 		if s.Config.CRLPath != "" {
 			log.Printf("  - CRLs: %s (mode %s)", s.Config.CRLPath, s.Config.CRLMode)
 		} else {
-			log.Printf("  - CRLs: none (revoked certificates are accepted; see -crl-path)")
+			log.Printf("  - CRLs: none (revoked certificates are accepted; see x509.crl_path)")
 		}
 	}
 	if s.Config.ReloadInterval > 0 {

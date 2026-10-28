@@ -245,7 +245,7 @@ func TestTPCRestrictions(t *testing.T) {
 
 	strict := newNode(t, func(cfg *config.Config, _ string) { cfg.TPCAllowHTTP, cfg.TPCAllowLocal = false, false })
 	if code, _ := copyTPC(t, strict, "/x", "Source", src); code != 400 {
-		t.Fatalf("plain http with -tpc-allow-http=false: %d", code)
+		t.Fatalf("plain http without tpc.allow_http: %d", code)
 	}
 	noLocal := newNode(t, func(cfg *config.Config, _ string) { cfg.TPCAllowLocal = false })
 	code, body := copyTPC(t, noLocal, "/x", "Source", src)

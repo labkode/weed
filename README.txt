@@ -8,12 +8,57 @@ and proxies, WLCG/SciTokens bearer tokens, macaroons, OIDC or passwords.
 Runs on Linux, macOS and Windows (checksum caching in extended attributes on Linux and
 macOS only).
 
-    go build && ./weed -dir /data -tls -basic-auth -macaroon-auth -macaroon-secret-key "$KEY"
+    go build && ./weed
 
-Run ./weed -h for all flags. Helpers:
+serves the current directory at http://127.0.0.1:9000/webdav/ to local clients,
+without authentication. Anything else is set in a configuration file:
+
+    ./weed config >weed.toml     every option, its default and what it does
+    ./weed -config weed.toml
+
+Helpers:
 
     ./weed utils password <user> <password>   add a bcrypt entry to .htpasswd
     ./weed utils token generate <user>        create an app token in .app-tokens
+
+
+Configuration
+
+A TOML file, in which every option is optional, for example:
+
+    [server]
+    port = 443
+    dir = "/data"
+    metrics_address = "localhost:9100"
+
+    [tls]
+    enabled = true
+    cert = "/etc/grid-security/hostcert.pem"
+    key = "/etc/grid-security/hostkey.pem"
+
+    [x509]
+    enabled = true
+    ca = "/etc/grid-security/certificates"
+    crl_path = "/etc/grid-security/certificates"
+
+    [tokens]
+    issuers = "/etc/weed/issuers.json"
+
+    [tpc]
+    enabled = true
+    ca_path = "/etc/grid-security/certificates"
+
+The sections are server, tls, x509, basic, oidc, macaroons, tokens, tpc and
+unix_users; below, section.key names an option (e.g. tpc.max_transfers). Unknown
+sections and keys are errors, so a misspelt option stops weed instead of being
+ignored. Durations are strings such as "90s", "10m" or "24h". weed refuses to read a
+file that holds secrets (macaroons.secret_key, oidc.client_secret) if every user can
+read it. Changes to the file take effect on restart.
+
+server.anonymous serves requests without credentials, read-write, as the user
+"anonymous". It is the default without a configuration file, and weed only allows it
+when server.address is a loopback address, so only local clients (any local user)
+reach it. Credentials that an enabled method rejects still get 401.
 
 
 Storage guarantees
@@ -52,11 +97,11 @@ How to compute a digest in the expected encoding:
     openssl dgst -md5 -binary myfile | base64
 
 
-Third-party copy (enable with -tpc)
+Third-party copy (tpc.enabled)
 
 The server receiving the COPY is the active party: it performs the transfer itself and
 answers 202 with a "text/perf-marker-stream" body. The body holds a performance marker
-every -tpc-marker-interval and ends with "success: Created" or "failure: <reason>".
+every tpc.marker_interval and ends with "success: Created" or "failure: <reason>".
 Headers named TransferHeader<Name> are forwarded to the remote as <Name>.
 
 Pull (copy a remote file here):
@@ -80,24 +125,24 @@ Data integrity:
 * Push forwards Repr-Digest on the PUT; a 412 from the destination is reported as
   "client/server checksum mismatch reported by destination".
 * A source response without Content-Length or chunked framing, with a
-  Content-Encoding, or one that stalls for -tpc-stall-timeout, fails the copy.
+  Content-Encoding, or one that stalls for tpc.stall_timeout, fails the copy.
 
 Pre-flight errors (no transfer started): 400 bad Source/Destination or scheme, 404/405
 push of a missing file or a collection, 405 pull onto a collection, 409 missing parent,
 412 Overwrite: F onto an existing file, 423 target locked, 501 TPC disabled or
 credential delegation requested (only "Credential: none" is supported), 503 too many
-concurrent transfers (-tpc-max-transfers).
+concurrent transfers (tpc.max_transfers).
 
-Remote endpoints must be https:// (unless -tpc-allow-http). So that a COPY cannot be
+Remote endpoints must be https:// (unless tpc.allow_http). So that a COPY cannot be
 used to reach services inside the site, each address a remote resolves to is checked
 when connecting (also after redirects):
-* refused unless -tpc-allow-local: loopback, link-local, multicast, 0.0.0.0/8
-* refused unless -tpc-allow-private: private (RFC 1918, fc00::/7), shared (100.64/10)
+* refused unless tpc.allow_local: loopback, link-local, multicast, 0.0.0.0/8
+* refused unless tpc.allow_private: private (RFC 1918, fc00::/7), shared (100.64/10)
   and other special-purpose ranges (RFC 6890), and IPv6 forms embedding IPv4
   addresses (NAT64, 6to4, Teredo); IPv4-mapped IPv6 addresses count as IPv4
 * always refused: the unspecified address
 Redirects are followed (at most 10, never to http:// when that is not allowed, never
-when they change the method). Use -tpc-ca-path /etc/grid-security/certificates to
+when they change the method). Set tpc.ca_path = "/etc/grid-security/certificates" to
 trust IGTF CAs for remote endpoints.
 
 With WLCG tokens, the client passes one token for weed (Authorization) and one for
@@ -108,18 +153,18 @@ Authentication
 
 Methods are tried in this order; the first one that applies decides. A request that
 presents bad credentials gets 401, or 403 if the credentials are valid but not allowed
-to do what was asked. Every identity has a username; with -unix-users it must be a
+to do what was asked. Every identity has a username; with unix_users it must be a
 local account, which the request then accesses files as (see Unix accounts below).
 Without it, all authenticated users have weed's own access to the files.
 
-1. X.509 client certificates (-tls -x509-auth -ca-cert <path> -gridmap-file <file>)
-   -ca-cert is a PEM file or a directory such as /etc/grid-security/certificates.
+1. X.509 client certificates ([tls] and [x509]: enabled, ca, gridmap)
+   x509.ca is a PEM file or a directory such as /etc/grid-security/certificates.
    End-entity certificates and RFC 3820 (and legacy Globus) proxy chains are accepted.
    The DN, in OpenSSL format and certificate order (e.g.
    "/DC=ch/DC=cern/OU=Users/CN=jdoe"), must be listed in the grid-mapfile, which
    maps it to a user: a certificate from a trusted CA whose DN is not listed gets 403,
    so trusting all of /etc/grid-security/certificates does not let in every grid user.
-   With -x509-auth, weed does not start without a readable grid-mapfile; removing a DN
+   With X.509, weed does not start without a readable grid-mapfile; removing a DN
    from it and reloading revokes that user's access.
    /proc/x509 shows how the server sees the presented certificate.
 
@@ -131,20 +176,20 @@ Without it, all authenticated users have weed's own access to the files.
    * is expired or not yet valid, or its issuer lacks the digitalSignature key usage.
    Limited proxies are accepted (they are meant for data access).
 
-   Revocation (-crl-path <path> [-crl-mode require|if-valid]): CRLs, PEM or DER, are
-   read from a file or a directory such as /etc/grid-security/certificates, where
-   fetch-crl keeps them (<hash>.r0). A certificate is checked against the newest
-   current CRL signed by its issuer. With -crl-mode require (the default) a
+   Revocation (x509.crl_path; x509.crl_mode "require" or "if-valid"): CRLs, PEM or
+   DER, are read from a file or a directory such as /etc/grid-security/certificates,
+   where fetch-crl keeps them (<hash>.r0). A certificate is checked against the newest
+   current CRL signed by its issuer. With crl_mode "require" (the default) a
    certificate whose issuer has no current CRL is refused, so an expired CRL fails
    closed; with if-valid, certificates are only checked against the CRLs that are
    present and current.
 
-2. OIDC browser login (-oidc-auth -oidc-issuer ... -oidc-client-id ...
-   -oidc-client-secret ... -oidc-redirect-url https://<host>/oidc_redirect)
+2. OIDC browser login ([oidc]: enabled, issuer, client_id, client_secret, and
+   redirect_url = "https://<host>/oidc_redirect")
    Start at /auth/oidc. The login is bound to the browser with a state cookie and a
    nonce; sessions last 24h.
 
-3. WLCG and SciTokens bearer tokens (-token-issuers <file>)
+3. WLCG and SciTokens bearer tokens (tokens.issuers = "<file>")
    JWTs from the issuers listed in the file, as defined by the WLCG Common JWT
    Profiles (https://doi.org/10.5281/zenodo.3460258) and SciTokens:
 
@@ -156,7 +201,7 @@ Without it, all authenticated users have weed's own access to the files.
    /.well-known/openid-configuration, or oauth-authorization-server). Keys are cached,
    refetched every hour, and fetched at most once a minute per issuer, so forged
    tokens cannot make weed flood an issuer; if the issuer is down, the known keys keep
-   working. Use -token-ca-path to trust CAs other than the system's for the issuers.
+   working. Use tokens.ca_path to trust CAs other than the system's for the issuers.
    A token must not be expired (1 minute of clock skew is allowed), and its aud must
    include one of the audiences or https://wlcg.cern.ch/jwt/v1/any; otherwise 401.
 
@@ -197,7 +242,7 @@ Without it, all authenticated users have weed's own access to the files.
      COPY (TPC pull)          create or modify
      COPY (TPC push)          read
 
-4. Macaroons (-macaroon-auth -macaroon-secret-key <secret>)
+4. Macaroons ([macaroons]: enabled, secret_key)
    Any authenticated user can mint a macaroon for a path by POSTing to that path:
 
     curl -u user:pass -X POST https://weed.example/webdav/dir_0/dir_1/ \
@@ -207,7 +252,7 @@ Without it, all authenticated users have weed's own access to the files.
 
    Use it with "Authorization: Bearer <token>". The token is valid only for that path
    and below, and always expires: validity defaults to and is capped at
-   -macaroon-max-validity (24h). Minting with a macaroon yields an attenuated copy that
+   macaroons.max_validity (24h). Minting with a macaroon yields an attenuated copy that
    keeps every restriction of the original.
 
    Caveats a client may request:
@@ -233,9 +278,9 @@ Without it, all authenticated users have weed's own access to the files.
      COPY (TPC push)          DOWNLOAD
      MOVE                     MANAGE on source and destination
 
-5. HTTP Basic (-basic-auth -htpasswd-file <file> -app-tokens-file <file>)
+5. HTTP Basic ([basic]: enabled, htpasswd, app_tokens)
    Passwords are checked against bcrypt entries in the htpasswd file, or against app
-   tokens. Basic credentials are sent in clear text without -tls.
+   tokens. Basic credentials are sent in clear text without TLS.
 
 /proc/whoami shows the identity a request authenticates as, and its Unix account.
 
@@ -244,27 +289,29 @@ Usernames come from: the grid-mapfile (X.509), the htpasswd or app tokens file
 minting user (macaroons).
 
 
-Unix accounts (-unix-users)
+Unix accounts (unix_users)
 
-With -unix-users (Linux only), every identity must be the name of a local account,
-looked up with the system's user database (/etc/passwd, or LDAP and SSSD through NSS
-when weed is built with cgo); an identity without one, or that names root, gets 403.
-weed itself then never touches the exported files: it terminates TLS, authenticates
-each request and hands it to the worker process of the account, which runs as the
-account (UID, GID and supplementary groups) with no capabilities and no_new_privs.
-The kernel checks permissions and ACLs as for the user, new files and directories
-belong to the user, and third-party copies read and write the local file as the user.
-Token scopes and macaroon caveats are checked by weed before a request is handed on.
+With unix_users.enabled (Linux only), every identity must be the name of a local
+account, looked up with the system's user database (/etc/passwd, or LDAP and SSSD
+through NSS when weed is built with cgo); an identity without one, or that names
+root, gets 403. weed itself then never touches the exported files: it terminates TLS,
+authenticates each request and hands it to the worker process of the account, which
+runs as the account (UID, GID and supplementary groups) with no capabilities and
+no_new_privs. The kernel checks permissions and ACLs as for the user, new files and
+directories belong to the user, and third-party copies read and write the local file
+as the user. Token scopes and macaroon caveats are checked by weed before a request
+is handed on.
 
     $ ps -o user,pid,ppid,args -C weed
     USER       PID  PPID COMMAND
-    root       812     1 weed -port 443 -dir /data -unix-users ...
+    root       812     1 weed -config /etc/weed/weed.toml
     alice     1630   812 weed worker alice
     cms001    1702   812 weed worker cms001
 
 A worker starts with the first request of its account and stops after
--worker-idle-timeout (default 10m) without one; a worker that dies is replaced on the
-next request. At most -max-workers (default 256) take requests; when they are all
+unix_users.idle_timeout (default 10m) without one; a worker that dies is replaced on
+the next request. At most unix_users.max_workers (default 256) take requests; when
+they are all
 busy, requests of other accounts get 503. Workers write to weed's log, each line
 marked "[worker alice 1630]", with the request IDs of the access log. Each worker
 checks that all its threads run as the account, with no capabilities and
@@ -276,14 +323,14 @@ replaced on disk; the binary must be executable by the users.
 weed talks HTTP to its workers over socket pairs: nothing else can connect to them,
 so they trust the identity weed states in request headers (headers of the same names
 sent by clients are dropped). They report their metrics back to weed, which serves
-them; -tpc-max-transfers bounds the copies of all accounts together.
+them; tpc.max_transfers bounds the copies of all accounts together.
 
 weed must run as root, or with the CAP_SETUID and CAP_SETGID capabilities, for
 example in a systemd unit:
 
     User=weed
     AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE
-    Delegate=yes        # for -worker-cgroups
+    Delegate=yes        # for unix_users.cgroups
 
 Downloads relayed from workers run at ~95% of the speed of serving files directly,
 and uploads at the same speed (Linux, 1 GiB files over loopback without TLS:
@@ -294,7 +341,7 @@ net.core.wmem_max and net.core.rmem_max to 4194304, or downloads lose a third.
 The users need search permission on the exported directory and its parents (and
 weed, for /healthz). Accounts are looked up again after a minute, and on reload; an
 account whose groups changed gets a new worker (the old one finishes its requests
-first). On reload, workers re-read the CAs of TPC endpoints (-tpc-ca-path), which the
+first). On reload, workers re-read the CAs of TPC endpoints (tpc.ca_path), which the
 users must be able to read; they keep running. SIGHUP sent to a worker is ignored.
 Operations the filesystem refuses get 403. As with local tools:
 * Replacing a file needs write permission on it as well as on its directory, and the
@@ -304,26 +351,28 @@ Operations the filesystem refuses get 403. As with local tools:
 * WebDAV locks are kept by each worker: they only hold against requests of the same
   account, and are lost when its worker stops.
 
-cgroups. With -worker-cgroups, each worker runs in a cgroup of its own below weed's,
-which must be delegated to weed (systemd's Delegate=yes; cgroup v2): weed moves into
-<its cgroup>/main and starts the workers of alice in <its cgroup>/worker-alice, with
-the cpu, io, memory and pids controllers when they are available. systemd-cgtop and
-systemd-cgls then show what each account uses, and -worker-cgroup-limit (repeatable)
-writes limits into the cgroup of every worker:
+cgroups. With unix_users.cgroups, each worker runs in a cgroup of its own below
+weed's, which must be delegated to weed (systemd's Delegate=yes; cgroup v2): weed
+moves into <its cgroup>/main and starts the workers of alice in <its
+cgroup>/worker-alice, with the cpu, io, memory and pids controllers when they are
+available. systemd-cgtop and systemd-cgls then show what each account uses, and
+unix_users.cgroup_limits writes limits into the cgroup of every worker:
 
-    -worker-cgroup-limit memory.max=8G -worker-cgroup-limit pids.max=1000 \
-    -worker-cgroup-limit cpu.weight=100
+    [unix_users]
+    enabled = true
+    cgroup_limits = ["memory.max=8G", "pids.max=1000", "cpu.weight=100"]
 
-Without -unix-users, weed warns at startup if it runs as root: every client would
+Without unix_users, weed warns at startup if it runs as root: every client would
 have root's access to the files.
 
 
 Reloading credentials
 
-On SIGHUP, and every -reload-interval (default 1h, 0 disables), weed re-reads the
-htpasswd and app tokens files, the grid-mapfile, the CAs and CRLs, the token issuers,
-the TLS certificate, and the CAs for TPC endpoints (also in the worker processes of
--unix-users) and token issuers, and looks Unix accounts up again. A file that
+On SIGHUP, and every server.reload_interval (default 1h, "0s" disables), weed
+re-reads the htpasswd and app tokens files, the grid-mapfile, the CAs and CRLs, the
+token issuers, the TLS certificate, and the CAs for TPC endpoints (also in the worker
+processes of unix_users) and token issuers, and looks Unix accounts up again. The
+configuration file itself is only read at startup. A file that
 cannot be read keeps its previous contents, so a file being rewritten neither locks
 everybody out nor lets anybody in. New connections and requests use the new data.
 
@@ -334,7 +383,7 @@ Monitoring
 the exported directory cannot be stat'ed within 5 seconds (e.g. a hung network
 filesystem).
 
--metrics-address localhost:9100 serves, without authentication, /healthz and
+server.metrics_address = "localhost:9100" serves, without authentication, /healthz and
 Prometheus metrics on /metrics:
   weed_http_requests_total{method,code}       weed_http_response_bytes_total{method}
   weed_auth_requests_total{method,result}     weed_upload_bytes_total
@@ -363,7 +412,7 @@ itself hashes at ~650); GET ~3000; the disk writes ~3800. Measure on your hardwa
 Testing
 
     make test          unit and end-to-end tests (go test -race ./...)
-    make test-root     the same as root, adding the tests of -unix-users worker
+    make test-root     the same as root, adding the tests of unix_users worker
                        processes (Linux, uses sudo)
     make test-linux    the same as root in a Linux container, e.g. from macOS (Docker)
     make test-cgroups  the cgroups of worker processes, in a privileged container
@@ -387,8 +436,8 @@ Not implemented
   macaroons in TransferHeaderAuthorization
 * Authorization by token groups alone: a token needs storage scopes even when its
   groups choose its Unix account
-* Per-user access without -unix-users, or on systems other than Linux
-* WebDAV locks across accounts with -unix-users: each worker keeps its own
+* Per-user access without unix_users, or on systems other than Linux
+* WebDAV locks across accounts with unix_users: each worker keeps its own
 
 
 Known deviations from RFC 4918

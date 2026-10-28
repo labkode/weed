@@ -83,7 +83,7 @@ func NewWebDAVHandler(directory string, cfg *config.Config, authStore *auth.Auth
 	}
 }
 
-// ServeHTTP serves the WebDAV namespace, after authentication. With -unix-users it
+// ServeHTTP serves the WebDAV namespace, after authentication. With unix_users it
 // runs in the worker process of the identity's Unix account (see internal/worker).
 func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	reqID := logger.GetRequestID(r.Context())
