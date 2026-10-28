@@ -37,7 +37,7 @@ func testingVerbose() bool {
 
 // node is a weed instance under test
 type node struct {
-	t   *testing.T
+	t   testing.TB
 	srv *Server
 	ts  *httptest.Server
 	dir string
@@ -48,7 +48,7 @@ const basicUser, basicPass = "alice", "pw"
 // newNode starts a weed server with Basic auth (alice:pw), macaroons and TPC enabled.
 // mod may adjust the configuration; it receives the server's base URL.
 // wraps, if given, wrap the server's handler (e.g. to put a redirecting door in front).
-func newNode(t *testing.T, mod func(cfg *config.Config, baseURL string), wraps ...func(http.Handler) http.Handler) *node {
+func newNode(t testing.TB, mod func(cfg *config.Config, baseURL string), wraps ...func(http.Handler) http.Handler) *node {
 	t.Helper()
 	dir := t.TempDir()
 	hash, _ := bcrypt.GenerateFromPassword([]byte(basicPass), bcrypt.MinCost)

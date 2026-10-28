@@ -411,14 +411,12 @@ func (e *Engine) pull(ctx context.Context, job *Job, p *progress) error {
 	hasher := digest.NewHasher(append([]string{digest.Adler}, job.Expected.Algorithms()...)...)
 	counter := new(atomic.Int64)
 	p.counter.Store(counter)
-	src := &countingReader{r: resp.Body, n: counter}
-	dst := &errWriter{w: io.MultiWriter(af, hasher)}
-	n, err := io.CopyBuffer(dst, src, make([]byte, 1<<20))
-	if err != nil {
-		if dst.err != nil {
-			return fmt.Errorf("writing local file after %d bytes: %w", n, dst.err)
-		}
-		return fmt.Errorf("reading from source after %d bytes: %w", n, err)
+	n, readErr, writeErr := digest.Copy(af, &countingReader{r: resp.Body, n: counter}, hasher)
+	if writeErr != nil {
+		return fmt.Errorf("writing local file after %d bytes: %w", n, writeErr)
+	}
+	if readErr != nil {
+		return fmt.Errorf("reading from source after %d bytes: %w", n, readErr)
 	}
 	if resp.ContentLength >= 0 && n != resp.ContentLength {
 		return fmt.Errorf("source sent %d bytes, expected %d", n, resp.ContentLength)
@@ -527,20 +525,6 @@ type countingReader struct {
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n.Add(int64(n))
-	return n, err
-}
-
-// errWriter remembers write errors so they can be told apart from read errors
-type errWriter struct {
-	w   io.Writer
-	err error
-}
-
-func (e *errWriter) Write(p []byte) (int, error) {
-	n, err := e.w.Write(p)
-	if err != nil {
-		e.err = err
-	}
 	return n, err
 }
 

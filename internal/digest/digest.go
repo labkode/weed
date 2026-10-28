@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Algorithm names as registered for RFC 9530
@@ -239,11 +240,23 @@ func NewHasher(algs ...string) *Hasher {
 	return h
 }
 
+// parallelMin is the size from which several digests are computed in parallel
+const parallelMin = 64 << 10
+
 // Write feeds p to every digest
 func (h *Hasher) Write(p []byte) (int, error) {
-	for _, hh := range h.hashes {
-		hh.Write(p)
+	if len(h.hashes) < 2 || len(p) < parallelMin {
+		for _, hh := range h.hashes {
+			hh.Write(p)
+		}
+		return len(p), nil
 	}
+	var wg sync.WaitGroup
+	for _, hh := range h.hashes[1:] {
+		wg.Go(func() { hh.Write(p) })
+	}
+	h.hashes[0].Write(p)
+	wg.Wait()
 	return len(p), nil
 }
 
