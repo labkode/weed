@@ -37,6 +37,7 @@ type Config struct {
 	TPCCAPath         string
 	TPCAllowHTTP      bool
 	TPCAllowLocal     bool
+	TPCAllowPrivate   bool
 	TPCMaxTransfers   int
 	TPCMarkerInterval time.Duration
 	TPCStallTimeout   time.Duration
@@ -78,6 +79,7 @@ func ParseFlags() *Config {
 	flag.StringVar(&cfg.TPCCAPath, "tpc-ca-path", "", "extra CA certificates (file or directory, e.g. /etc/grid-security/certificates) for verifying remote TPC endpoints, in addition to the system roots")
 	flag.BoolVar(&cfg.TPCAllowHTTP, "tpc-allow-http", false, "allow plain-text http:// remote TPC endpoints")
 	flag.BoolVar(&cfg.TPCAllowLocal, "tpc-allow-local", false, "allow remote TPC endpoints on loopback/link-local addresses (testing only)")
+	flag.BoolVar(&cfg.TPCAllowPrivate, "tpc-allow-private", false, "allow remote TPC endpoints on private addresses (RFC 1918, RFC 4193, shared address space)")
 	flag.IntVar(&cfg.TPCMaxTransfers, "tpc-max-transfers", 32, "maximum number of concurrent third-party copies")
 	flag.DurationVar(&cfg.TPCMarkerInterval, "tpc-marker-interval", 5*time.Second, "interval between TPC performance markers")
 	flag.DurationVar(&cfg.TPCStallTimeout, "tpc-stall-timeout", 2*time.Minute, "abort a third-party copy that transfers no data for this long (0 disables)")

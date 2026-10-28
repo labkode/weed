@@ -102,6 +102,7 @@ func (s *Server) Initialize() error {
 			MaxTransfers:   s.Config.TPCMaxTransfers,
 			AllowHTTP:      s.Config.TPCAllowHTTP,
 			AllowLocal:     s.Config.TPCAllowLocal,
+			AllowPrivate:   s.Config.TPCAllowPrivate,
 		}
 		if s.Config.TPCCAPath != "" {
 			pool, err := tpc.LoadCAs(s.Config.TPCCAPath)
@@ -319,8 +320,9 @@ func (s *Server) LogStartupInfo() {
 	if s.Config.MacaroonAuth {
 		log.Printf("  - Macaroon Max Validity: %v", s.Config.MacaroonMaxValidity)
 	}
-	if s.Config.TPC && (s.Config.TPCAllowHTTP || s.Config.TPCAllowLocal) {
-		log.Printf("  - TPC allow http: %t, allow local addresses: %t", s.Config.TPCAllowHTTP, s.Config.TPCAllowLocal)
+	if s.Config.TPC && (s.Config.TPCAllowHTTP || s.Config.TPCAllowLocal || s.Config.TPCAllowPrivate) {
+		log.Printf("  - TPC allow http: %t, allow local addresses: %t, allow private addresses: %t",
+			s.Config.TPCAllowHTTP, s.Config.TPCAllowLocal, s.Config.TPCAllowPrivate)
 	}
 	if !s.Config.TLS && (s.Config.BasicAuth || s.Config.MacaroonAuth || s.Config.OIDCAuth) {
 		log.Printf("WARNING: TLS is disabled; passwords and tokens are sent in clear text")

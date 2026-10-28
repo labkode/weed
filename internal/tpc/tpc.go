@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -67,6 +68,9 @@ type Config struct {
 	// AllowLocal permits remote endpoints on loopback and link-local addresses
 	// (which include cloud metadata services); only enable it for testing
 	AllowLocal bool
+	// AllowPrivate permits remote endpoints on private and other non-global
+	// addresses (RFC 1918, RFC 4193, shared address space), e.g. site-internal storage
+	AllowPrivate bool
 	// RootCAs verifies remote TLS endpoints; nil means the system roots
 	RootCAs *x509.CertPool
 }
@@ -147,9 +151,10 @@ func LoadCAs(path string) (*x509.CertPool, error) {
 
 func newClient(cfg Config) *http.Client {
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-	if !cfg.AllowLocal {
+	if !cfg.AllowLocal || !cfg.AllowPrivate {
 		// Checked on the resolved address at connect time, so redirects and DNS tricks are covered too
-		dialer.Control = denyLocal
+		policy := addressPolicy{allowLocal: cfg.AllowLocal, allowPrivate: cfg.AllowPrivate}
+		dialer.Control = policy.control
 	}
 	transport := &http.Transport{
 		DialContext:           dialer.DialContext,
@@ -179,15 +184,57 @@ func newClient(cfg Config) *http.Client {
 	}
 }
 
-func denyLocal(network, address string, _ syscall.RawConn) error {
-	host, _, err := net.SplitHostPort(address)
+// addressPolicy decides which addresses third-party copies may connect to, so that
+// clients cannot use the server to reach services that are not exposed to them
+type addressPolicy struct {
+	allowLocal, allowPrivate bool
+}
+
+// thisNetwork (0.0.0.0/8) reaches the local host on some systems
+var thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
+
+// nonGlobal are special-purpose ranges (RFC 6890) that netip does not classify
+var nonGlobal = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),  // shared address space (carrier-grade NAT)
+	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking
+	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, including broadcast
+	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use IPv4/IPv6 translation
+	netip.MustParsePrefix("2001:db8::/32"),  // documentation
+	netip.MustParsePrefix("2001:2::/48"),    // benchmarking
+	netip.MustParsePrefix("100::/64"),       // discard-only
+	netip.MustParsePrefix("2001::/32"),      // Teredo, which embeds IPv4 addresses
+	netip.MustParsePrefix("2002::/16"),      // 6to4, which embeds IPv4 addresses
+	netip.MustParsePrefix("64:ff9b::/96"),   // NAT64, which embeds IPv4 addresses
+}
+
+func (p addressPolicy) allowed(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.IsValid() || ip.IsUnspecified() {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || thisNetwork.Contains(ip) {
+		return p.allowLocal
+	}
+	if ip.IsPrivate() {
+		return p.allowPrivate
+	}
+	for _, n := range nonGlobal {
+		if n.Contains(ip) {
+			return p.allowPrivate
+		}
+	}
+	return true
+}
+
+func (p addressPolicy) control(network, address string, _ syscall.RawConn) error {
+	ap, err := netip.ParseAddrPort(address)
 	if err != nil {
 		return err
 	}
-	ip := net.ParseIP(host)
-	if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-		return fmt.Errorf("connections to %s are not allowed for third-party copy", host)
+	if !p.allowed(ap.Addr()) {
+		return fmt.Errorf("connections to %s are not allowed for third-party copy", ap.Addr())
 	}
 	return nil
 }
