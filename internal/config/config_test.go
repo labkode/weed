@@ -155,11 +155,14 @@ func TestValidate(t *testing.T) {
 		"anonymous Unix users": {func(c *Config) {
 			c.Anonymous, c.Address, c.UnixUsers = true, "127.0.0.1", true
 		}, "unix_users"},
-		"x509 without tls":       {func(c *Config) { c.X509Auth, c.CACert = true, "ca.pem" }, "x509 needs tls"},
-		"crl mode":               {func(c *Config) { c.CRLMode = "sometimes" }, "x509.crl_mode"},
-		"cgroups":                {func(c *Config) { c.WorkerCgroups = true }, "unix_users.enabled"},
-		"short macaroon key":     {func(c *Config) { c.MacaroonAuth, c.MacaroonSecretKey = true, "short" }, "macaroons.secret_key"},
-		"incomplete OIDC":        {func(c *Config) { c.OIDCAuth, c.OIDCIssuer = true, "https://issuer" }, "oidc needs"},
+		"x509 without tls":   {func(c *Config) { c.X509Auth, c.CACert = true, "ca.pem" }, "x509 needs tls"},
+		"crl mode":           {func(c *Config) { c.CRLMode = "sometimes" }, "x509.crl_mode"},
+		"cgroups":            {func(c *Config) { c.WorkerCgroups = true }, "unix_users.enabled"},
+		"short macaroon key": {func(c *Config) { c.MacaroonAuth, c.MacaroonSecretKey = true, "short" }, "macaroons.secret_key"},
+		"incomplete OIDC":    {func(c *Config) { c.OIDCAuth, c.OIDCIssuer = true, "https://issuer" }, "oidc needs"},
+		"OIDC without tokens": {func(c *Config) {
+			c.OIDCAuth, c.OIDCIssuer, c.OIDCClientID, c.OIDCClientSecret, c.OIDCRedirectURL = true, "https://issuer", "weed", "s", "https://weed/oidc_redirect"
+		}, "oidc needs tokens.issuers"},
 		"TPC without transfers":  {func(c *Config) { c.TPC, c.TPCMaxTransfers = true, 0 }, "tpc.max_transfers"},
 		"token CAs, no issuers":  {func(c *Config) { c.TokenCAPath = "ca.pem" }, "tokens.issuers"},
 		"negative reload period": {func(c *Config) { c.ReloadInterval = -time.Second }, "server.reload_interval"},

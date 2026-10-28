@@ -19,7 +19,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
@@ -35,13 +34,6 @@ type contextKey string
 const (
 	usernameContextKey contextKey = "username"
 	authInfoContextKey contextKey = "authInfo"
-)
-
-// Limits on in-memory OIDC state, so unauthenticated clients cannot grow it without bound
-const (
-	maxOIDCLogins   = 10000
-	maxOIDCSessions = 100000
-	oidcLoginTTL    = 10 * time.Minute
 )
 
 // AuthInfo represents detailed authentication information stored in context
@@ -60,19 +52,6 @@ type AuthInfo struct {
 	Directories []string `json:"-"`
 	// Unix is the local account the request accesses files as (with UnixUsers)
 	Unix *fsuser.User `json:"-"`
-}
-
-// OIDCSession represents an authenticated browser session
-type OIDCSession struct {
-	Username  string    `json:"username"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-}
-
-// oidcLogin is a login in progress, keyed by its OAuth2 state
-type oidcLogin struct {
-	nonce     string
-	expiresAt time.Time
 }
 
 // errForbidden marks credentials that are valid but do not allow the request
@@ -104,7 +83,6 @@ type AuthStore struct {
 	// Enabled authentication methods; a method that is not enabled is never attempted
 	BasicEnabled    bool
 	X509Enabled     bool
-	OIDCEnabled     bool
 	MacaroonEnabled bool
 	TokenEnabled    bool // WLCG and SciTokens JWTs, from Credentials.TokenIssuers
 	// Anonymous serves requests that carry no credentials, as "anonymous"
@@ -119,14 +97,9 @@ type AuthStore struct {
 
 	// File-based credentials, replaced as a whole on reload
 	creds atomic.Pointer[Credentials]
-	// OIDC configuration
-	OIDCProvider *oidc.Provider
-	OAuth2Config *oauth2.Config
-	OIDCVerifier *oidc.IDTokenVerifier
-	// OIDC logins in progress and established sessions
-	oidcMu       sync.Mutex
-	oidcLogins   map[string]oidcLogin
-	oidcSessions map[string]*OIDCSession
+	// The [oidc] login (see oidc.go)
+	oidc         *oauth2.Config
+	oidcAudience string
 	// Macaroon configuration
 	MacaroonSecretKey []byte
 	MacaroonLocation  string
@@ -155,10 +128,7 @@ type Credentials struct {
 
 // NewAuthStore creates a new authentication store
 func NewAuthStore() *AuthStore {
-	as := &AuthStore{
-		oidcLogins:   make(map[string]oidcLogin),
-		oidcSessions: make(map[string]*OIDCSession),
-	}
+	as := &AuthStore{}
 	as.SetCredentials(&Credentials{})
 	return as
 }
@@ -369,100 +339,6 @@ func randomString(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// InitializeOIDC initializes the OIDC configuration
-func (as *AuthStore) InitializeOIDC(ctx context.Context, issuer, clientID, clientSecret, redirectURL string) error {
-	provider, err := oidc.NewProvider(ctx, issuer)
-	if err != nil {
-		return err
-	}
-
-	as.OIDCProvider = provider
-	as.OAuth2Config = &oauth2.Config{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		RedirectURL:  redirectURL,
-		Endpoint:     provider.Endpoint(),
-		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
-	}
-
-	as.OIDCVerifier = provider.Verifier(&oidc.Config{ClientID: clientID})
-	return nil
-}
-
-// StartOIDCLogin registers a new login and returns its OAuth2 state and OIDC nonce
-func (as *AuthStore) StartOIDCLogin() (state, nonce string, err error) {
-	as.oidcMu.Lock()
-	defer as.oidcMu.Unlock()
-
-	now := time.Now()
-	if len(as.oidcLogins) >= maxOIDCLogins {
-		for k, l := range as.oidcLogins {
-			if now.After(l.expiresAt) {
-				delete(as.oidcLogins, k)
-			}
-		}
-		if len(as.oidcLogins) >= maxOIDCLogins {
-			return "", "", errors.New("too many OIDC logins in progress")
-		}
-	}
-	state, nonce = randomString(16), randomString(16)
-	as.oidcLogins[state] = oidcLogin{nonce: nonce, expiresAt: now.Add(oidcLoginTTL)}
-	return state, nonce, nil
-}
-
-// FinishOIDCLogin consumes a login started with StartOIDCLogin and returns its nonce.
-// Each state can be used once.
-func (as *AuthStore) FinishOIDCLogin(state string) (string, bool) {
-	as.oidcMu.Lock()
-	defer as.oidcMu.Unlock()
-
-	l, ok := as.oidcLogins[state]
-	delete(as.oidcLogins, state)
-	if !ok || time.Now().After(l.expiresAt) {
-		return "", false
-	}
-	return l.nonce, true
-}
-
-// CreateOIDCSession creates a session for username and returns its identifier.
-// The identifier is fresh randomness, unrelated to anything seen in URLs or logs.
-func (as *AuthStore) CreateOIDCSession(username string, ttl time.Duration) (string, error) {
-	as.oidcMu.Lock()
-	defer as.oidcMu.Unlock()
-
-	now := time.Now()
-	if len(as.oidcSessions) >= maxOIDCSessions {
-		for k, s := range as.oidcSessions {
-			if now.After(s.ExpiresAt) {
-				delete(as.oidcSessions, k)
-			}
-		}
-		if len(as.oidcSessions) >= maxOIDCSessions {
-			return "", errors.New("too many OIDC sessions")
-		}
-	}
-	id := randomString(32)
-	as.oidcSessions[id] = &OIDCSession{Username: username, CreatedAt: now, ExpiresAt: now.Add(ttl)}
-	return id, nil
-}
-
-// GetOIDCSession retrieves a session that has not expired
-func (as *AuthStore) GetOIDCSession(id string) (*OIDCSession, bool) {
-	as.oidcMu.Lock()
-	defer as.oidcMu.Unlock()
-
-	s, ok := as.oidcSessions[id]
-	if !ok {
-		return nil, false
-	}
-	if time.Now().After(s.ExpiresAt) {
-		delete(as.oidcSessions, id)
-		return nil, false
-	}
-	sc := *s
-	return &sc, true
-}
-
 // authenticateX509 returns (nil, nil) when no client certificate was presented
 func (as *AuthStore) authenticateX509(r *http.Request) (*AuthInfo, error) {
 	if !as.X509Enabled || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
@@ -492,29 +368,6 @@ func (as *AuthStore) authenticateX509(r *http.Request) (*AuthInfo, error) {
 		info.Details["proxy_certificates"] = proxies
 	}
 	return info, nil
-}
-
-// authenticateOIDC returns (nil, nil) when no session cookie was presented
-func (as *AuthStore) authenticateOIDC(r *http.Request) (*AuthInfo, error) {
-	if !as.OIDCEnabled {
-		return nil, nil
-	}
-	cookie, err := r.Cookie("oidc_session")
-	if err != nil {
-		return nil, nil
-	}
-	session, ok := as.GetOIDCSession(cookie.Value)
-	if !ok || session.Username == "" {
-		return nil, errors.New("invalid or expired OIDC session")
-	}
-	return &AuthInfo{
-		Username: session.Username,
-		Method:   "OIDC",
-		Details: map[string]interface{}{
-			"created_at": session.CreatedAt,
-			"expires_at": session.ExpiresAt,
-		},
-	}, nil
 }
 
 // authenticateMacaroon returns (nil, nil) when no bearer token was presented
@@ -620,7 +473,7 @@ func (as *AuthStore) X509AuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// UnifiedAuthMiddleware provides authentication in the specified order: X.509 -> OIDC -> Macaroon -> Basic Auth
+// UnifiedAuthMiddleware provides authentication in the specified order: X.509 -> token -> macaroon -> Basic
 func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 	type method struct {
 		name         string
@@ -628,7 +481,6 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 	}
 	methods := []method{
 		{"x509", as.authenticateX509},
-		{"oidc", as.authenticateOIDC},
 		{"token", as.authenticateToken},
 		{"macaroon", as.authenticateMacaroon},
 		{"basic", as.authenticateBasic},

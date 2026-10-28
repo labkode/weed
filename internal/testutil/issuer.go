@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,7 +21,9 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 )
 
-// Issuer is a token issuer serving OpenID discovery and its keys (JWKS) over TLS
+// Issuer is a token issuer serving OpenID discovery and its keys (JWKS) over TLS. Its
+// discovery document also lists authorization ("/authorize") and token ("/token")
+// endpoints, for OIDC logins; see HandleToken.
 type Issuer struct {
 	*httptest.Server
 	// URL is the issuer, as it appears in iss claims
@@ -34,6 +37,7 @@ type Issuer struct {
 	mu        sync.Mutex
 	published []jose.JSONWebKey
 	keys      map[string]interface{} // kid -> private key
+	onToken   func(form url.Values) (int, any)
 }
 
 // NewIssuer starts an issuer with an RSA key "rsa1" and an EC key "ec1"
@@ -42,7 +46,26 @@ func NewIssuer(t *testing.T) *Issuer {
 	iss := &Issuer{t: t, keys: make(map[string]interface{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{"issuer": iss.URL, "jwks_uri": iss.URL + "/jwks"})
+		json.NewEncoder(w).Encode(map[string]string{"issuer": iss.URL, "jwks_uri": iss.URL + "/jwks",
+			"authorization_endpoint": iss.URL + "/authorize", "token_endpoint": iss.URL + "/token"})
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		iss.mu.Lock()
+		f := iss.onToken
+		iss.mu.Unlock()
+		if f == nil || r.ParseForm() != nil {
+			http.NotFound(w, r)
+			return
+		}
+		form := r.PostForm
+		if id, secret, ok := r.BasicAuth(); ok {
+			form.Set("client_id", id)
+			form.Set("client_secret", secret)
+		}
+		status, body := f(form)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(body)
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
 		iss.JWKSFetches.Add(1)
@@ -71,6 +94,15 @@ func NewIssuer(t *testing.T) *Issuer {
 	iss.AddKey("rsa1", rsaKey, jose.RS256)
 	iss.AddKey("ec1", ecKey, jose.ES256)
 	return iss
+}
+
+// HandleToken makes the token endpoint answer with the status and JSON body f returns
+// for the request's form (with the client's credentials as client_id and
+// client_secret)
+func (iss *Issuer) HandleToken(f func(form url.Values) (int, any)) {
+	iss.mu.Lock()
+	defer iss.mu.Unlock()
+	iss.onToken = f
 }
 
 // AddKey publishes the public part of key under kid

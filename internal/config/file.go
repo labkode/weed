@@ -34,6 +34,7 @@ func Default() *Config {
 		WorkerIdleTimeout:   10 * time.Minute,
 		MaxWorkers:          256,
 		WorkerCgroupLimits:  []string{},
+		OIDCScopes:          []string{"openid", "storage.read:/"},
 	}
 }
 
@@ -88,12 +89,14 @@ func (c *Config) sections() []section {
 			{"htpasswd", "htpasswd file (bcrypt)", &c.HtpasswdFile},
 			{"app_tokens", "app tokens file", &c.AppTokensFile},
 		}},
-		{"oidc", "OpenID Connect login for browsers", []option{
-			{"enabled", "accept OIDC logins", &c.OIDCAuth},
-			{"issuer", `issuer URL, e.g. "https://auth.cern.ch/auth/realms/cern"`, &c.OIDCIssuer},
+		{"oidc", "A login page for browsers (/auth/oidc) that gives out WLCG tokens: users log in at a token issuer listed in tokens.issuers, and get the access token it issues, to use as a bearer token", []option{
+			{"enabled", "serve the login page", &c.OIDCAuth},
+			{"issuer", `issuer URL, as in tokens.issuers, e.g. "https://wlcg.cloud.cnaf.infn.it/"`, &c.OIDCIssuer},
 			{"client_id", "client ID", &c.OIDCClientID},
 			{"client_secret", "client secret", &c.OIDCClientSecret},
 			{"redirect_url", `redirect URL, e.g. "https://weed.example.org/oidc_redirect"`, &c.OIDCRedirectURL},
+			{"scopes", `scopes to ask for, e.g. ["openid", "storage.read:/", "storage.modify:/"]; the issuer grants those its policies allow`, &c.OIDCScopes},
+			{"audience", `audience to ask for (the "audience" parameter of INDIGO IAM), one of the issuer's audiences in tokens.issuers ("": the issuer's default)`, &c.OIDCAudience},
 		}},
 		{"macaroons", "Macaroons: bearer tokens that weed mints (POST with Content-Type application/macaroon-request)", []option{
 			{"enabled", "accept and mint macaroons", &c.MacaroonAuth},

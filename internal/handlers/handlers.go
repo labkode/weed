@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"context"
-	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -21,7 +19,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/labkode/weed/internal/auth"
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/davfs"
@@ -36,7 +33,6 @@ import (
 )
 
 const (
-	oidcSessionTTL      = 24 * time.Hour
 	defaultMaxValidity  = 24 * time.Hour
 	maxMacaroonRequest  = 64 << 10
 	supportedAlgorithms = "adler (adler32), crc32c, md5, sha, sha-256, sha-512"
@@ -608,7 +604,7 @@ func (h *WebDAVHandler) IndexHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.Config.OIDCAuth {
-		authLinks = append(authLinks, `<li><a href="/auth/oidc">OIDC Authentication</a> - Use external provider</li>`)
+		authLinks = append(authLinks, `<li><a href="/auth/oidc">Get a token</a> - Log in at the identity provider for a WLCG token, to use with any client</li>`)
 	}
 
 	// Build the authentication methods section
@@ -774,30 +770,11 @@ func (h *WebDAVHandler) WhoAmIHandler(w http.ResponseWriter, r *http.Request) {
 
 }
 
-// OIDCHandler handles the initial OIDC authentication request
+// OIDCHandler starts an OIDC login: it sends the browser to the identity provider
 func (h *WebDAVHandler) OIDCHandler(authStore *auth.AuthStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// State protects against CSRF and is bound to this browser by a cookie; the
-		// nonce binds the ID token to this login
-		state, nonce, err := authStore.StartOIDCLogin()
-		if err != nil {
-			slog.ErrorContext(r.Context(), "cannot start an OIDC login", "error", err)
-			http.Error(w, "Too many logins in progress, try again later", http.StatusServiceUnavailable)
-			return
-		}
-		http.SetCookie(w, &http.Cookie{
-			Name:     "oidc_state",
-			Value:    state,
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   r.TLS != nil,
-			SameSite: http.SameSiteLaxMode,
-			MaxAge:   10 * 60,
-		})
-
-		// Redirect to OIDC provider
-		authURL := authStore.OAuth2Config.AuthCodeURL(state, oidc.Nonce(nonce))
-
+		authURL, cookie := authStore.StartOIDCLogin(r.TLS != nil)
+		http.SetCookie(w, cookie)
 		http.Redirect(w, r, authURL, http.StatusFound)
 	}
 }
@@ -870,124 +847,74 @@ func (h *WebDAVHandler) X509AuthSuccessHandler(w http.ResponseWriter, r *http.Re
 	w.Write([]byte(page))
 }
 
-// OIDCRedirectHandler handles the OIDC callback/redirect
+// OIDCRedirectHandler completes an OIDC login when the identity provider sends the
+// browser back, and shows the access token it issued
 func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if e := r.URL.Query().Get("error"); e != "" {
-			slog.InfoContext(r.Context(), "OIDC login failed: the provider returned an error", "error", e)
-			http.Error(w, "Authentication failed at the identity provider", http.StatusUnauthorized)
-			return
+		ctx := r.Context()
+		// The page shows a token: it must not be stored, framed or sent in a Referer
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+
+		secure := r.TLS != nil
+		var login string
+		if c, err := r.Cookie(auth.OIDCLoginCookie(secure)); err == nil {
+			login = c.Value
 		}
+		// A login cookie is used once
+		http.SetCookie(w, &http.Cookie{Name: auth.OIDCLoginCookie(secure), Path: "/", HttpOnly: true, Secure: secure, MaxAge: -1})
 
-		// Get authorization code and state from query parameters
-		code := r.URL.Query().Get("code")
-		state := r.URL.Query().Get("state")
-
-		if code == "" {
-			slog.InfoContext(r.Context(), "OIDC login failed: no authorization code")
-			http.Error(w, "Authorization code not received", http.StatusBadRequest)
-			return
-		}
-
-		if state == "" {
-			slog.InfoContext(r.Context(), "OIDC login failed: no state")
-			http.Error(w, "State parameter not received", http.StatusBadRequest)
-			return
-		}
-
-		// The state must come back to the browser that started the login
-		cookie, err := r.Cookie("oidc_state")
-		if err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(state)) != 1 {
-			slog.WarnContext(r.Context(), "OIDC login failed: the state is not this browser's")
-			http.Error(w, "Invalid or expired state", http.StatusBadRequest)
-			return
-		}
-		http.SetCookie(w, &http.Cookie{Name: "oidc_state", Value: "", Path: "/", MaxAge: -1})
-
-		nonce, ok := authStore.FinishOIDCLogin(state)
-		if !ok {
-			slog.InfoContext(r.Context(), "OIDC login failed: invalid or expired state")
-			http.Error(w, "Invalid or expired state", http.StatusBadRequest)
-			return
-		}
-
-		// Exchange code for token
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-		token, err := authStore.OAuth2Config.Exchange(ctx, code)
+		tok, err := authStore.FinishOIDCLogin(ctx, login, r.URL.Query())
 		if err != nil {
-			slog.WarnContext(r.Context(), "OIDC login failed: cannot exchange the code for a token", "error", err)
-			http.Error(w, "Failed to exchange authorization code", http.StatusInternalServerError)
+			status, level := http.StatusBadGateway, slog.LevelWarn
+			switch {
+			case errors.Is(err, auth.ErrOIDCState):
+				status, level = http.StatusBadRequest, slog.LevelInfo
+			case errors.Is(err, auth.ErrOIDCRefused):
+				status, level = http.StatusUnauthorized, slog.LevelInfo
+			case auth.IsForbidden(err):
+				status, level = http.StatusForbidden, slog.LevelInfo
+			}
+			slog.Log(ctx, level, "OIDC login failed", "status", status, "error", err)
+			oidcPage(w, status, "Login failed", "<p>"+html.EscapeString(err.Error())+"</p>\n<p><a href=\"/auth/oidc\">Try again</a></p>")
 			return
 		}
+		slog.InfoContext(ctx, "gave out a token through an OIDC login", "user", tok.Username, "issuer", tok.Issuer,
+			"subject", tok.Subject, "scopes", strings.Join(tok.Scopes, " "), "expires", tok.Expiry)
 
-		// Extract ID token
-		rawIDToken, ok := token.Extra("id_token").(string)
-		if !ok {
-			slog.WarnContext(r.Context(), "OIDC login failed: no ID token")
-			http.Error(w, "No ID token received", http.StatusInternalServerError)
-			return
+		e := html.EscapeString
+		scheme, dav := "http", "dav"
+		if secure {
+			scheme, dav = "https", "davs"
 		}
-
-		// Verify ID token
-		idToken, err := authStore.OIDCVerifier.Verify(ctx, rawIDToken)
-		if err != nil {
-			slog.WarnContext(r.Context(), "OIDC login failed: invalid ID token", "error", err)
-			http.Error(w, "Failed to verify ID token", http.StatusUnauthorized)
-			return
+		groups := ""
+		if len(tok.Groups) > 0 {
+			groups = "<br>\nGroups: " + e(strings.Join(tok.Groups, " "))
 		}
-		if subtle.ConstantTimeCompare([]byte(idToken.Nonce), []byte(nonce)) != 1 {
-			slog.WarnContext(r.Context(), "OIDC login failed: the ID token's nonce is not the login's")
-			http.Error(w, "Failed to verify ID token", http.StatusUnauthorized)
-			return
-		}
-
-		// Extract claims
-		var claims struct {
-			Email    string `json:"email"`
-			Username string `json:"preferred_username"`
-			Name     string `json:"name"`
-			Subject  string `json:"sub"`
-		}
-
-		if err := idToken.Claims(&claims); err != nil {
-			slog.WarnContext(r.Context(), "OIDC login failed: cannot read the ID token's claims", "error", err)
-			http.Error(w, "Failed to extract user information", http.StatusInternalServerError)
-			return
-		}
-
-		// Determine username (prefer username, fallback to email, then subject)
-		username := claims.Username
-		if username == "" {
-			username = claims.Email
-		}
-		if username == "" {
-			username = claims.Subject
-		}
-
-		sessionID, err := authStore.CreateOIDCSession(username, oidcSessionTTL)
-		if err != nil {
-			slog.ErrorContext(r.Context(), "cannot create an OIDC session", "error", err)
-			http.Error(w, "Cannot create session, try again later", http.StatusServiceUnavailable)
-			return
-		}
-
-		// Set session cookie
-		http.SetCookie(w, &http.Cookie{
-			Name:     "oidc_session",
-			Value:    sessionID,
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   r.TLS != nil,
-			SameSite: http.SameSiteLaxMode,
-			MaxAge:   int(oidcSessionTTL.Seconds()),
-		})
-
-		slog.InfoContext(r.Context(), "OIDC login", "user", username)
-
-		// Redirect to root path
-		http.Redirect(w, r, "/", http.StatusFound)
+		oidcPage(w, http.StatusOK, "Your access token", fmt.Sprintf(`<p>Issued by %s to %s; this server serves it as user <strong>%s</strong>.<br>
+Scopes: %s%s<br>
+Expires: %s (in %.0f minutes)</p>
+<p><textarea readonly rows="12" cols="80">%s</textarea></p>
+<h3>Use it</h3>
+<pre>export BEARER_TOKEN=...   # the token above
+curl -H "Authorization: Bearer $BEARER_TOKEN" -o file %s://%s/webdav/path/file
+curl -H "Authorization: Bearer $BEARER_TOKEN" -T file %s://%s/webdav/path/file
+gfal-ls %s://%s/webdav/path/   # gfal2 reads BEARER_TOKEN</pre>
+<p>Anyone holding the token has these rights until it expires: do not share it.
+<a href="/auth/oidc">Get a new token</a> when it expires.</p>`,
+			e(tok.Issuer), e(tok.Subject), e(tok.Username), e(strings.Join(tok.Scopes, " ")), groups,
+			tok.Expiry.UTC().Format(time.RFC1123), time.Until(tok.Expiry).Minutes(), e(tok.Token),
+			scheme, e(r.Host), scheme, e(r.Host), dav, e(r.Host)))
 	}
+}
+
+// oidcPage answers with a page of the OIDC login; body is HTML
+func oidcPage(w http.ResponseWriter, status int, title, body string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	fmt.Fprintf(w, "<!DOCTYPE html>\n<html>\n<head>\n\t<title>%s</title>\n</head>\n<body>\n<h1>%s</h1>\n%s\n</body>\n</html>\n",
+		html.EscapeString(title), html.EscapeString(title), body)
 }
 
 // handleMacaroonRequest handles POST requests with application/macaroon-request content-type

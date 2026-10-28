@@ -1,14 +1,11 @@
 package server
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	jose "github.com/go-jose/go-jose/v4"
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/testutil"
 	"gopkg.in/macaroon.v2"
@@ -230,132 +226,162 @@ func TestX509WithProxiesAndGridmap(t *testing.T) {
 	}
 }
 
-// fakeIdP is a minimal OpenID provider
-type fakeIdP struct {
-	*httptest.Server
-	key   *rsa.PrivateKey
-	mu    sync.Mutex
-	nonce string
-}
-
-func newFakeIdP(t *testing.T) *fakeIdP {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	idp := &fakeIdP{key: key}
-	mux := http.NewServeMux()
-	idp.Server = httptest.NewServer(mux)
-	t.Cleanup(idp.Close)
-
-	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"issuer":                                idp.URL,
-			"authorization_endpoint":                idp.URL + "/authorize",
-			"token_endpoint":                        idp.URL + "/token",
-			"jwks_uri":                              idp.URL + "/jwks",
-			"id_token_signing_alg_values_supported": []string{"RS256"},
-		})
-	})
-	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "k1", Algorithm: "RS256", Use: "sig"}}})
-	})
-	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
-		idp.mu.Lock()
-		nonce := idp.nonce
-		idp.mu.Unlock()
-		signer, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "k1"))
-		claims, _ := json.Marshal(map[string]interface{}{
-			"iss": idp.URL, "sub": "1234", "aud": "weed", "nonce": nonce,
-			"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
-			"preferred_username": "carol",
-		})
-		jws, _ := signer.Sign(claims)
-		idToken, _ := jws.CompactSerialize()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "at", "token_type": "Bearer", "id_token": idToken})
-	})
-	return idp
-}
-
+// The OIDC login page gives out the access tokens of a token issuer that weed accepts,
+// and keeps nothing: a login in progress is in a cookie of the browser
 func TestOIDCLogin(t *testing.T) {
-	idp := newFakeIdP(t)
-	n := newNode(t, func(cfg *config.Config, base string) {
-		cfg.OIDCAuth = true
-		cfg.OIDCIssuer = idp.URL
-		cfg.OIDCClientID = "weed"
-		cfg.OIDCClientSecret = "secret"
-		cfg.OIDCRedirectURL = base + "/oidc_redirect"
+	iss := testutil.NewIssuer(t)
+	issuers := iss.WriteIssuers(tokenAudience, "/")
+	var redirectURL string
+	oidcConfig := func(cfg *config.Config, base string) {
+		cfg.TLS = true
+		cfg.TokenIssuers, cfg.TokenCAPath = issuers, iss.CAFile
+		cfg.OIDCAuth, cfg.OIDCIssuer, cfg.OIDCClientID, cfg.OIDCClientSecret = true, iss.URL, "weed", "secret"
+		cfg.OIDCScopes = []string{"openid", "storage.read:/", "storage.create:/up"}
+		cfg.OIDCAudience = tokenAudience
+		if redirectURL == "" && base != "" {
+			redirectURL = base + "/oidc_redirect"
+		}
+		cfg.OIDCRedirectURL = redirectURL
+	}
+	n := newNode(t, oidcConfig)
+	n.write("/f", "data")
+
+	// The issuer gives out token for the code "c", if the client is weed and the PKCE
+	// verifier matches the challenge of the login
+	var mu sync.Mutex
+	var challenge, token string
+	iss.HandleToken(func(form url.Values) (int, any) {
+		mu.Lock()
+		defer mu.Unlock()
+		sum := sha256.Sum256([]byte(form.Get("code_verifier")))
+		if form.Get("grant_type") != "authorization_code" || form.Get("code") != "c" || form.Get("redirect_uri") != redirectURL ||
+			form.Get("client_id") != "weed" || form.Get("client_secret") != "secret" || form.Get("audience") != tokenAudience ||
+			base64.RawURLEncoding.EncodeToString(sum[:]) != challenge {
+			return 400, map[string]string{"error": "invalid_grant"}
+		}
+		return 200, map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": 3600}
 	})
 
 	browser := func() *http.Client {
 		jar, _ := cookiejar.New(nil)
-		return &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		return &http.Client{Jar: jar, Transport: n.ts.Client().Transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	}
-	get := func(c *http.Client, p string) *http.Response {
-		resp, err := c.Get(n.ts.URL + p)
+	get := func(c *http.Client, u string) (*http.Response, string) {
+		t.Helper()
+		resp, err := c.Get(u)
 		if err != nil {
 			t.Fatal(err)
 		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		return resp
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, string(b)
 	}
-	startLogin := func(c *http.Client) (state, nonce string) {
-		resp := get(c, "/auth/oidc")
+	// login starts a login in browser b, for which the issuer will give out tok
+	login := func(b *http.Client, tok string) (state string) {
+		t.Helper()
+		resp, _ := get(b, n.ts.URL+"/auth/oidc")
 		loc, err := url.Parse(resp.Header.Get("Location"))
-		if resp.StatusCode != 302 || err != nil || !strings.HasPrefix(loc.String(), idp.URL+"/authorize") {
+		if resp.StatusCode != 302 || err != nil || loc.Scheme+"://"+loc.Host+loc.Path != iss.URL+"/authorize" {
 			t.Fatalf("login redirect: %d %s", resp.StatusCode, resp.Header.Get("Location"))
 		}
-		return loc.Query().Get("state"), loc.Query().Get("nonce")
+		q := loc.Query()
+		if q.Get("scope") != "openid storage.read:/ storage.create:/up" || q.Get("audience") != tokenAudience ||
+			q.Get("code_challenge_method") != "S256" || q.Get("client_id") != "weed" || q.Get("redirect_uri") != redirectURL {
+			t.Fatalf("authorization request %v", q)
+		}
+		cookies := resp.Cookies()
+		if len(cookies) != 1 || cookies[0].Name != "__Host-weed_oidc_login" || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].Path != "/" {
+			t.Fatalf("login cookie %v", cookies)
+		}
+		mu.Lock()
+		challenge, token = q.Get("code_challenge"), tok
+		mu.Unlock()
+		return q.Get("state")
 	}
-	setNonce := func(nonce string) {
-		idp.mu.Lock()
-		idp.nonce = nonce
-		idp.mu.Unlock()
+	callback := n.ts.URL + "/oidc_redirect?code=c&state="
+
+	// The page shows the token, which weed accepts
+	tok := iss.Token(tokenAudience, "storage.read:/ storage.create:/up", map[string]interface{}{"sub": "carol"})
+	b := browser()
+	state := login(b, tok)
+	resp, body := get(b, callback+state)
+	if resp.StatusCode != 200 || !strings.Contains(body, tok) || !strings.Contains(body, "as user <strong>carol</strong>") ||
+		!strings.Contains(body, "storage.create:/up") {
+		t.Fatalf("callback: %d %s", resp.StatusCode, body)
+	}
+	if resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("Referrer-Policy") != "no-referrer" {
+		t.Errorf("token page headers %v", resp.Header)
+	}
+	if resp, body := n.do("GET", "/f", "", bearer(tok)...); resp.StatusCode != 200 || body != "data" {
+		t.Errorf("GET with the token: %d %q", resp.StatusCode, body)
 	}
 
-	b := browser()
-	state, nonce := startLogin(b)
-	setNonce(nonce)
-	if resp := get(b, "/oidc_redirect?code=c&state="+state); resp.StatusCode != 302 {
-		t.Fatalf("callback: %d", resp.StatusCode)
+	// The login cookie is used once
+	if u, _ := url.Parse(n.ts.URL); len(b.Jar.Cookies(u)) != 0 {
+		t.Errorf("cookies left: %v", b.Jar.Cookies(u))
 	}
-	u, _ := url.Parse(n.ts.URL)
-	for _, c := range b.Jar.Cookies(u) {
-		if c.Name == "oidc_session" && c.Value == state {
-			t.Fatal("session cookie is the OAuth state, which appears in URLs and logs")
+	if resp, _ := get(b, callback+state); resp.StatusCode != 400 {
+		t.Errorf("replayed callback: %d", resp.StatusCode)
+	}
+
+	// Login CSRF: a login started by someone else cannot be completed in this browser
+	state = login(browser(), tok)
+	if resp, _ := get(browser(), callback+state); resp.StatusCode != 400 {
+		t.Errorf("callback without the login cookie: %d", resp.StatusCode)
+	}
+	b = browser()
+	login(b, tok)
+	if resp, _ := get(b, callback+state); resp.StatusCode != 400 {
+		t.Errorf("callback with the state of another login: %d", resp.StatusCode)
+	}
+
+	// The provider's errors are only shown to the browser whose login it is, so that
+	// nobody can make weed show their own text
+	b = browser()
+	state = login(b, tok)
+	if resp, body := get(b, n.ts.URL+"/oidc_redirect?error=access_denied&error_description=No+consent&state="+state); resp.StatusCode != 401 ||
+		!strings.Contains(body, "No consent") {
+		t.Errorf("refused login: %d %s", resp.StatusCode, body)
+	}
+	if resp, body := get(browser(), n.ts.URL+"/oidc_redirect?error=x&error_description=Call+us&state=s"); resp.StatusCode != 400 ||
+		strings.Contains(body, "Call us") {
+		t.Errorf("forged error: %d %s", resp.StatusCode, body)
+	}
+
+	// Tokens that weed would not accept are not given out
+	for _, c := range []struct {
+		name, token, code string
+		status            int
+		reason            string
+	}{
+		{"wrong audience", iss.Token("https://other.test", "storage.read:/", nil), "c", 502, "audience"},
+		{"no storage scopes", iss.Token(tokenAudience, "openid", nil), "c", 403, "no storage scopes"},
+		{"not a JWT", "opaque-token", "c", 502, "not a JWT"},
+		{"code refused", tok, "stolen", 502, "invalid_grant"},
+	} {
+		b := browser()
+		state := login(b, c.token)
+		if resp, body := get(b, n.ts.URL+"/oidc_redirect?code="+c.code+"&state="+state); resp.StatusCode != c.status ||
+			!strings.Contains(body, c.reason) || strings.Contains(body, c.token) {
+			t.Errorf("%s: %d %s", c.name, resp.StatusCode, body)
 		}
 	}
-	resp, err := b.Get(n.ts.URL + "/proc/whoami")
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if !strings.Contains(string(body), "Username: carol") {
-		t.Fatalf("whoami after login: %s", body)
-	}
 
-	// The state is single use
-	if resp := get(b, "/oidc_redirect?code=c&state="+state); resp.StatusCode != 400 {
-		t.Fatalf("replayed callback: %d", resp.StatusCode)
-	}
-
-	// Login CSRF: a login started by an attacker cannot be completed in a victim's browser
-	attacker := browser()
-	state, nonce = startLogin(attacker)
-	setNonce(nonce)
-	if resp := get(browser(), "/oidc_redirect?code=c&state="+state); resp.StatusCode != 400 {
-		t.Fatalf("callback without the state cookie: %d", resp.StatusCode)
-	}
-
-	// An ID token that does not carry this login's nonce is rejected
+	// weed keeps nothing: behind a load balancer, another node completes the login
+	other := newNode(t, oidcConfig)
 	b = browser()
-	state, _ = startLogin(b)
-	setNonce("someone-else")
-	if resp := get(b, "/oidc_redirect?code=c&state="+state); resp.StatusCode != 401 {
-		t.Fatalf("callback with wrong nonce: %d", resp.StatusCode)
+	state = login(b, tok)
+	if resp, body := get(b, other.ts.URL+"/oidc_redirect?code=c&state="+state); resp.StatusCode != 200 || !strings.Contains(body, tok) {
+		t.Errorf("login completed on another node: %d %s", resp.StatusCode, body)
+	}
+
+	// weed does not start with a provider whose tokens it would not accept
+	s := New(&config.Config{Directory: t.TempDir(), TokenIssuers: testutil.NewIssuer(t).WriteIssuers(tokenAudience, "/"),
+		OIDCAuth: true, OIDCIssuer: iss.URL, OIDCClientID: "weed", OIDCClientSecret: "secret", OIDCRedirectURL: redirectURL})
+	t.Cleanup(s.Close)
+	if err := s.Initialize(); err == nil || !strings.Contains(err.Error(), "not in tokens.issuers") {
+		t.Errorf("provider that is not a token issuer: %v", err)
 	}
 }
 

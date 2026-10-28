@@ -83,14 +83,17 @@ func (s *Server) Initialize() error {
 	}
 	s.AuthStore.SetCredentials(creds)
 
-	// Initialize OIDC if enabled
+	// The OIDC login page gives out tokens of one of the token issuers
 	if s.Config.OIDCAuth {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := s.AuthStore.InitializeOIDC(ctx, s.Config.OIDCIssuer, s.Config.OIDCClientID, s.Config.OIDCClientSecret, s.Config.OIDCRedirectURL); err != nil {
+		c := s.Config
+		if err := s.AuthStore.InitializeOIDC(ctx, auth.OIDCConfig{
+			Issuer: c.OIDCIssuer, ClientID: c.OIDCClientID, ClientSecret: c.OIDCClientSecret,
+			RedirectURL: c.OIDCRedirectURL, Scopes: c.OIDCScopes, Audience: c.OIDCAudience,
+		}); err != nil {
 			return fmt.Errorf("failed to initialize OIDC: %w", err)
 		}
-		s.AuthStore.OIDCEnabled = true
 	}
 
 	// Initialize Macaroon if enabled
@@ -338,7 +341,7 @@ func (s *Server) MetricsHandler() http.Handler {
 
 // applyAuthMiddleware applies the unified authentication middleware to a handler
 func (s *Server) applyAuthMiddleware(handler http.Handler) http.Handler {
-	// Unified authentication tries X.509 -> OIDC -> Macaroon -> Basic Auth in order
+	// Unified authentication tries X.509 -> token -> macaroon -> Basic in order
 	handler = s.AuthStore.UnifiedAuthMiddleware(handler)
 
 	// Apply logging middleware
@@ -384,7 +387,7 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 		mux.Handle("/auth/x509", x509Handler)
 	}
 
-	// OIDC routes if OIDC is enabled
+	// The OIDC login page, and the provider's redirect back to weed
 	if s.Config.OIDCAuth {
 		mux.Handle("/auth/oidc", logger.Middleware(s.Handler.OIDCHandler(s.AuthStore)))
 		mux.Handle("/oidc_redirect", logger.Middleware(s.Handler.OIDCRedirectHandler(s.AuthStore)))
@@ -395,7 +398,7 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 	mux.HandleFunc("/healthz", s.healthz)
 
 	// Add whoami route at /proc/whoami - apply auth middleware if any auth is enabled
-	if s.Config.BasicAuth || s.Config.X509Auth || s.Config.OIDCAuth || s.Config.MacaroonAuth || s.Config.TokenIssuers != "" {
+	if s.Config.BasicAuth || s.Config.X509Auth || s.Config.MacaroonAuth || s.Config.TokenIssuers != "" {
 		// Create a whoami handler with authentication middleware
 		whoamiHandler := s.applyAuthMiddleware(http.HandlerFunc(s.Handler.WhoAmIHandler))
 		mux.Handle("/proc/whoami", whoamiHandler)
@@ -537,7 +540,7 @@ func (s *Server) LogStartupInfo() {
 		name    string
 		enabled bool
 	}{
-		{"x509", c.X509Auth}, {"oidc", c.OIDCAuth}, {"tokens", c.TokenIssuers != ""},
+		{"x509", c.X509Auth}, {"tokens", c.TokenIssuers != ""},
 		{"macaroons", c.MacaroonAuth}, {"basic", c.BasicAuth}, {"anonymous", c.Anonymous},
 	} {
 		if m.enabled {
@@ -557,7 +560,8 @@ func (s *Server) LogStartupInfo() {
 		slog.Info("token issuer", "issuer", iss.Issuer, "base_path", iss.BasePath, "audiences", append(slices.Clone(iss.Audiences), auth.AudienceAny))
 	}
 	if c.OIDCAuth {
-		slog.Info("OIDC login", "issuer", c.OIDCIssuer, "client_id", c.OIDCClientID, "redirect_url", c.OIDCRedirectURL)
+		slog.Info("OIDC login page for tokens", "issuer", c.OIDCIssuer, "client_id", c.OIDCClientID, "redirect_url", c.OIDCRedirectURL,
+			"scopes", strings.Join(c.OIDCScopes, " "), "audience", c.OIDCAudience)
 	}
 	if c.MacaroonAuth {
 		slog.Info("macaroons", "location", c.MacaroonLocation, "max_validity", c.MacaroonMaxValidity)

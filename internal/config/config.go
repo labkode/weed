@@ -45,12 +45,14 @@ type Config struct {
 	ReloadInterval time.Duration
 	// MetricsAddress serves /metrics and /healthz without authentication ("" disables)
 	MetricsAddress string
-	// OIDC configuration
+	// OIDC login page, which gives out tokens of a token issuer
 	OIDCAuth         bool
 	OIDCIssuer       string
 	OIDCClientID     string
 	OIDCClientSecret string
 	OIDCRedirectURL  string
+	OIDCScopes       []string
+	OIDCAudience     string
 	// Macaroon configuration
 	MacaroonAuth        bool
 	MacaroonSecretKey   string
@@ -134,6 +136,9 @@ func (c *Config) Validate() error {
 	}
 	if c.OIDCAuth && (c.OIDCIssuer == "" || c.OIDCClientID == "" || c.OIDCClientSecret == "" || c.OIDCRedirectURL == "") {
 		return errors.New("oidc needs issuer, client_id, client_secret and redirect_url")
+	}
+	if c.OIDCAuth && c.TokenIssuers == "" {
+		return errors.New("oidc needs tokens.issuers, with oidc.issuer in it: the login page gives out its tokens")
 	}
 	if c.MacaroonAuth {
 		if len(c.MacaroonSecretKey) < 32 {

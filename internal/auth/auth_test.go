@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -281,46 +280,4 @@ func TestLoadGridmap(t *testing.T) {
 			t.Errorf("gridmap[%q] = %q, want %q", dn, gridmap[dn], u)
 		}
 	}
-}
-
-func TestOIDCLoginsAndSessions(t *testing.T) {
-	as := NewAuthStore()
-	state, nonce, err := as.StartOIDCLogin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n, ok := as.FinishOIDCLogin(state); !ok || n != nonce {
-		t.Fatal("login not found")
-	}
-	if _, ok := as.FinishOIDCLogin(state); ok {
-		t.Fatal("state accepted twice")
-	}
-
-	id, err := as.CreateOIDCSession("carol", time.Hour)
-	if err != nil || id == state {
-		t.Fatalf("session id %q, %v", id, err)
-	}
-	if s, ok := as.GetOIDCSession(id); !ok || s.Username != "carol" {
-		t.Fatal("session not found")
-	}
-	expired, _ := as.CreateOIDCSession("dave", -time.Second)
-	if _, ok := as.GetOIDCSession(expired); ok {
-		t.Fatal("expired session accepted")
-	}
-}
-
-func TestOIDCStoreIsConcurrencySafe(t *testing.T) {
-	as := NewAuthStore()
-	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			state, _, _ := as.StartOIDCLogin()
-			as.FinishOIDCLogin(state)
-			id, _ := as.CreateOIDCSession("u", time.Hour)
-			as.GetOIDCSession(id)
-		}()
-	}
-	wg.Wait()
 }

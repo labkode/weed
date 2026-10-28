@@ -3,7 +3,8 @@ WEED: WEbdav Exporter Daemon
 WEED exports a local directory over WebDAV (RFC 4918) under /webdav/, and implements
 WLCG HTTP third-party copy (pull and push) with the data-integrity extension described
 in https://github.com/labkode/wlcg-tpc. Clients authenticate with X.509 certificates
-and proxies, WLCG/SciTokens bearer tokens, macaroons, OIDC or passwords.
+and proxies, WLCG/SciTokens bearer tokens (which browsers can get from an OIDC login
+page), macaroons or passwords.
 
 Runs on Linux, macOS and Windows (checksum caching in extended attributes on Linux and
 macOS only).
@@ -184,12 +185,7 @@ Without it, all authenticated users have weed's own access to the files.
    closed; with if-valid, certificates are only checked against the CRLs that are
    present and current.
 
-2. OIDC browser login ([oidc]: enabled, issuer, client_id, client_secret, and
-   redirect_url = "https://<host>/oidc_redirect")
-   Start at /auth/oidc. The login is bound to the browser with a state cookie and a
-   nonce; sessions last 24h.
-
-3. WLCG and SciTokens bearer tokens (tokens.issuers = "<file>")
+2. WLCG and SciTokens bearer tokens (tokens.issuers = "<file>")
    JWTs from the issuers listed in the file, as defined by the WLCG Common JWT
    Profiles (https://doi.org/10.5281/zenodo.3460258) and SciTokens:
 
@@ -251,7 +247,24 @@ Without it, all authenticated users have weed's own access to the files.
      COPY (TPC pull)          create or modify
      COPY (TPC push)          read
 
-4. Macaroons ([macaroons]: enabled, secret_key)
+   Getting a token in a browser ([oidc]: enabled, issuer, client_id, client_secret,
+   redirect_url = "https://<host>/oidc_redirect", scopes, audience)
+   At /auth/oidc users log in at the identity provider, which must be one of the
+   token issuers (weed does not start otherwise), and get a page showing the access
+   token it issued, the account weed serves it as, its scopes and expiry, and how to
+   use it with curl and gfal2. The token is checked as above before it is shown: a
+   token weed would refuse is not given out, and the page says why. Logins ask for
+   oidc.scopes (default openid and storage.read:/; the issuer grants those its
+   policies allow) and, if set, oidc.audience (the "audience" parameter of INDIGO
+   IAM), which should be one of the issuer's audiences. For tokens that renew
+   themselves, use oidc-agent instead.
+
+   weed keeps no sessions: requests carry the token, and a login in progress (its
+   OAuth2 state and PKCE verifier) is in a cookie of the browser, which is used once
+   and, over HTTPS, is a __Host- cookie that other hosts of the domain cannot set.
+   Any node with the same configuration completes a login that another started.
+
+3. Macaroons ([macaroons]: enabled, secret_key)
    Any authenticated user can mint a macaroon for a path by POSTing to that path:
 
     curl -u user:pass -X POST https://weed.example/webdav/dir_0/dir_1/ \
@@ -287,15 +300,14 @@ Without it, all authenticated users have weed's own access to the files.
      COPY (TPC push)          DOWNLOAD
      MOVE                     MANAGE on source and destination
 
-5. HTTP Basic ([basic]: enabled, htpasswd, app_tokens)
+4. HTTP Basic ([basic]: enabled, htpasswd, app_tokens)
    Passwords are checked against bcrypt entries in the htpasswd file, or against app
    tokens. Basic credentials are sent in clear text without TLS.
 
 /proc/whoami shows the identity a request authenticates as, and its Unix account.
 
 Usernames come from: the grid-mapfile (X.509), the htpasswd or app tokens file
-(Basic), preferred_username (OIDC), the issuer's users rules or sub (tokens), and the
-minting user (macaroons).
+(Basic), the issuer's users rules or sub (tokens), and the minting user (macaroons).
 
 
 Unix accounts (unix_users)
