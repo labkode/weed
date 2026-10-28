@@ -33,8 +33,8 @@ func parseIfHeader(s string) ([]ifList, bool) {
 				return nil, false // tagged and untagged lists cannot be mixed
 			}
 			end := strings.IndexByte(s, '>')
-			if end < 0 {
-				return nil, false
+			if end < 2 {
+				return nil, false // unterminated or empty resource tag
 			}
 			tag, tagged, s = s[1:end], true, strings.TrimLeft(s[end+1:], " \t")
 			if !strings.HasPrefix(s, "(") {
@@ -80,8 +80,8 @@ func parseIfList(s string) (l ifList, rest string, ok bool) {
 				closer = ']'
 			}
 			end := strings.IndexByte(s, closer)
-			if end < 0 {
-				return ifList{}, "", false
+			if end < 2 {
+				return ifList{}, "", false // unterminated, or an empty token or entity tag
 			}
 			c := webdav.Condition{Not: not}
 			if s[0] == '<' {

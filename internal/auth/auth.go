@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/labkode/weed/internal/logger"
@@ -143,10 +144,12 @@ func parseGridmapLine(line string) (dn, username string, ok bool) {
 		}
 		dn, rest = line[:i], line[i:]
 	}
-	// grid-mapfiles may list several accounts; the first one is the default
-	username, _, _ = strings.Cut(strings.TrimSpace(rest), ",")
-	username = strings.TrimSpace(username)
-	return dn, username, dn != "" && username != ""
+	// grid-mapfiles may list several accounts ("a,b"); the first one is the default
+	accounts := strings.FieldsFunc(rest, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	if dn == "" || len(accounts) == 0 {
+		return "", "", false
+	}
+	return dn, accounts[0], true
 }
 
 // LoadGridmap loads and parses the gridmap file
