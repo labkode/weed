@@ -66,6 +66,7 @@ func main() {
 
 	srv := server.New(cfg)
 	srv.SetSource(src)
+	srv.MonitorOnMainPort = src.Path == "" // no metrics_address without a file
 	if err := srv.Initialize(); err != nil {
 		logger.Fatal("cannot start", err)
 	}

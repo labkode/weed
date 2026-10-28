@@ -39,7 +39,11 @@ type Server struct {
 	Handler   *handlers.WebDAVHandler
 	// Workers serve the files of each Unix account with unix_users
 	Workers *worker.Pool
-	server  *http.Server
+	// MonitorOnMainPort also serves /metrics and /status on the main port, as weed
+	// does without a configuration file (see config.QuickStart): its clients are local,
+	// and can already read and write every file
+	MonitorOnMainPort bool
+	server            *http.Server
 
 	reloadMu sync.Mutex
 	cert     atomic.Pointer[tls.Certificate] // TLS server certificate, replaced on reload
@@ -330,10 +334,15 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 // MetricsHandler serves /metrics, /healthz and /status
 func (s *Server) MetricsHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", metrics.Handler(s.writeGauges))
 	mux.HandleFunc("/healthz", s.healthz)
-	mux.HandleFunc("/status", s.statusHandler)
+	s.handleMonitoring(mux)
 	return mux
+}
+
+// handleMonitoring adds /metrics and /status to mux
+func (s *Server) handleMonitoring(mux *http.ServeMux) {
+	mux.Handle("/metrics", metrics.Handler(s.writeGauges))
+	mux.HandleFunc("/status", s.statusHandler)
 }
 
 // applyAuthMiddleware applies the unified authentication middleware to a handler
@@ -393,6 +402,9 @@ func (s *Server) SetupRoutes() *http.ServeMux {
 	// Utility routes
 	mux.Handle("/proc/x509", logger.Middleware(http.HandlerFunc(s.Handler.ProcX509Handler)))
 	mux.HandleFunc("/healthz", s.healthz)
+	if s.MonitorOnMainPort {
+		s.handleMonitoring(mux)
+	}
 
 	// Add whoami route at /proc/whoami - apply auth middleware if any auth is enabled
 	if s.Config.BasicAuth || s.Config.X509Auth || s.Config.MacaroonAuth || s.Config.TokenIssuers != "" {
@@ -483,6 +495,9 @@ func (s *Server) Run(ctx context.Context) error {
 	} else {
 		slog.Info("listening", "address", ln.Addr().String(), "scheme", "http")
 		go func() { errCh <- s.server.Serve(ln) }()
+	}
+	if s.MonitorOnMainPort {
+		slog.Info("serving metrics", "address", ln.Addr().String())
 	}
 
 	if s.Config.MetricsAddress != "" {

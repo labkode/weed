@@ -78,7 +78,7 @@ func (c *Config) sections() []section {
 			{"log_file", `log to this file ("" for standard error); weed reopens it on SIGHUP, for logrotate`, &c.LogFile},
 			{"log_level", `log records of this level and above: "debug", "info", "warn" or "error"`, &c.LogLevel},
 			{"log_format", `"text" (key=value) or "json", one record per line`, &c.LogFormat},
-			{"metrics_address", `serve Prometheus metrics (/metrics) and /healthz, without authentication, on this address, e.g. "localhost:9100" ("" disables)`, &c.MetricsAddress},
+			{"metrics_address", `serve Prometheus metrics (/metrics), what runs (/status) and /healthz, without authentication, on this address, e.g. "localhost:9100" ("" disables)`, &c.MetricsAddress},
 			{"reload_interval", `re-read credential files (htpasswd, app tokens, grid-mapfile, CAs, CRLs, token issuers, TLS certificate) this often ("0s": only on SIGHUP)`, &c.ReloadInterval},
 		}},
 		{"tls", "HTTPS", []option{
@@ -298,7 +298,8 @@ const usage = `usage: weed [-config weed.toml]
        weed utils     helpers for passwords, app tokens and certificates
 
 Options are set in the configuration file. Without one, weed serves the current
-directory at http://127.0.0.1:9000/webdav/ to local clients, without authentication.
+directory at http://127.0.0.1:9000/webdav/ to local clients, without authentication,
+and its metrics and status at http://127.0.0.1:9000/metrics and /status.
 `
 
 // ErrUsage is returned for a command line that the usage has been printed for

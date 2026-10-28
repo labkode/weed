@@ -363,6 +363,13 @@ check "broken configuration: logged as an error now" sh -c "curl -s localhost:91
 	grep -q 'level=ERROR msg=\"restart pending: the configuration file has changed, and weed would not start' $W/weed-a.log"
 cp weed-a.toml.orig weed-a.toml
 check "restored configuration: no restart pending" sh -c "curl -s localhost:9100/metrics | grep -qx 'weed_restart_pending{reason=\"config\"} 0'"
+# Without a configuration file there is no metrics_address: the main port serves them
+mkdir -p /srv/q && (cd /srv/q && exec weed 2>$W/weed-q.log) &
+Q_PID=$!
+for i in $(seq 50); do curl -sf localhost:9000/healthz >/dev/null && break; sleep 0.1; done
+check "without a configuration file: /status on the main port" sh -c "curl -sf localhost:9000/status | jq -e '.config.file == \"\" and .config.settings.server.anonymous' >/dev/null"
+check "...and /metrics" sh -c "curl -sf localhost:9000/metrics | grep -q '^weed_build_info{'"
+kill $Q_PID
 
 echo
 echo "$pass passed, $fail failed"

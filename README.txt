@@ -12,7 +12,8 @@ macOS only).
     go build && ./weed
 
 serves the current directory at http://127.0.0.1:9000/webdav/ to local clients,
-without authentication. Anything else is set in a configuration file:
+without authentication, with its metrics and status at http://127.0.0.1:9000/metrics
+and /status. Anything else is set in a configuration file:
 
     ./weed config >weed.toml     every option, its default and what it does
     ./weed check -config weed.toml   would weed start with it? (see What runs)
@@ -441,8 +442,10 @@ Monitoring
 the exported directory cannot be stat'ed within 5 seconds (e.g. a hung network
 filesystem).
 
-server.metrics_address = "localhost:9100" serves, without authentication, /healthz and
-Prometheus metrics on /metrics:
+server.metrics_address = "localhost:9100" serves, without authentication, /healthz,
+/status (see What runs) and Prometheus metrics on /metrics. Without a configuration
+file, the main port serves them: its clients are local, and can already read and
+write every file. The metrics:
   weed_http_requests_total{method,code}       weed_http_response_bytes_total{method}
   weed_auth_requests_total{method,result}     weed_upload_bytes_total
   weed_checksum_mismatches_total{operation}   (put, tpc_pull, tpc_push)

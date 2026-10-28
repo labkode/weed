@@ -323,3 +323,37 @@ func TestRunNotifiesSystemd(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// Without a configuration file, the main port also serves /metrics and /status:
+// its clients are local, and can already do anything. Otherwise only
+// server.metrics_address serves them.
+func TestQuickStartMonitoring(t *testing.T) {
+	get := func(cfg *config.Config, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		cfg.Directory = t.TempDir()
+		if err := cfg.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		s := New(cfg)
+		s.MonitorOnMainPort = cfg.Anonymous // main sets it for QuickStart, which is anonymous
+		if err := s.Initialize(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(s.Close)
+		w := httptest.NewRecorder()
+		s.SetupRoutes().ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		return w
+	}
+	captureLog(t)
+	if w := get(config.QuickStart(), "/status"); w.Code != 200 || !strings.Contains(w.Body.String(), `"build": "`+version.Current().Build+`"`) {
+		t.Errorf("quickstart /status: %d %s", w.Code, w.Body)
+	}
+	if w := get(config.QuickStart(), "/metrics"); w.Code != 200 || !strings.Contains(w.Body.String(), "\nweed_build_info{") {
+		t.Errorf("quickstart /metrics: %d %s", w.Code, w.Body)
+	}
+	for _, path := range []string{"/status", "/metrics"} {
+		if w := get(config.Default(), path); w.Code != 404 {
+			t.Errorf("configured server's main port serves %s: %d", path, w.Code)
+		}
+	}
+}
