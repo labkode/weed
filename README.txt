@@ -281,3 +281,23 @@ Not implemented
   macaroons in TransferHeaderAuthorization
 * Per-user authorization: all authenticated users share the same namespace (tokens
   and macaroons can be restricted to paths); group-based token authorization
+
+
+Known deviations from RFC 4918
+
+WEED is meant for WLCG clients (gfal2, davix, FTS, XRootD), which are not affected by
+these. Found with the litmus 0.13 WebDAV test suite, where basic, copymove and http
+pass; props passes 10 of 14 tests and locks 30 of 34, failing only on the items below.
+
+* If header: only lock tokens are evaluated, as in golang.org/x/net/webdav; entity
+  tags and "Not" are ignored. On a locked resource, a write with its lock token
+  succeeds even if the If header's entity tag does not match, and "(Not <token>)"
+  counts as submitting the token; on an unlocked resource, any If header fails with
+  412, even a matching entity tag. A write to a locked resource whose If header holds
+  only a wrong token gets 412 rather than 423. The HTTP If-Match and If-None-Match
+  headers work.
+* Dead properties: PROPPATCH stores nothing; each property is refused with 403 in the
+  207 response.
+* Shared locks: LOCK with a shared scope gets 501; exclusive locks work.
+* A PROPFIND body binding a prefix to the empty namespace (xmlns:p="") is accepted
+  rather than refused with 400.
