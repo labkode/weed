@@ -337,8 +337,17 @@ their records marked worker.user=alice worker.pid=1630 (see Logging). Each worke
 checks that all its threads run as the account, with no capabilities and
 no_new_privs, and refuses to serve otherwise; weed starts one as nobody (65534) at
 startup to find problems before the first request. Workers get none of weed's
-environment, and are started from the running binary even if it has since been
-replaced on disk; the binary must be executable by the users.
+environment.
+
+Workers always run the same build as weed. They are started from /proc/self/exe,
+weed's own binary even after an upgrade has replaced it on disk, so a new version
+only runs once weed is restarted (until then, ls -l /proc/<pid>/exe shows the old
+binary as deleted, for weed and its workers alike). Each worker also reports the Go
+build ID of its binary, which the linker derives from its content, and weed refuses
+workers whose build is not its own: if the binary is overwritten in place, new
+workers are refused (logged as "cannot start a worker", with both builds; requests
+get 503) until weed is restarted. The binary must be readable and executable by the
+users, as it normally is (0755).
 
 weed talks HTTP to its workers over socket pairs: nothing else can connect to them,
 so they trust the identity weed states in request headers (headers of the same names

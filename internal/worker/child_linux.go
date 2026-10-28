@@ -26,6 +26,7 @@ const shutdownGrace = 30 * time.Second
 type Child struct {
 	Settings Settings
 	ctl      *net.UnixConn
+	build    string // see executableBuild
 }
 
 // Attach takes over the control socket that the front process passed as file
@@ -57,6 +58,9 @@ func Attach() (*Child, error) {
 	}
 	if err := checkConfinement(&child.Settings.User); err != nil {
 		return nil, child.Fail(fmt.Errorf("refusing to serve: %w", err))
+	}
+	if child.build, err = executableBuild(); err != nil {
+		return nil, child.Fail(fmt.Errorf("cannot identify the build of its executable: %w", err))
 	}
 	return child, nil
 }
@@ -105,7 +109,8 @@ func (c *Child) Serve(h http.Handler, reload func()) error {
 		IdleTimeout: 5 * time.Minute,
 		ErrorLog:    logger.ErrorLog(),
 	}
-	if _, err := c.ctl.Write([]byte("ready")); err != nil {
+	// The front process checks that the worker runs its own build
+	if _, err := c.ctl.Write([]byte("ready " + c.build)); err != nil {
 		return err
 	}
 	metrics.ForwardTo(c.ctl)

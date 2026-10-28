@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -54,6 +55,7 @@ type Options struct {
 type Pool struct {
 	opts    Options
 	cgroups *cgroups // nil: workers stay in weed's cgroup
+	build   string   // of this executable, which workers must run (see executableBuild)
 
 	mu      sync.Mutex
 	workers map[string]*worker // by account name: the workers taking new requests
@@ -102,6 +104,10 @@ func New(opts Options) (*Pool, error) {
 		opts.MaxWorkers = 256
 	}
 	p := &Pool{opts: opts, workers: make(map[string]*worker), all: make(map[*worker]bool), done: make(chan struct{})}
+	var err error
+	if p.build, err = executableBuild(); err != nil {
+		return nil, fmt.Errorf("cannot identify the build of weed's executable, which workers must run: %w", err)
+	}
 	if opts.Cgroups || len(opts.CgroupLimits) > 0 {
 		cg, err := newCgroups(opts.CgroupLimits)
 		if err != nil {
@@ -407,13 +413,22 @@ func (p *Pool) spawn(wk *worker) (err error) {
 	buf := make([]byte, maxMessage)
 	n, err := ctl.Read(buf)
 	ctl.SetReadDeadline(time.Time{})
-	switch {
-	case errors.Is(err, io.EOF):
+	if errors.Is(err, io.EOF) {
 		return stop(errors.New("the worker exited during startup"))
-	case err != nil:
+	} else if err != nil {
 		return stop(err)
-	case string(buf[:n]) != "ready":
+	}
+	// "ready <build>"; workers of builds from before the check say "ready"
+	build, ready := strings.CutPrefix(string(buf[:n]), "ready")
+	if !ready {
 		return stop(errors.New(string(buf[:n]))) // why the worker refuses to serve
+	}
+	if build = strings.TrimPrefix(build, " "); build != p.build {
+		if build == "" {
+			build = "unknown"
+		}
+		return stop(fmt.Errorf("the worker runs build %s of weed, not this process's %s: "+
+			"was weed's executable overwritten in place? Restart weed", build, p.build))
 	}
 
 	wk.ctl = ctl
