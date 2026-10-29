@@ -31,3 +31,6 @@ server.log
 
 # The administration guide while it is made (make docs)
 docs/src/build/
+
+# The lab's CA and alice's certificate, for clients outside it (make lab)
+test/lab/out/
