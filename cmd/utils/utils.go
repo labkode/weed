@@ -112,7 +112,7 @@ func HandlePassword() {
 // HandleToken handles token management
 func HandleToken(cfg *config.Config) {
 	if len(os.Args) < 4 {
-		fmt.Println("Usage: weed utils token <generate|list|revoke>")
+		fmt.Println("Usage: weed utils token generate <username>")
 		return
 	}
 
