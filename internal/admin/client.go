@@ -51,6 +51,9 @@ func (c *Client) Do(method, path string, in, out any) error {
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if ue := (*url.Error)(nil); errors.As(err, &ue) {
+			if ue.Timeout() {
+				return fmt.Errorf("weed's control plane at %s did not answer within %v: what was asked may have been done; weed's log says", c.socket, c.http.Timeout)
+			}
 			err = ue.Err // without the URL, which is not the socket's
 		}
 		return fmt.Errorf("cannot reach weed's control plane at %s (is weed running there? -socket or -config names another): %w", c.socket, err)

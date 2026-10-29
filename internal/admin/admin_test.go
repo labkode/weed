@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // socketPath returns a path for a Unix socket: short enough (104 bytes on macOS)
@@ -81,5 +82,25 @@ func TestPeerLogged(t *testing.T) {
 	slog.New(slog.NewJSONHandler(&b, nil)).Info("x", "peer", Peer{UID: 0, PID: 42})
 	if !strings.Contains(b.String(), `"peer":"uid 0, pid 42"`) {
 		t.Errorf("logged as %s", b.String())
+	}
+}
+
+// A weed that does not answer in time is not taken for one that does not run
+func TestClientTimeout(t *testing.T) {
+	path := socketPath(t)
+	ln, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	c := NewClient(path)
+	c.http.Timeout = 100 * time.Millisecond
+	if err := c.Do("GET", "/v1/bans", nil, nil); err == nil || !strings.Contains(err.Error(), "did not answer within 100ms") {
+		t.Errorf("weed not answering: %v", err)
+	}
+	if err := NewClient(path+".none").Do("GET", "/v1/bans", nil, nil); err == nil || !strings.Contains(err.Error(), "cannot reach") {
+		t.Errorf("no weed: %v", err)
 	}
 }
