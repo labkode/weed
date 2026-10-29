@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Getting started</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Getting started</h1>
+</header>
+<p>This page first tries weed without any configuration, then sets up a grid storage node step by step: X.509 certificates with a grid-mapfile, WLCG tokens, and third-party copy.</p>
+<h2 id="trying">Trying weed</h2>
+<p>Without a configuration file, weed serves the current directory at http://127.0.0.1:9000/webdav/ to local clients only, without authentication, as the account nobody. Nobody must be able to write the directory for uploads to work:</p>
+<pre><code>$ mkdir /tmp/demo &amp;&amp; chmod 1777 /tmp/demo &amp;&amp; cd /tmp/demo
+$ sudo weed</code></pre>
+<p>In another terminal:</p>
+<pre><code>$ curl -T /etc/hosts http://127.0.0.1:9000/webdav/hosts
+$ curl http://127.0.0.1:9000/webdav/hosts
+127.0.0.1   localhost
+...
+$ ls -l /tmp/demo
+-rw-r--r-- 1 nobody nobody 199 Oct 29 09:06 hosts</code></pre>
+<p>The file belongs to nobody, the account of anonymous requests. Without a configuration file, the same port also serves /metrics and /status (see <a href="monitoring.html">Monitoring</a>). Stop weed with Ctrl-C.</p>
+<h2 id="storage-node">A grid storage node</h2>
+<p>The rest of this page sets up weed.example.org, which exports /data on port 443. Alice authenticates with her certificate, as the account alice; the CMS production jobs with WLCG tokens from https://iam.example.org/, as the account cms001.</p>
+<h3 id="accounts-and-directories">1. Accounts and directories</h3>
+<p>Every identity maps to a local account, which accesses the files. Create the accounts (or have them in LDAP), and give each a directory:</p>
+<pre><code># useradd -M -u 1001 alice
+# useradd -M -u 2001 cms001
+# mkdir -p /data/alice /data/cms
+# chown alice: /data/alice &amp;&amp; chown cms001: /data/cms
+# chmod 755 /data</code></pre>
+<p>The accounts need search permission on /data and its parents. weed refuses root as an account.</p>
+<h3 id="host-certificate-cas-and-crls">2. Host certificate, CAs and CRLs</h3>
+<p>weed serves HTTPS with the host certificate, and checks client certificates against the CAs, as other grid services do:</p>
+<pre><code>/etc/grid-security/hostcert.pem
+/etc/grid-security/hostkey.pem              (mode 0400)
+/etc/grid-security/certificates/            the IGTF CAs (e.g. the ca-policy-egi-core
+                                            package), and their CRLs, kept current
+                                            by fetch-crl</code></pre>
+<p>By default weed refuses certificates whose CA has no current CRL, so run fetch-crl regularly (its packages do) and see <a href="reloading.html#crls">Reloading</a>.</p>
+<h3 id="the-grid-mapfile">3. The grid-mapfile</h3>
+<p>Only the certificates whose DN the grid-mapfile lists are accepted, as the account it names. Trusting every IGTF CA does not let in every grid user. /etc/grid-security/grid-mapfile:</p>
+<pre><code>&quot;/DC=org/DC=example/OU=Users/CN=Alice Smith&quot; alice</code></pre>
+<h3 id="the-token-issuer">4. The token issuer</h3>
+<p>/etc/weed/issuers.json lists the issuers whose tokens weed accepts, the audience they must be for, and which account a token is served as. Here, tokens of the group /cms/production are cms001's:</p>
+<pre><code>[{&quot;issuer&quot;: &quot;https://iam.example.org/&quot;,
+  &quot;audiences&quot;: [&quot;https://weed.example.org&quot;],
+  &quot;users&quot;: [{&quot;group&quot;: &quot;/cms/production&quot;, &quot;user&quot;: &quot;cms001&quot;}]}]</code></pre>
+<h3 id="the-configuration-file">5. The configuration file</h3>
+<p>/etc/weed/weed.toml:</p>
+<pre><code>[server]
+port = 443
+dir = &quot;/data&quot;
+metrics_address = &quot;localhost:9100&quot;
+
+[tls]
+enabled = true
+cert = &quot;/etc/grid-security/hostcert.pem&quot;
+key = &quot;/etc/grid-security/hostkey.pem&quot;
+
+[x509]
+enabled = true
+ca = &quot;/etc/grid-security/certificates&quot;
+crl_path = &quot;/etc/grid-security/certificates&quot;
+
+[tokens]
+issuers = &quot;/etc/weed/issuers.json&quot;
+
+[tpc]
+enabled = true
+ca_path = &quot;/etc/grid-security/certificates&quot;
+
+[macaroons]
+enabled = true
+secret_key = &quot;...the output of: openssl rand -hex 32...&quot;</code></pre>
+<p>The file holds a secret, so make it readable by root only: weed refuses a file with secrets that every user can read.</p>
+<pre><code># chmod 600 /etc/weed/weed.toml</code></pre>
+<p>The grid-mapfile is at its default path, /etc/grid-security/grid-mapfile. <code>tpc.ca_path</code> lets weed verify the other storage endpoints with the IGTF CAs, and macaroons let gfal2 and FTS hand out credentials for third-party copies. <em>weed config</em> prints every option, with its default and what it does; <a href="options.html">Configuration options</a> lists them.</p>
+<h3 id="checking-and-starting">6. Checking and starting</h3>
+<pre><code># weed check -config /etc/weed/weed.toml
+/etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0972e5a032630bb90ccdf474c3df01a9dd983f88c9fdc5baf417e)
+# systemctl enable --now weed</code></pre>
+<p><em>weed check</em> reads every file the configuration names, as weed does at startup, and says what would stop it otherwise:</p>
+<pre><code># weed check -config /etc/weed/weed.toml
+weed would not start with /etc/weed/weed.toml: failed to load the grid-mapfile: open /etc/grid-security/grid-mapfile: no such file or directory</code></pre>
+<p>At startup weed logs what it loaded, which build runs, every option (secrets redacted), what each authentication method accepts, and where it listens:</p>
+<pre><code>level=INFO msg=&quot;loaded grid-mapfile&quot; file=/etc/grid-security/grid-mapfile entries=1
+level=INFO msg=&quot;loaded CA certificates&quot; path=/etc/grid-security/certificates certificates=1
+level=INFO msg=&quot;loaded CRLs&quot; path=/etc/grid-security/certificates crls=1 mode=require
+level=INFO msg=&quot;loaded token issuers&quot; file=/etc/weed/issuers.json issuers=1
+level=INFO msg=&quot;started a worker&quot; worker.user=nobody worker.pid=108 account.name=nobody account.uid=65534 account.gid=65534 account.groups=[65534]
+level=INFO msg=&quot;worker stopped&quot; worker.user=nobody worker.pid=108
+level=INFO msg=&quot;files are accessed by a worker process per Unix account&quot; idle_timeout=10m0s max_workers=256 cgroups=false
+level=INFO msg=&quot;starting weed&quot; version=v1.2.0 commit=46a37813bc81d7a1b9a8b1e2a9e1f3c3e6c2a0d4 ... pid=95 executable=/usr/local/bin/weed dir=/data tls=true authentication=x509,tokens,macaroons tpc=true reload_interval=1h0m0s
+level=INFO msg=configuration file=/etc/weed/weed.toml sha256=6794c30b95c0972e5a032630bb90ccdf474c3df01a9dd983f88c9fdc5baf417e config.server.address=&quot;&quot; config.server.port=443 config.server.dir=/data ...
+level=INFO msg=&quot;X.509 authentication&quot; ca=/etc/grid-security/certificates gridmap=/etc/grid-security/grid-mapfile crl_path=/etc/grid-security/certificates crl_mode=require
+level=INFO msg=&quot;token issuer&quot; issuer=https://iam.example.org/ base_path=/ audiences=&quot;[https://weed.example.org https://wlcg.cern.ch/jwt/v1/any]&quot;
+level=INFO msg=macaroons location=weed-webdav max_validity=24h0m0s
+level=INFO msg=&quot;third-party copy&quot; max_transfers=32 allow_http=false allow_local=false allow_private=false
+level=INFO msg=listening address=[::]:443 scheme=https
+level=INFO msg=&quot;serving the control plane&quot; socket=/run/weed/admin.sock
+level=INFO msg=&quot;serving metrics&quot; address=127.0.0.1:9100</code></pre>
+<p>(The time of each record is left out here.) The worker that starts and stops as nobody is weed checking, before it serves, that it can start workers.</p>
+<h3 id="trying-it">7. Trying it</h3>
+<p>/proc/whoami tells how weed sees a client: who it is, and the account it is served as.</p>
+<pre><code>$ curl --cert alice.pem --key alice.key https://weed.example.org/proc/whoami
+=== WebDAV Server - Who Am I ===
+
+Status: Authenticated
+Username: alice
+Authentication Method: X.509 Certificate
+Unix Account: alice (uid 1001, gid 1001, groups [1001])
+
+Authentication Details:
+  distinguished_name: /DC=org/DC=example/OU=Users/CN=Alice Smith
+...
+$ curl --cert alice.pem --key alice.key -T /etc/hosts https://weed.example.org/webdav/alice/hosts
+$ gfal-ls -l davs://weed.example.org/webdav/alice/
+-rwxrwxrwx   0 0     0           199 Oct 29 09:06 hosts
+$ gfal-copy file:///etc/services davs://weed.example.org/webdav/alice/services
+Copying 692252 bytes file:///etc/services =&gt; davs://weed.example.org/webdav/alice/services
+$ gfal-sum davs://weed.example.org/webdav/alice/services ADLER32
+davs://weed.example.org/webdav/alice/services 3c5e9d34</code></pre>
+<p>gfal2 uses the proxy in X509_USER_PROXY. With a token of the group /cms/production:</p>
+<pre><code>$ curl -H &quot;Authorization: Bearer $TOKEN&quot; -T /etc/services https://weed.example.org/webdav/cms/services
+$ ls -l /data/alice /data/cms
+/data/alice:
+-rw-r--r-- 1 alice alice    199 Oct 29 09:06 hosts
+-rw-r--r-- 1 alice alice 692252 Oct 29 09:06 services
+
+/data/cms:
+-rw-r--r-- 1 cms001 cms001 692252 Oct 29 09:06 services</code></pre>
+<p>Each file belongs to the account that wrote it, and <em>ps</em> shows a worker for each:</p>
+<pre><code>$ ps -o user,pid,ppid,args -C weed
+USER         PID    PPID COMMAND
+root          95       1 weed -config /etc/weed/weed.toml
+alice        127      95 weed worker alice
+cms001       166      95 weed worker cms001</code></pre>
+<p>A certificate that the grid-mapfile does not list gets 403, and the log says why:</p>
+<pre><code>level=INFO msg=&quot;authentication failed&quot; method=x509 error=&quot;forbidden: /DC=org/DC=example/OU=Users/CN=Somebody Else is not in the grid-mapfile&quot; request_id=2daaa43c
+level=INFO msg=request method=GET path=/webdav/alice/ proto=HTTP/1.1 status=403 bytes=10 duration=288.167µs user=nobody remote=192.0.2.7:52430 user_agent=curl/7.76.1 request_id=2daaa43c</code></pre>
+<p>Next: <a href="authentication.html">Authentication</a> explains each method in full, <a href="monitoring.html">Monitoring</a> what to watch, and <a href="troubleshooting.html">Troubleshooting</a> what the usual errors mean.</p>
+</div>
+<!-- end content -->
+</body>
+</html>

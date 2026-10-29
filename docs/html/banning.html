@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Banning users</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Banning users</h1>
+</header>
+<p>A banned user is refused, with 403, whatever their credentials: certificate, token, macaroon or password. Banning a user stops their worker processes at once, which ends their requests and third-party copies in progress. Use it when credentials are compromised or a user misbehaves, before you have time to fix the grid-mapfile, the issuer or the htpasswd file.</p>
+<h2 id="commands">Banning and lifting a ban</h2>
+<pre><code># weed utils ban -reason &#39;compromised credentials&#39; alice
+banned alice; stopped its 1 worker process(es)
+# weed utils bans
+USER   SINCE                    BY              REASON
+alice  2026-10-29 09:06:57 UTC  uid 0, pid 203  compromised credentials
+# weed utils unban alice
+lifted the ban of alice</code></pre>
+<p>The user is the name that credentials map to, which is the Unix account (see <a href="unix-accounts.html">Unix accounts</a>): the account in the grid-mapfile, the user of an issuer's rule, the htpasswd user. Banning nobody refuses anonymous requests.</p>
+<p>From then on, the user's requests get 403, and so does their OIDC login. Their macaroons, which carry their name, are refused too. The log says it:</p>
+<pre><code>level=WARN msg=&quot;user banned&quot; user=alice reason=&quot;compromised credentials&quot; by=&quot;uid 0, pid 203&quot; workers_killed=1
+level=INFO msg=request method=GET path=/webdav/alice/hosts proto=HTTP/1.1 status=403 bytes=10 duration=153.458µs user=alice remote=192.0.2.7:43898 user_agent=curl/7.76.1 request_id=595f7658
+level=WARN msg=&quot;ban lifted&quot; user=alice by=&quot;uid 0, pid 220&quot;</code></pre>
+<p>Banning a user who is banned already keeps the first ban, and stops any worker that a request started since.</p>
+<h2 id="persistence">Across restarts</h2>
+<p>Bans are kept in <code>admin.bans</code> (/var/lib/weed/bans.json), which weed writes at every change, and reads at startup. They are weed's own state, not configuration: weed does not re-read the file on reload, and you should not edit it while weed runs. <code>admin.bans = ""</code> keeps bans in memory only, until weed stops.</p>
+<p>If weed cannot save the file, the ban still applies until weed stops, and weed utils says so and exits with 1:</p>
+<pre><code>banned alice; stopped its 1 worker process(es)
+weed utils: the ban lasts only until weed stops: ...</code></pre>
+<p>weed does not start if it cannot read the file, rather than start without the bans.</p>
+<h2 id="control-plane">The control plane</h2>
+<p>weed utils ban, unban and bans talk to the running weed through its control plane, a Unix socket at <code>admin.socket</code> (/run/weed/admin.sock). Only root and weed's own user can use it: weed creates the socket with mode 0600, in a directory only its owner may enter, and checks the user of every connection. weed utils finds the socket with <code>-config</code> (the configuration file that weed runs with) or <code>-socket</code>; without either, it is the default one.</p>
+<pre><code># weed utils bans -config /etc/weed/weed.toml</code></pre>
+<p>If weed is not running, or another user tries:</p>
+<pre><code>weed utils: cannot reach weed&#39;s control plane at /run/weed/admin.sock (is weed running there? -socket or -config names another): dial unix /run/weed/admin.sock: connect: permission denied</code></pre>
+<p>Two weeds cannot share a socket: the second refuses to start ("control plane: /run/weed/admin.sock is in use, by another weed?"). Give each its own <code>admin.socket</code>. <code>admin.socket = ""</code> disables the control plane.</p>
+<h3 id="api">The API</h3>
+<p>The control plane is HTTP with JSON over the socket, which scripts can use directly. Operations are versioned, under /v1/:</p>
+<table>
+<thead>
+<tr>
+<th>Request</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET /v1/bans</td>
+<td><code>{"bans": [{"user", "since", "reason", "by"}, ...]}</code></td>
+</tr>
+<tr>
+<td>PUT /v1/bans/{user}, with an optional body <code>{"reason": "..."}</code></td>
+<td><code>{"user", "since", "reason", "by", "added", "workers_killed", "warning"}</code>; added is false if the user was banned already</td>
+</tr>
+<tr>
+<td>DELETE /v1/bans/{user}</td>
+<td><code>{"user", "removed", "warning"}</code>; removed is false if the user was not banned</td>
+</tr>
+</tbody>
+</table>
+<p>Errors are answered with a status code and <code>{"error": "..."}</code>. An operation that the running weed does not know gets 404, e.g. from a weed older than weed utils.</p>
+<pre><code># curl -s --unix-socket /run/weed/admin.sock -X PUT -d &#39;{&quot;reason&quot;:&quot;abuse&quot;}&#39; http://weed/v1/bans/alice
+{&quot;user&quot;:&quot;alice&quot;,&quot;since&quot;:&quot;2026-10-29T09:06:57Z&quot;,&quot;reason&quot;:&quot;abuse&quot;,&quot;by&quot;:&quot;uid 0, pid 812&quot;,&quot;added&quot;:true,&quot;workers_killed&quot;:1}
+# weed utils bans -json
+{
+  &quot;bans&quot;: [
+    {
+      &quot;user&quot;: &quot;alice&quot;,
+      &quot;since&quot;: &quot;2026-10-29T09:06:57Z&quot;,
+      &quot;reason&quot;: &quot;abuse&quot;,
+      &quot;by&quot;: &quot;uid 0, pid 812&quot;
+    }
+  ]
+}</code></pre>
+<p>The metric <code>weed_banned_users</code> counts the banned users, and /status says how many there are.</p>
+</div>
+<!-- end content -->
+</body>
+</html>

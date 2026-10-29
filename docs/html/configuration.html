@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Configuration</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Configuration</h1>
+</header>
+<p>weed reads one configuration file, in TOML, named with <code>-config</code>. Every option is optional. <a href="options.html">Configuration options</a> lists them all.</p>
+<h2 id="file">The file</h2>
+<p><em>weed config</em> prints a file that sets every option to its default, and says what each one does. It is a good start:</p>
+<pre><code># weed config &gt;/etc/weed/weed.toml
+# head -20 /etc/weed/weed.toml
+# weed configuration: weed -config weed.toml
+#
+# Every option is optional: this file sets each one to its default. Without a
+# configuration file, weed serves the current directory to local clients without
+# authentication (address = &quot;127.0.0.1&quot; and anonymous = true in [server]).
+# Durations are strings such as &quot;90s&quot;, &quot;10m&quot; or &quot;24h&quot;. weed refuses to read a file
+# that holds secrets (macaroons.secret_key, oidc.client_secret) if every user can.
+
+# Server
+[server]
+# address to listen on (&quot;&quot; for all interfaces)
+address = &quot;&quot;
+# TCP port
+port = 9000
+# directory exported under /webdav/
+dir = &quot;.&quot;
+...</code></pre>
+<p>The sections are:</p>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>What it sets</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="options.html#server">[server]</a></td>
+<td>the port, the exported directory, logging, metrics, reloading</td>
+</tr>
+<tr>
+<td><a href="options.html#tls">[tls]</a></td>
+<td>HTTPS and the host certificate</td>
+</tr>
+<tr>
+<td><a href="options.html#x509">[x509]</a></td>
+<td>client certificates and proxies: CAs, CRLs, grid-mapfile</td>
+</tr>
+<tr>
+<td><a href="options.html#basic">[basic]</a></td>
+<td>passwords and app tokens</td>
+</tr>
+<tr>
+<td><a href="options.html#oidc">[oidc]</a></td>
+<td>the login page that gives out tokens to browsers</td>
+</tr>
+<tr>
+<td><a href="options.html#macaroons">[macaroons]</a></td>
+<td>macaroons, which weed mints</td>
+</tr>
+<tr>
+<td><a href="options.html#tokens">[tokens]</a></td>
+<td>WLCG and SciTokens bearer tokens: the issuers</td>
+</tr>
+<tr>
+<td><a href="options.html#tpc">[tpc]</a></td>
+<td>third-party copy</td>
+</tr>
+<tr>
+<td><a href="options.html#unix_users">[unix_users]</a></td>
+<td>worker processes: idle time, how many, cgroups</td>
+</tr>
+<tr>
+<td><a href="options.html#admin">[admin]</a></td>
+<td>the control plane's socket, and the banned users' file</td>
+</tr>
+</tbody>
+</table>
+<h2 id="rules">Rules</h2>
+<ul>
+<li><p>Unknown sections and options are errors, so a misspelt option stops weed instead of being ignored:</p>
+<pre><code># weed check -config /etc/weed/weed.toml
+weed would not start with /etc/weed/weed.toml: unknown option server.prot</code></pre></li>
+<li><p>Durations are strings such as <code>"90s"</code>, <code>"10m"</code> or <code>"24h"</code>.</p></li>
+<li><p>weed refuses to read a file that holds secrets (<code>macaroons.secret_key</code>, <code>oidc.client_secret</code>) if every user can read it:</p>
+<pre><code>weed would not start with /etc/weed/weed.toml: /etc/weed/weed.toml holds secrets but every user can read it (chmod o-r /etc/weed/weed.toml)</code></pre></li>
+<li><p>Paths are used as they are written. A relative path is relative to the directory weed starts in, which is / under systemd. Write absolute paths: the defaults of <code>basic.htpasswd</code> (.htpasswd) and <code>tls.cert</code> (server.crt), for example, are relative.</p></li>
+<li><p>Some options need others: <code>x509.enabled</code> needs <code>tls.enabled</code> and <code>x509.ca</code>; <code>server.anonymous</code> needs a loopback <code>server.address</code>. weed says which.</p></li>
+</ul>
+<h2 id="changes">Changing the configuration</h2>
+<p>weed reads the file only at startup: changes take effect when weed restarts. The credential files that it names (grid-mapfile, CAs, CRLs, token issuers, passwords, the host certificate) are different: weed re-reads them while it runs (see <a href="reloading.html">Reloading</a>).</p>
+<p>So that you know when the file and the running weed differ, weed looks at the file every minute, and says when a restart would change something. It logs a warning naming the options that changed, and an error if weed would not start with the file:</p>
+<pre><code>level=WARN msg=&quot;restart pending: the configuration file has changed: server.port&quot; reason=config</code></pre>
+<p>/status and the metric <code>weed_restart_pending</code> say it too, and so does <em>systemctl status</em>. Changes to comments or layout are not reported. See <a href="what-runs.html">What runs</a>.</p>
+<p>Before restarting, check the file:</p>
+<pre><code># weed check -config /etc/weed/weed.toml
+/etc/weed/weed.toml: weed would start with it (sha256 43a0e6eeb1b2d1727339feb3ac4bd77171b428ad25a44e22822813d054959667)
+# systemctl restart weed</code></pre>
+<h2 id="quickstart">Without a file</h2>
+<p>Without <code>-config</code>, weed runs with the defaults, except that it listens on 127.0.0.1 only and serves requests without credentials as the account nobody (<code>server.address = "127.0.0.1"</code>, <code>server.anonymous = true</code>). Its port also serves /metrics and /status, since its clients are local. This is for trying weed (see <a href="getting-started.html#trying">Getting started</a>).</p>
+<h2 id="examples">Examples</h2>
+<h3 id="a-grid-storage-node">A grid storage node</h3>
+<p>X.509 with a grid-mapfile, WLCG tokens, macaroons and third-party copy: see <a href="getting-started.html#storage-node">Getting started</a>.</p>
+<h3 id="tokens-only">Tokens only</h3>
+<pre><code>[server]
+port = 443
+dir = &quot;/data&quot;
+metrics_address = &quot;localhost:9100&quot;
+
+[tls]
+enabled = true
+cert = &quot;/etc/grid-security/hostcert.pem&quot;
+key = &quot;/etc/grid-security/hostkey.pem&quot;
+
+[tokens]
+issuers = &quot;/etc/weed/issuers.json&quot;
+
+[tpc]
+enabled = true
+ca_path = &quot;/etc/grid-security/certificates&quot;</code></pre>
+<h3 id="passwords-for-a-small-site">Passwords, for a small site</h3>
+<pre><code>[server]
+port = 443
+dir = &quot;/srv/dav&quot;
+
+[tls]
+enabled = true
+cert = &quot;/etc/pki/tls/certs/dav.example.org.pem&quot;
+key = &quot;/etc/pki/tls/private/dav.example.org.key&quot;
+
+[basic]
+enabled = true
+htpasswd = &quot;/etc/weed/htpasswd&quot;
+app_tokens = &quot;/etc/weed/app-tokens&quot;</code></pre>
+<p>Basic credentials are sent in clear text without TLS: always enable [tls] with [basic].</p>
+</div>
+<!-- end content -->
+</body>
+</html>

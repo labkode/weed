@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – What runs</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">What runs</h1>
+</header>
+<p>So that nothing changes by surprise while it runs, weed says which build runs, since when, with which configuration, and whether a restart would change any of it. You can ask on the command line, in the log, in /status and /metrics, and in <em>systemctl status</em>.</p>
+<h2 id="version">The build</h2>
+<pre><code>$ weed version
+weed v1.2.0
+commit   46a37813bc81d7a1b9a8b1e2a9e1f3c3e6c2a0d4 (2026-10-28T16:07:11Z)
+go       go1.27.3 linux/amd64
+build    go:2CX-x4_-THjPR2Dy4JCE/TtMef8lUxfkIJsGhiXwh/3-NbDYhNvYZpdojQpjfp/Dg3...</code></pre>
+<p>The version is a release tag, or v0.0.0-&lt;time&gt;-&lt;commit&gt; for other commits, with +dirty (and "with uncommitted changes") if the tree had changes. A binary built without version control information (outside a git checkout, or with -buildvcs=false) says "(devel)". The build is the Go build ID, which the linker derives from the binary's content: two binaries with the same build are the same.</p>
+<h2 id="startup">At startup</h2>
+<p>weed logs a "starting weed" record with its version, commit, build, pid and executable, and a "configuration" record with the configuration file, the SHA-256 of its content, and the value of every option, defaults included. Secrets that are set are shown as &lt;redacted&gt;.</p>
+<pre><code>level=INFO msg=&quot;starting weed&quot; version=v1.2.0 commit=46a37813bc81d7a1b9a8b1e2a9e1f3c3e6c2a0d4 commit_time=2026-10-28T16:07:11Z modified=false build=go:2CX-x4_-THjPR2Dy4JCE/... go=go1.27.3 platform=linux/amd64 pid=4242 executable=/usr/local/bin/weed dir=/data tls=true authentication=x509,tokens,macaroons tpc=true reload_interval=1h0m0s
+level=INFO msg=configuration file=/etc/weed/weed.toml sha256=b78bbdeed036... config.server.address=&quot;&quot; config.server.port=443 config.server.dir=/data ... config.macaroons.secret_key=&lt;redacted&gt; ...</code></pre>
+<p><code>sha256sum /etc/weed/weed.toml</code> tells whether the file is still the one weed runs with.</p>
+<h2 id="restart-pending">Restart pending</h2>
+<p>weed reads the configuration file only at startup, and a new binary only runs once weed restarts. So weed looks at both every minute, on reloads, and whenever /metrics or /status is read:</p>
+<ul>
+<li>If the file now sets other values, weed logs a warning that names them.</li>
+<li>If weed would not start with the file (a syntax error, an unknown option, a file that is gone), it logs an error: now, rather than at the next restart.</li>
+<li>If the binary has been replaced by another build, weed logs the new one's version, which it reads from the file without running it.</li>
+</ul>
+<p> </p>
+<pre><code>level=WARN msg=&quot;restart pending: the configuration file has changed: server.port, tpc.enabled&quot; reason=config
+level=ERROR msg=&quot;restart pending: the configuration file has changed, and weed would not start with it: ...&quot; reason=config
+level=WARN msg=&quot;restart pending: weed&#39;s executable /usr/local/bin/weed is now v1.3.0 (commit 9c1e0a2b77d4 of ...) go1.27.3 linux/amd64, build go:...&quot; reason=binary</code></pre>
+<p>Each is logged once, and "restart no longer pending" once the change is undone. Changes to comments and layout only are not reported. The status line of systemd says it too:</p>
+<pre><code>$ systemctl status weed
+...
+     Status: &quot;Serving since 2026-10-28 16:07:11 UTC: weed v1.2.0, /etc/weed/weed.toml
+              (sha256 b78bbdeed036); restart pending: the configuration file has
+              changed: server.port&quot;</code></pre>
+<h2 id="status">/status</h2>
+<p>On <code>server.metrics_address</code>, /status tells all of it as JSON: the build, the pid, since when weed runs, the configuration (file, SHA-256 and every option), how the last reload went, whether a restart is pending and why, the workers, the banned users and the requests in progress. <a href="monitoring.html#status">Monitoring</a> shows a full answer.</p>
+<pre><code>$ curl -s localhost:9100/status | jq .restart_pending
+{
+  &quot;config&quot;: &quot;the configuration file has changed: server.port&quot;
+}</code></pre>
+<p>The same is in the metrics <code>weed_build_info</code>, <code>weed_config_info</code>, <code>weed_restart_pending</code> and <code>process_start_time_seconds</code> (see <a href="metrics.html#what-runs">Metrics</a>). For example, alert when a restart has been pending for a day, and when servers that should run the same build do not:</p>
+<pre><code>weed_restart_pending == 1                       for: 1d
+count(count by (build) (weed_build_info)) &gt; 1</code></pre>
+<h2 id="check">weed check</h2>
+<p><em>weed check</em> does what starting does, without serving: it reads the configuration and every file it names (credential files, the certificate and its key, CAs, CRLs, token issuers, the bans), contacts the OIDC provider, and starts a worker as nobody. It prints the warnings that weed would log, and the SHA-256 of the file. If weed would not start, it says why and exits with 1.</p>
+<pre><code># weed check -config /etc/weed/weed.toml
+/etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0972e5a032630bb90ccdf474c3df01a9dd983f88c9fdc5baf417e)</code></pre>
+<p>It does not try to listen on the configured addresses, which are in use while weed runs, nor set cgroups up. Run it before every restart (see <a href="upgrading.html">Upgrading</a>).</p>
+</div>
+<!-- end content -->
+</body>
+</html>

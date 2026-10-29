@@ -14,7 +14,7 @@ DOCKER_GO  = --rm -v "$(CURDIR):/src" -v "$$($(GO) env GOMODCACHE):/go/pkg/mod" 
              -v weed-gocache:/root/.cache/go-build -w /src --cap-add SYS_PTRACE \
              -e GOPROXY=off -e GOFLAGS=-buildvcs=false
 
-.PHONY: all build test test-root test-linux test-cgroups bench-workers interop check fmt vulncheck fuzz bench cross ci clean help
+.PHONY: all build test test-root test-linux test-cgroups bench-workers interop check fmt vulncheck fuzz bench cross ci docs clean help
 
 all: build
 
@@ -74,8 +74,12 @@ cross: ## Build and vet for every platform in PLATFORMS
 
 ci: check test cross ## What CI runs, except root tests, fuzzing, govulncheck and interop
 
+docs: build ## The administration guide, docs/html, from docs/src (pandoc)
+	$(MAKE) -C docs/src dist WEED=$(abspath $(BIN))
+
 clean: ## Remove the built binary
 	rm -f $(BIN)
+	$(MAKE) -C docs/src clean
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-11s %s\n", $$1, $$2}'

@@ -1,0 +1,145 @@
+/* The weed administration guide, after the DavUtils documentation */
+
+body {
+    margin: 0 1em 2em 1em;
+    background-color: white;
+    color: black;
+}
+
+.header, h1, h2, h3, .sidebar, th {
+    font-family: sans-serif;
+}
+
+.header {
+    padding-top: 0.3em;
+    padding-bottom: 0.5em;
+    margin-bottom: 2em;
+    border: none;
+    border-bottom: 1px solid;
+    border-bottom-color: #2E2E2E;
+}
+
+.header span {
+    font-size: 2em;
+    font-weight: bold;
+    margin-left: 1em;
+}
+
+.header a:link, .header a:visited {
+    text-decoration: none;
+    color: black;
+}
+
+.header a:hover {
+    color: #e68a00;
+}
+
+.sidebar {
+    float: left;
+    width: 15em;
+}
+
+.nav {
+    color: black;
+    background-color: #d2d2d2;
+    margin-bottom: 1em;
+    padding-bottom: 0.1em;
+}
+
+.nav h3 {
+    color: white;
+    background-color: #008080;
+    font-size: 1.2em;
+    padding-top: 0.2em;
+    padding-bottom: 0.2em;
+    padding-left: 0.5em;
+    margin-top: 0;
+}
+
+.nav ul {
+    margin-top: 0;
+    padding-top: 0;
+    font-size: 0.95em;
+}
+
+.nav ul ul {
+    font-size: 1em;
+}
+
+.nav a:link, .nav a:visited {
+    text-decoration: none;
+    color: black;
+}
+
+.nav a:hover {
+    color: #e68a00;
+}
+
+.content {
+    margin-left: 16em;
+    padding: 0;
+    font-family: serif;
+    font-size: 1em;
+    min-width: 16em;
+    max-width: 52em;
+}
+
+.content h1 {
+    color: white;
+    background-color: #008080;
+    font-size: 1.2em;
+    padding-top: 0.2em;
+    padding-bottom: 0.2em;
+    padding-left: 0.5em;
+    padding-right: 0;
+    margin-top: 0;
+}
+
+.content h2 {
+    font-size: 1.2em;
+}
+
+.content h3 {
+    font-size: 1.05em;
+}
+
+code {
+    white-space: pre-wrap;
+}
+
+pre {
+    margin-left: 2em;
+}
+
+table {
+    border-collapse: collapse;
+    margin-left: 2em;
+}
+
+th, td {
+    border: 1px solid #a0a0a0;
+    padding: 0.2em 0.5em;
+    text-align: left;
+    vertical-align: top;
+}
+
+th {
+    background-color: #d2d2d2;
+}
+
+dt {
+    font-weight: bold;
+    margin-top: 0.5em;
+}
+
+/* Narrow screens: the sidebar above the text */
+@media (max-width: 45em) {
+    .sidebar {
+        float: none;
+        width: auto;
+    }
+
+    .content {
+        margin-left: 0;
+    }
+}

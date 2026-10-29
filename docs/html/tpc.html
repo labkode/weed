@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Third-party copy</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Third-party copy</h1>
+</header>
+<p>A third-party copy (TPC) moves a file between two storage endpoints directly, without passing through the client that asks for it. FTS, Rucio and gfal-copy use it between sites. weed implements WLCG HTTP-TPC in both directions, pull and push, with the data-integrity extension: checksums are verified end to end.</p>
+<pre><code>[tpc]
+enabled = true
+ca_path = &quot;/etc/grid-security/certificates&quot;</code></pre>
+<h2 id="how">How a copy works</h2>
+<p>The endpoint that receives the COPY request is the active party: it performs the transfer itself, as the account of the client.</p>
+<dl>
+<dt>Pull: COPY with a Source header</dt>
+<dd>
+weed GETs the remote file and stores it at the request's path.
+</dd>
+<dt>Push: COPY with a Destination on another server</dt>
+<dd>
+weed PUTs the local file to the remote URL.
+</dd>
+</dl>
+<p>Headers named TransferHeader&lt;Name&gt; are forwarded to the remote as &lt;Name&gt;. That is how the client passes the remote endpoint's credentials, typically a token or a macaroon in TransferHeaderAuthorization. weed does not delegate X.509 credentials (Credential: gridsite).</p>
+<pre><code>$ curl --cert alice.pem --key alice.key -X COPY \
+    -H &#39;Source: https://other.example.org/webdav/data/big&#39; \
+    -H &quot;TransferHeaderAuthorization: Bearer $MACAROON&quot; \
+    -H &#39;Repr-Digest: adler=:Qm6Eiw==:&#39; \
+    https://weed.example.org/webdav/alice/big</code></pre>
+<p>weed answers 202 at once, with a text/perf-marker-stream body. It sends a performance marker every <code>tpc.marker_interval</code> (5s by default), and ends with a status line:</p>
+<pre><code>Perf Marker
+    Timestamp: 1793265010
+    Stripe Index: 0
+    Stripe Bytes Transferred: 208404480
+    Total Stripe Count: 1
+    RemoteConnections: tcp:203.0.113.9:443
+End
+...
+success: Created</code></pre>
+<p>A failed copy ends with "failure: &lt;reason&gt;". With gfal2, <code>gfal-copy --copy-mode pull</code> (or push) asks for a third-party copy; FTS chooses itself. With tokens, the client passes one token for weed (Authorization) and one for the remote (TransferHeaderAuthorization); gfal2 does this with BEARER_TOKEN set.</p>
+<h2 id="integrity">Checksums</h2>
+<ul>
+<li>A pull with a Repr-Digest asks the source for a digest of the same algorithms (Want-Repr-Digest). If the source's digest contradicts the client's, the copy fails before any data is stored. Whatever the source says, weed checksums the bytes it receives, and compares them with the client's Repr-Digest. On a mismatch, the file is not stored, and the stream ends with "failure: file not saved: client/server checksum mismatch ...".</li>
+<li>A push forwards Repr-Digest on its PUT. A 412 from the destination is reported as "client/server checksum mismatch reported by destination".</li>
+<li>A source whose answer has neither a Content-Length nor chunked framing, or has a Content-Encoding, or stalls for <code>tpc.stall_timeout</code> (2m), fails the copy.</li>
+</ul>
+<p>A pull is written as any upload is: to a hidden file, renamed into place only when complete and verified (see <a href="storage.html">Storage</a>).</p>
+<h2 id="limits">Limits</h2>
+<p>At most <code>tpc.max_transfers</code> (32) copies run at once, for all accounts together. More get 503, with Retry-After, and are counted in <code>weed_tpc_rejected_total</code>. <code>weed_tpc_active_transfers</code> counts the copies running, by mode, and <code>weed_requests_in_progress</code> the COPY requests in progress (see <a href="metrics.html">Metrics</a>).</p>
+<p>Errors found before any transfer starts are answered at once:</p>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>400</td>
+<td>a bad Source or Destination, or one with another scheme than https</td>
+</tr>
+<tr>
+<td>404, 405</td>
+<td>a push of a file that does not exist, or of a directory</td>
+</tr>
+<tr>
+<td>405</td>
+<td>a pull onto a directory</td>
+</tr>
+<tr>
+<td>409</td>
+<td>the parent directory does not exist</td>
+</tr>
+<tr>
+<td>412</td>
+<td>Overwrite: F onto an existing file</td>
+</tr>
+<tr>
+<td>423</td>
+<td>the target is locked</td>
+</tr>
+<tr>
+<td>501</td>
+<td>TPC is disabled, or credential delegation was asked for (only Credential: none is supported)</td>
+</tr>
+<tr>
+<td>503</td>
+<td><code>tpc.max_transfers</code> copies are running</td>
+</tr>
+</tbody>
+</table>
+<h2 id="remote-endpoints">Remote endpoints</h2>
+<p>A COPY makes weed connect wherever its client says. So that it cannot be used to reach the services inside your site, weed checks every address that a remote endpoint resolves to, when it connects and after every redirect:</p>
+<ul>
+<li>Remote endpoints must be https://, unless <code>tpc.allow_http</code>.</li>
+<li>Loopback, link-local and multicast addresses, and 0.0.0.0/8, are refused unless <code>tpc.allow_local</code> (for tests only).</li>
+<li>Private addresses (RFC 1918, fc00::/7), shared addresses (100.64.0.0/10), the other special-purpose ranges of RFC 6890, and IPv6 addresses that embed IPv4 ones (NAT64, 6to4, Teredo) are refused unless <code>tpc.allow_private</code>. IPv4-mapped IPv6 addresses count as IPv4.</li>
+<li>The unspecified address is always refused.</li>
+</ul>
+<p>If your storage endpoints talk over a private network, set <code>tpc.allow_private</code>, and protect the services on that network otherwise. weed follows at most 10 redirects, never to http:// when that is not allowed, and never one that changes the method.</p>
+<p>weed verifies remote endpoints with the system's CAs, and those of <code>tpc.ca_path</code>: set it to /etc/grid-security/certificates to trust the IGTF CAs. Workers re-read it on reload (see <a href="reloading.html">Reloading</a>), so the users must be able to read it.</p>
+</div>
+<!-- end content -->
+</body>
+</html>

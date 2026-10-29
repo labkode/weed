@@ -28,3 +28,6 @@ Thumbs.db
 # pass files
 .htpasswd
 server.log
+
+# The administration guide while it is made (make docs)
+docs/src/build/

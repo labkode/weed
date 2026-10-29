@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Metrics</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Metrics</h1>
+</header>
+<p>weed serves these metrics at /metrics on <code>server.metrics_address</code>, in the Prometheus text format (see <a href="monitoring.html">Monitoring</a>). The workers report theirs to weed, which serves the totals. Counters start at 0 when weed starts.</p>
+<h2 id="requests">Requests</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="weed_http_requests_total"><code>weed_http_requests_total</code></span></td>
+<td>counter</td>
+<td>method, code</td>
+<td>HTTP requests to the main port, by method and status code. Methods other than those of HTTP and WebDAV are counted as "other".</td>
+</tr>
+<tr>
+<td><span id="weed_http_response_bytes_total"><code>weed_http_response_bytes_total</code></span></td>
+<td>counter</td>
+<td>method</td>
+<td>Bytes sent in response bodies, by method: the downloads are those of GET.</td>
+</tr>
+<tr>
+<td><span id="weed_upload_bytes_total"><code>weed_upload_bytes_total</code></span></td>
+<td>counter</td>
+<td></td>
+<td>Bytes stored by successful uploads (PUT).</td>
+</tr>
+<tr>
+<td><span id="weed_requests_in_progress"><code>weed_requests_in_progress</code></span></td>
+<td>gauge</td>
+<td>kind</td>
+<td>Authenticated WebDAV requests being served, by kind: download (GET), upload (PUT), tpc_pull and tpc_push (third-party copies, for as long as their COPY lasts), other (PROPFIND, MKCOL, DELETE, MOVE, local COPY, ...). /status also counts them by user.</td>
+</tr>
+<tr>
+<td><span id="weed_auth_requests_total"><code>weed_auth_requests_total</code></span></td>
+<td>counter</td>
+<td>method, result</td>
+<td>Authentication outcomes of WebDAV requests, by the method that decided them (x509, token, macaroon, basic, anonymous; none when no credentials were accepted) and result (success, forbidden, unauthorized).</td>
+</tr>
+<tr>
+<td><span id="weed_checksum_mismatches_total"><code>weed_checksum_mismatches_total</code></span></td>
+<td>counter</td>
+<td>operation</td>
+<td>Transfers refused because the data did not match the client's checksum, by operation (put, tpc_pull, tpc_push).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="tpc">Third-party copy</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="weed_tpc_transfers_total"><code>weed_tpc_transfers_total</code></span></td>
+<td>counter</td>
+<td>mode, result</td>
+<td>Finished third-party copies by mode (pull, push) and result (success, failure).</td>
+</tr>
+<tr>
+<td><span id="weed_tpc_bytes_total"><code>weed_tpc_bytes_total</code></span></td>
+<td>counter</td>
+<td>mode</td>
+<td>Bytes moved by third-party copies, by mode.</td>
+</tr>
+<tr>
+<td><span id="weed_tpc_active_transfers"><code>weed_tpc_active_transfers</code></span></td>
+<td>gauge</td>
+<td>mode</td>
+<td>Third-party copies in progress, by mode.</td>
+</tr>
+<tr>
+<td><span id="weed_tpc_rejected_total"><code>weed_tpc_rejected_total</code></span></td>
+<td>counter</td>
+<td></td>
+<td>Third-party copies refused (503) because <code>tpc.max_transfers</code> were already running.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="workers">Workers</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="weed_workers"><code>weed_workers</code></span></td>
+<td>gauge</td>
+<td></td>
+<td>Worker processes, including those finishing requests after being replaced.</td>
+</tr>
+<tr>
+<td><span id="weed_worker_starts_total"><code>weed_worker_starts_total</code></span></td>
+<td>counter</td>
+<td>result</td>
+<td>Worker processes started, by result (success, failure).</td>
+</tr>
+<tr>
+<td><span id="weed_worker_exits_total"><code>weed_worker_exits_total</code></span></td>
+<td>counter</td>
+<td>reason</td>
+<td>Worker processes that exited, by reason: stopped when asked to (e.g. when idle), killed when their account was banned, failed otherwise.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="credentials">Credentials</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="weed_crl_expiry_timestamp_seconds"><code>weed_crl_expiry_timestamp_seconds</code></span></td>
+<td>gauge</td>
+<td></td>
+<td>When the first CA runs out of current CRLs: with <code>x509.crl_mode = "require"</code>, its users are refused from then on. Absent without CRLs.</td>
+</tr>
+<tr>
+<td><span id="weed_tls_certificate_expiry_timestamp_seconds"><code>weed_tls_certificate_expiry_timestamp_seconds</code></span></td>
+<td>gauge</td>
+<td></td>
+<td>When the host certificate expires. Absent without TLS.</td>
+</tr>
+<tr>
+<td><span id="weed_reloads_total"><code>weed_reloads_total</code></span></td>
+<td>counter</td>
+<td>result</td>
+<td>Credential reloads by result: success, or partial when some file could not be read.</td>
+</tr>
+<tr>
+<td><span id="weed_reload_last_success_timestamp_seconds"><code>weed_reload_last_success_timestamp_seconds</code></span></td>
+<td>gauge</td>
+<td></td>
+<td>When credentials were last reloaded completely (or loaded at startup).</td>
+</tr>
+<tr>
+<td><span id="weed_reload_last_successful"><code>weed_reload_last_successful</code></span></td>
+<td>gauge</td>
+<td></td>
+<td>1 if the last reload read every credential file, CA and certificate; 0 if some kept their previous contents.</td>
+</tr>
+<tr>
+<td><span id="weed_banned_users"><code>weed_banned_users</code></span></td>
+<td>gauge</td>
+<td></td>
+<td>Users that weed refuses whatever their credentials (<code>weed utils ban</code>).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-runs">What runs</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="weed_build_info"><code>weed_build_info</code></span></td>
+<td>gauge</td>
+<td>version, revision, modified, goversion, build</td>
+<td>Always 1: the build of weed that runs (see <a href="what-runs.html#version">What runs</a>).</td>
+</tr>
+<tr>
+<td><span id="weed_config_info"><code>weed_config_info</code></span></td>
+<td>gauge</td>
+<td>file, sha256</td>
+<td>Always 1: the configuration file weed runs with, and the SHA-256 of its content when weed started (empty without a file).</td>
+</tr>
+<tr>
+<td><span id="weed_restart_pending"><code>weed_restart_pending</code></span></td>
+<td>gauge</td>
+<td>reason</td>
+<td>1 if a restart would run something else than what runs: the configuration file (config) or the executable (binary) has changed since weed started.</td>
+</tr>
+<tr>
+<td><span id="process_start_time_seconds"><code>process_start_time_seconds</code></span></td>
+<td>gauge</td>
+<td></td>
+<td>When weed started, in seconds since the Unix epoch.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="example">Example</h2>
+<pre><code>$ curl -s localhost:9100/metrics | grep -v &#39;^#&#39;
+weed_http_requests_total{method=&quot;COPY&quot;,code=&quot;202&quot;} 1
+weed_http_requests_total{method=&quot;GET&quot;,code=&quot;200&quot;} 3
+weed_http_requests_total{method=&quot;GET&quot;,code=&quot;403&quot;} 1
+weed_http_requests_total{method=&quot;PROPFIND&quot;,code=&quot;207&quot;} 2
+weed_http_requests_total{method=&quot;PUT&quot;,code=&quot;201&quot;} 3
+...
+weed_auth_requests_total{method=&quot;token&quot;,result=&quot;success&quot;} 3
+weed_auth_requests_total{method=&quot;x509&quot;,result=&quot;forbidden&quot;} 1
+weed_auth_requests_total{method=&quot;x509&quot;,result=&quot;success&quot;} 15
+weed_upload_bytes_total 1384703
+weed_tpc_transfers_total{mode=&quot;pull&quot;,result=&quot;success&quot;} 1
+weed_tpc_bytes_total{mode=&quot;pull&quot;} 692252
+weed_tpc_active_transfers{mode=&quot;pull&quot;} 0
+weed_requests_in_progress{kind=&quot;download&quot;} 0
+weed_requests_in_progress{kind=&quot;other&quot;} 0
+weed_requests_in_progress{kind=&quot;tpc_pull&quot;} 0
+weed_requests_in_progress{kind=&quot;tpc_push&quot;} 0
+weed_requests_in_progress{kind=&quot;upload&quot;} 0
+weed_workers 2
+weed_worker_starts_total{result=&quot;success&quot;} 3
+weed_worker_exits_total{reason=&quot;stopped&quot;} 1
+weed_crl_expiry_timestamp_seconds 1.793869616e+09
+weed_tls_certificate_expiry_timestamp_seconds 1.795856816e+09
+process_start_time_seconds 1.793264817406e+09
+weed_build_info{version=&quot;v1.2.0&quot;,revision=&quot;46a37813bc81d7a1b9a8b1e2a9e1f3c3e6c2a0d4&quot;,modified=&quot;false&quot;,goversion=&quot;go1.27.3&quot;,build=&quot;go:2CX-x4_-...&quot;} 1
+weed_config_info{file=&quot;/etc/weed/weed.toml&quot;,sha256=&quot;6794c30b95c0972e5a032630bb90ccdf474c3df01a9dd983f88c9fdc5baf417e&quot;} 1
+weed_restart_pending{reason=&quot;config&quot;} 0
+weed_restart_pending{reason=&quot;binary&quot;} 0
+weed_reload_last_success_timestamp_seconds 1.793264817406e+09
+weed_reload_last_successful 1
+weed_banned_users 0</code></pre>
+<p>Series of a counter appear once something has been counted; weed_requests_in_progress and weed_restart_pending have every series from the start.</p>
+</div>
+<!-- end content -->
+</body>
+</html>

@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Commands</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Commands</h1>
+</header>
+<p>weed is a single binary. Options are set in the configuration file, not on the command line: the commands take <code>-config</code> only.</p>
+<pre><code>$ weed -h
+usage: weed [-config weed.toml]
+       weed check [-config weed.toml]
+                      check that weed would start with a configuration, without serving
+       weed version   print the version, commit and build of weed
+       weed config    print a configuration file with every option and its default
+       weed utils     helpers for passwords, app tokens and certificates, and
+                      ban, unban and bans for the running weed
+
+Options are set in the configuration file. Without one, weed serves the current
+directory at http://127.0.0.1:9000/webdav/ to local clients, without authentication,
+as the Unix account nobody, and its metrics and status at
+http://127.0.0.1:9000/metrics and /status. weed serves on Linux, as root.</code></pre>
+<h2 id="weed">weed</h2>
+<pre><code># weed -config /etc/weed/weed.toml</code></pre>
+<p>Serves until SIGTERM or SIGINT, then stops accepting requests, gives those in progress 30 seconds to finish, and stops its workers. SIGHUP reopens the log file and reloads credentials (see <a href="reloading.html">Reloading</a>). Under systemd, weed tells systemd when it is ready, reloading and stopping, and its status line (see <a href="installation.html#systemd">Installation</a>).</p>
+<p>weed serves on Linux only, as root or with CAP_SETUID and CAP_SETGID. <em>weed worker</em> is how weed starts its worker processes: it is not for running by hand.</p>
+<table>
+<thead>
+<tr>
+<th>Exit status</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>weed stopped when asked to</td>
+</tr>
+<tr>
+<td>1</td>
+<td>weed could not start, or stopped on an error; it says why on standard error and in its log</td>
+</tr>
+<tr>
+<td>2</td>
+<td>an unknown command-line option (the usage is printed)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="check">weed check</h2>
+<pre><code># weed check -config /etc/weed/weed.toml
+/etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0972e5a032630bb90ccdf474c3df01a9dd983f88c9fdc5baf417e)</code></pre>
+<p>Checks that weed would start with a configuration, without serving: it reads the file and every file it names, contacts the OIDC provider, and starts a worker as nobody, as weed does at startup. It prints the warnings weed would log, and the SHA-256 of the file, which weed logs and reports when it runs it. It does not try the listening addresses, nor set cgroups up. Run it as the user weed runs as, so that it reads the files with the same permissions. See <a href="what-runs.html#check">What runs</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Exit status</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>weed would start with the configuration</td>
+</tr>
+<tr>
+<td>1</td>
+<td>it would not: <code>weed would not start with &lt;file&gt;: &lt;why&gt;</code> on standard error</td>
+</tr>
+<tr>
+<td>2</td>
+<td>an unknown command-line option</td>
+</tr>
+</tbody>
+</table>
+<h2 id="config">weed config</h2>
+<pre><code>$ weed config &gt;weed.toml</code></pre>
+<p>Prints a configuration file that sets every option to its default, with what each option does. <a href="options.html">Configuration options</a> lists the same.</p>
+<h2 id="version">weed version</h2>
+<pre><code>$ weed version
+weed v1.2.0
+commit   46a37813bc81d7a1b9a8b1e2a9e1f3c3e6c2a0d4 (2026-10-28T16:07:11Z)
+go       go1.27.3 linux/amd64
+build    go:2CX-x4_-THjPR2Dy4JCE/TtMef8lUxfkIJsGhiXwh/3-NbDYhNvYZpdojQpjfp/Dg3...</code></pre>
+<p>Prints the version, the commit it was built from and its time, the Go version and platform, and the build ID. See <a href="what-runs.html#version">What runs</a>.</p>
+<h2 id="utils">weed utils</h2>
+<pre><code>$ weed utils
+Usage: weed utils &lt;command&gt;
+
+Available commands:
+  cert     - Generate TLS certificates
+  password - Generate password hashes
+  token    - Manage application tokens
+
+Commands of a running weed, through its control plane (admin.socket):
+  ban      - Ban a user: refuse its requests, stop its worker processes
+  unban    - Lift the ban of a user
+  bans     - List the banned users
+
+weed utils &lt;command&gt; -h describes a command.</code></pre>
+<h3 id="ban">weed utils ban</h3>
+<pre><code>Usage: weed utils ban [options] &lt;user&gt;
+
+Options (before the arguments):
+  -config string
+        the configuration file that weed runs with, which names the socket (admin.socket)
+  -reason string
+        why, kept with the ban
+  -socket string
+        the control plane&#39;s socket (default /run/weed/admin.sock)
+
+# weed utils ban -reason &#39;compromised credentials&#39; alice
+banned alice; stopped its 1 worker process(es)</code></pre>
+<p>Bans a user of the running weed: refuses their requests whatever their credentials, and stops their worker processes. See <a href="banning.html">Banning users</a>.</p>
+<h3 id="unban">weed utils unban</h3>
+<pre><code>Usage: weed utils unban [options] &lt;user&gt;
+
+# weed utils unban alice
+lifted the ban of alice</code></pre>
+<p>Takes <code>-config</code> and <code>-socket</code>, as ban does.</p>
+<h3 id="bans">weed utils bans</h3>
+<pre><code>Usage: weed utils bans [options]
+
+# weed utils bans
+USER   SINCE                    BY              REASON
+alice  2026-10-29 09:06:57 UTC  uid 0, pid 203  compromised credentials</code></pre>
+<p>Lists the banned users; <code>-json</code> prints weed's answer as JSON. Takes <code>-config</code> and <code>-socket</code>, as ban does.</p>
+<p>ban, unban and bans exit with:</p>
+<table>
+<thead>
+<tr>
+<th>Exit status</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>done</td>
+</tr>
+<tr>
+<td>1</td>
+<td>weed cannot be reached or refused, or the change applies but could not be saved; <code>weed utils: &lt;why&gt;</code> on standard error</td>
+</tr>
+<tr>
+<td>2</td>
+<td>wrong options or arguments (the usage is printed)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="password">weed utils password</h3>
+<pre><code># weed utils password bob &#39;s3cret&#39;
+Added user &#39;bob&#39; to .htpasswd</code></pre>
+<p>Adds a user with a bcrypt hash of the password to .htpasswd, in the current directory. The password is on the command line, where other users can see it with <em>ps</em>, and goes to the shell's history: on a shared host, use <code>htpasswd -B</code>, which asks for it.</p>
+<h3 id="token">weed utils token</h3>
+<pre><code># weed utils token generate bob
+Generated token for user &#39;bob&#39;: 23bb59e76eeeb0228d5a1d1b53f6bda289ce9e43fae29b85d64215d5422a5127
+Token saved to .app-tokens</code></pre>
+<p>Generates a random app token for a user, which they give as their password with Basic authentication, and adds it to .app-tokens, in the current directory. See <a href="authentication.html#basic">Authentication</a>.</p>
+<h3 id="cert">weed utils cert</h3>
+<pre><code>$ weed utils cert
+Generated server.crt and server.key</code></pre>
+<p>Generates a self-signed certificate for localhost and 127.0.0.1, valid for a year, and its key, as server.crt and server.key (mode 0600) in the current directory: for tests, not for clients to trust.</p>
+</div>
+<!-- end content -->
+</body>
+</html>

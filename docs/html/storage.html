@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Storage and checksums</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Storage and checksums</h1>
+</header>
+<p>weed serves <code>server.dir</code> under /webdav/: the file /data/alice/hosts is https://weed.example.org/webdav/alice/hosts. It keeps nothing of its own next to the files, except checksums in extended attributes.</p>
+<h2 id="guarantees">What weed guarantees</h2>
+<ul>
+<li>Uploads (PUT, local COPY, TPC pull) are written to a hidden temporary file in the target directory, synced to disk, and renamed into place only once complete and verified. An interrupted or failed upload never replaces or truncates an existing file. The temporary files, named .weed-upload-*, are invisible to WebDAV clients.</li>
+<li>LOCKs are honoured by every write, PUT and TPC pull included.</li>
+<li>MOVE overwrites by default, as RFC 4918 requires. COPY or MOVE of a directory onto itself or into one of its descendants is refused (403).</li>
+<li>PROPFIND with Depth: infinity (or without Depth) is refused (403): listing a whole tree is too expensive.</li>
+<li>Paths with encoded dot segments (%2e%2e) are refused.</li>
+</ul>
+<p>A temporary file can stay behind if weed or the machine dies during an upload. Remove the old ones now and then:</p>
+<pre><code># find /data -name &#39;.weed-upload-*&#39; -mmin +1440 -delete</code></pre>
+<h2 id="checksums">Checksums</h2>
+<p>weed supports the digests of RFC 9530 (Repr-Digest) and, for older clients, RFC 3230 (Digest), with the algorithms adler (or adler32), crc32c, md5, sha, sha-256 and sha-512. Digests computed during an upload are cached in an extended attribute of the file, user.weed.digest.&lt;alg&gt;, and are recomputed if the file's size or mtime changes. The filesystem must support user extended attributes for the cache to work.</p>
+<pre><code># getfattr -d /data/alice/services
+# file: data/alice/services
+user.weed.digest.adler=...</code></pre>
+<p>A PUT with a Repr-Digest header, e.g. <code>adler=:AAAAAQ==:, md5=:1B2M2Y8AsgTpgAmY7PhCfg==:</code>, is verified:</p>
+<table>
+<thead>
+<tr>
+<th>Repr-Digest</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>absent</td>
+<td>the upload is not verified</td>
+</tr>
+<tr>
+<td>malformed</td>
+<td>400</td>
+</tr>
+<tr>
+<td>empty, or with none of the supported algorithms</td>
+<td>406</td>
+</tr>
+<tr>
+<td>a supported digest differs from the data received</td>
+<td>412, and the file is not stored</td>
+</tr>
+<tr>
+<td>every supported digest matches</td>
+<td>201 or 204, with Repr-Digest</td>
+</tr>
+</tbody>
+</table>
+<p>GET and HEAD return Repr-Digest when asked with Want-Repr-Digest (e.g. <code>adler=9</code>), and Digest when asked with Want-Digest (e.g. <code>adler32</code>). gfal-sum asks for it:</p>
+<pre><code>$ gfal-sum davs://weed.example.org/webdav/alice/services ADLER32
+davs://weed.example.org/webdav/alice/services 3c5e9d34</code></pre>
+<p>The digests are base64, as RFC 9530 says. To compute one:</p>
+<pre><code>$ openssl dgst -md5 -binary myfile | base64</code></pre>
+<p>Checksum mismatches are counted in <code>weed_checksum_mismatches_total</code>, by operation (put, tpc_pull, tpc_push).</p>
+<h2 id="performance">Performance</h2>
+<p>Uploads and third-party copies read the next MiB while the previous one is written and checksummed, and compute several digests in parallel, so that checksums cost little more than the slowest of network, disk and hashing. On an M1 Pro over loopback, with 2 GiB files: PUT or TPC pull with adler32 at about 2450 MB/s, with sha-256 as well at about 1900 MB/s; GET at about 3000 MB/s. md5 is the slow one, at about 650 MB/s. Measure on your hardware, from the source tree:</p>
+<pre><code>$ WEED_BENCH_MIB=4096 make bench</code></pre>
+<h2 id="webdav">WebDAV</h2>
+<p>weed is meant for WLCG clients (gfal2, davix, FTS, XRootD), and deviates from RFC 4918 where they are not affected. In the litmus test suite, the basic, copymove and http tests pass; props and locks fail only on these:</p>
+<ul>
+<li>If headers: only lock tokens are evaluated; entity tags and Not are ignored. The HTTP If-Match and If-None-Match headers work.</li>
+<li>PROPPATCH stores nothing: each property is refused with 403 in the 207 answer.</li>
+<li>Shared locks get 501; exclusive locks work.</li>
+<li>A PROPFIND body that binds a prefix to the empty namespace is accepted, not refused with 400.</li>
+</ul>
+</div>
+<!-- end content -->
+</body>
+</html>

@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Configuration options</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Configuration options</h1>
+</header>
+<p>Every option of the configuration file, with its default. <em>weed config</em> prints the same, as a configuration file, and this page is made from it. Without a configuration file, weed uses these defaults except <code>server.address = "127.0.0.1"</code> and <code>server.anonymous = true</code> (see <a href="configuration.html#quickstart">Configuration</a>).</p>
+<p>Paths are used as written: relative ones are relative to the directory weed starts in. Durations are strings such as <code>"90s"</code>, <code>"10m"</code> or <code>"24h"</code>.</p>
+<p>Sections: <a href="#server">[server]</a>, <a href="#tls">[tls]</a>, <a href="#x509">[x509]</a>, <a href="#basic">[basic]</a>, <a href="#oidc">[oidc]</a>, <a href="#macaroons">[macaroons]</a>, <a href="#tokens">[tokens]</a>, <a href="#tpc">[tpc]</a>, <a href="#unix_users">[unix_users]</a>, <a href="#admin">[admin]</a>.</p>
+<h2 id="server">[server]</h2>
+<p>Server. See <a href="configuration.html">Configuration</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="server.address"><code>address</code></span></td>
+<td><code>""</code></td>
+<td>Address to listen on ("" for all interfaces).</td>
+</tr>
+<tr>
+<td><span id="server.port"><code>port</code></span></td>
+<td><code>9000</code></td>
+<td>TCP port.</td>
+</tr>
+<tr>
+<td><span id="server.dir"><code>dir</code></span></td>
+<td><code>"."</code></td>
+<td>Directory exported under /webdav/.</td>
+</tr>
+<tr>
+<td><span id="server.anonymous"><code>anonymous</code></span></td>
+<td><code>false</code></td>
+<td>Serve requests without credentials as the Unix account nobody; only on a loopback address (the default without a configuration file).</td>
+</tr>
+<tr>
+<td><span id="server.log_file"><code>log_file</code></span></td>
+<td><code>""</code></td>
+<td>Log to this file ("" for standard error); weed reopens it on SIGHUP, for logrotate.</td>
+</tr>
+<tr>
+<td><span id="server.log_level"><code>log_level</code></span></td>
+<td><code>"info"</code></td>
+<td>Log records of this level and above: "debug", "info", "warn" or "error".</td>
+</tr>
+<tr>
+<td><span id="server.log_format"><code>log_format</code></span></td>
+<td><code>"text"</code></td>
+<td>"text" (key=value) or "json", one record per line.</td>
+</tr>
+<tr>
+<td><span id="server.metrics_address"><code>metrics_address</code></span></td>
+<td><code>""</code></td>
+<td>Serve Prometheus metrics (/metrics), what runs (/status) and /healthz, without authentication, on this address, e.g. "localhost:9100" ("" disables).</td>
+</tr>
+<tr>
+<td><span id="server.reload_interval"><code>reload_interval</code></span></td>
+<td><code>"1h"</code></td>
+<td>Re-read credential files (htpasswd, app tokens, grid-mapfile, CAs, CRLs, token issuers, TLS certificate) this often ("0s": only on SIGHUP).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="tls">[tls]</h2>
+<p>HTTPS. See <a href="installation.html#network">Installation</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="tls.enabled"><code>enabled</code></span></td>
+<td><code>false</code></td>
+<td>Serve HTTPS.</td>
+</tr>
+<tr>
+<td><span id="tls.cert"><code>cert</code></span></td>
+<td><code>"server.crt"</code></td>
+<td>Server certificate (PEM).</td>
+</tr>
+<tr>
+<td><span id="tls.key"><code>key</code></span></td>
+<td><code>"server.key"</code></td>
+<td>Its private key (PEM).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="x509">[x509]</h2>
+<p>X.509 client certificates and proxies (needs tls). See <a href="authentication.html#x509">Authentication</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="x509.enabled"><code>enabled</code></span></td>
+<td><code>false</code></td>
+<td>Accept X.509 client certificates.</td>
+</tr>
+<tr>
+<td><span id="x509.ca"><code>ca</code></span></td>
+<td><code>""</code></td>
+<td>CA certificates: a PEM file, or a directory such as /etc/grid-security/certificates.</td>
+</tr>
+<tr>
+<td><span id="x509.crl_path"><code>crl_path</code></span></td>
+<td><code>""</code></td>
+<td>Certificate revocation lists: a file or a directory such as /etc/grid-security/certificates, kept current by fetch-crl ("" accepts revoked certificates).</td>
+</tr>
+<tr>
+<td><span id="x509.crl_mode"><code>crl_mode</code></span></td>
+<td><code>"require"</code></td>
+<td>"require" rejects certificates whose issuer has no current CRL; "if-valid" only checks against the CRLs that are present and current.</td>
+</tr>
+<tr>
+<td><span id="x509.gridmap"><code>gridmap</code></span></td>
+<td><code>"/etc/grid-security/grid-mapfile"</code></td>
+<td>Grid-mapfile: only certificates whose DN it lists are accepted, as its usernames.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="basic">[basic]</h2>
+<p>HTTP Basic authentication with passwords and app tokens (weed utils password, weed utils token). See <a href="authentication.html#basic">Authentication</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="basic.enabled"><code>enabled</code></span></td>
+<td><code>false</code></td>
+<td>Accept Basic authentication.</td>
+</tr>
+<tr>
+<td><span id="basic.htpasswd"><code>htpasswd</code></span></td>
+<td><code>".htpasswd"</code></td>
+<td>Htpasswd file (bcrypt).</td>
+</tr>
+<tr>
+<td><span id="basic.app_tokens"><code>app_tokens</code></span></td>
+<td><code>".app-tokens"</code></td>
+<td>App tokens file.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="oidc">[oidc]</h2>
+<p>A login page for browsers (/auth/oidc) that gives out WLCG tokens: users log in at a token issuer listed in tokens.issuers, and get the access token it issues, to use as a bearer token. See <a href="authentication.html#oidc">Authentication</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="oidc.enabled"><code>enabled</code></span></td>
+<td><code>false</code></td>
+<td>Serve the login page.</td>
+</tr>
+<tr>
+<td><span id="oidc.issuer"><code>issuer</code></span></td>
+<td><code>""</code></td>
+<td>Issuer URL, as in tokens.issuers, e.g. "https://wlcg.cloud.cnaf.infn.it/".</td>
+</tr>
+<tr>
+<td><span id="oidc.client_id"><code>client_id</code></span></td>
+<td><code>""</code></td>
+<td>Client ID.</td>
+</tr>
+<tr>
+<td><span id="oidc.client_secret"><code>client_secret</code></span></td>
+<td><code>""</code></td>
+<td>Client secret.</td>
+</tr>
+<tr>
+<td><span id="oidc.redirect_url"><code>redirect_url</code></span></td>
+<td><code>""</code></td>
+<td>Redirect URL, e.g. "https://weed.example.org/oidc_redirect".</td>
+</tr>
+<tr>
+<td><span id="oidc.scopes"><code>scopes</code></span></td>
+<td><code>["openid", "storage.read:/"]</code></td>
+<td>Scopes to ask for, e.g. ["openid", "storage.read:/", "storage.modify:/"]; the issuer grants those its policies allow.</td>
+</tr>
+<tr>
+<td><span id="oidc.audience"><code>audience</code></span></td>
+<td><code>""</code></td>
+<td>Audience to ask for (the "audience" parameter of INDIGO IAM), one of the issuer's audiences in tokens.issuers ("": the issuer's default).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="macaroons">[macaroons]</h2>
+<p>Macaroons: bearer tokens that weed mints (POST with Content-Type application/macaroon-request). See <a href="authentication.html#macaroons">Authentication</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="macaroons.enabled"><code>enabled</code></span></td>
+<td><code>false</code></td>
+<td>Accept and mint macaroons.</td>
+</tr>
+<tr>
+<td><span id="macaroons.secret_key"><code>secret_key</code></span></td>
+<td><code>""</code></td>
+<td>Signing key, at least 32 characters.</td>
+</tr>
+<tr>
+<td><span id="macaroons.location"><code>location</code></span></td>
+<td><code>"weed-webdav"</code></td>
+<td>Location identifier.</td>
+</tr>
+<tr>
+<td><span id="macaroons.max_validity"><code>max_validity</code></span></td>
+<td><code>"24h"</code></td>
+<td>Maximum (and default) lifetime of minted macaroons.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="tokens">[tokens]</h2>
+<p>WLCG and SciTokens JWT bearer tokens. See <a href="authentication.html#tokens">Authentication</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="tokens.issuers"><code>issuers</code></span></td>
+<td><code>""</code></td>
+<td>Accept tokens from the issuers in this JSON file ("" disables): [{"issuer": "https://...", "audiences": ["https://this.server"], "base_path": "/", "users": [{"sub": "...", "group": "/vo/group", "user": "account"}]}].</td>
+</tr>
+<tr>
+<td><span id="tokens.ca_path"><code>ca_path</code></span></td>
+<td><code>""</code></td>
+<td>Extra CA certificates (file or directory) for fetching the issuers' signing keys, in addition to the system roots.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="tpc">[tpc]</h2>
+<p>WLCG HTTP third-party copy (COPY with Source, or with a remote Destination). See <a href="tpc.html">Third-party copy</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="tpc.enabled"><code>enabled</code></span></td>
+<td><code>false</code></td>
+<td>Serve third-party copies.</td>
+</tr>
+<tr>
+<td><span id="tpc.ca_path"><code>ca_path</code></span></td>
+<td><code>""</code></td>
+<td>Extra CA certificates (file or directory, e.g. /etc/grid-security/certificates) for verifying remote endpoints, in addition to the system roots.</td>
+</tr>
+<tr>
+<td><span id="tpc.allow_http"><code>allow_http</code></span></td>
+<td><code>false</code></td>
+<td>Allow plain-text http:// remote endpoints.</td>
+</tr>
+<tr>
+<td><span id="tpc.allow_local"><code>allow_local</code></span></td>
+<td><code>false</code></td>
+<td>Allow remote endpoints on loopback and link-local addresses (testing only).</td>
+</tr>
+<tr>
+<td><span id="tpc.allow_private"><code>allow_private</code></span></td>
+<td><code>false</code></td>
+<td>Allow remote endpoints on private addresses (RFC 1918, RFC 4193, shared address space).</td>
+</tr>
+<tr>
+<td><span id="tpc.max_transfers"><code>max_transfers</code></span></td>
+<td><code>32</code></td>
+<td>Maximum number of concurrent copies.</td>
+</tr>
+<tr>
+<td><span id="tpc.marker_interval"><code>marker_interval</code></span></td>
+<td><code>"5s"</code></td>
+<td>Interval between performance markers.</td>
+</tr>
+<tr>
+<td><span id="tpc.stall_timeout"><code>stall_timeout</code></span></td>
+<td><code>"2m"</code></td>
+<td>Abort a copy that transfers no data for this long ("0s" disables).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="unix_users">[unix_users]</h2>
+<p>Unix accounts: every request accesses files as the Unix account its credentials map to (anonymous ones: nobody), from a worker process running as that account; an identity without an account gets 403. weed runs on Linux, as root (or with CAP_SETUID and CAP_SETGID). See <a href="unix-accounts.html">Unix accounts</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="unix_users.idle_timeout"><code>idle_timeout</code></span></td>
+<td><code>"10m"</code></td>
+<td>Stop the worker process of an account once it has served no request for this long.</td>
+</tr>
+<tr>
+<td><span id="unix_users.max_workers"><code>max_workers</code></span></td>
+<td><code>256</code></td>
+<td>At most this many worker processes take requests; once they are all busy, requests of other accounts get 503.</td>
+</tr>
+<tr>
+<td><span id="unix_users.cgroups"><code>cgroups</code></span></td>
+<td><code>false</code></td>
+<td>Run each worker process in a cgroup of its own, below weed's, which must be delegated to weed (systemd: Delegate=yes); cgroup v2.</td>
+</tr>
+<tr>
+<td><span id="unix_users.cgroup_limits"><code>cgroup_limits</code></span></td>
+<td><code>[]</code></td>
+<td>Write these file=value settings to the cgroup of every worker process, e.g. ["memory.max=8G", "pids.max=1000"] (implies cgroups).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="admin">[admin]</h2>
+<p>The control plane: a Unix socket that weed utils talks to (ban, unban, bans), which only root and weed's own user can use. See <a href="banning.html">Banning users</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="admin.socket"><code>socket</code></span></td>
+<td><code>"/run/weed/admin.sock"</code></td>
+<td>Its path ("" disables); weed creates the directory, which only its owner may enter, if missing.</td>
+</tr>
+<tr>
+<td><span id="admin.bans"><code>bans</code></span></td>
+<td><code>"/var/lib/weed/bans.json"</code></td>
+<td>The users banned with weed utils ban, which weed refuses (403) whatever their credentials, are kept in this file across restarts ("": until weed stops); weed writes it, and reads it at startup.</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- end content -->
+</body>
+</html>

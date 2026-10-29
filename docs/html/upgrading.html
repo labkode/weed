@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Upgrading</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Upgrading</h1>
+</header>
+<p>A new version of weed runs once weed restarts. Until then, weed and its workers keep running the binary they started with, and weed says that a restart is pending.</p>
+<h2 id="procedure">Upgrading</h2>
+<ol type="1">
+<li><p>Build the new version, and look at what it is:</p>
+<pre><code>$ make build &amp;&amp; ./weed version</code></pre></li>
+<li><p>Install it by replacing the file: <em>install</em> and <em>mv</em> do, as package managers do. (Linux refuses to write into a binary that runs: <em>cp</em> onto it fails with "Text file busy".)</p>
+<pre><code># install -m 0755 weed /usr/local/bin/weed</code></pre>
+<p>weed now logs that a restart is pending, with the new version:</p>
+<pre><code>level=WARN msg=&quot;restart pending: weed&#39;s executable /usr/local/bin/weed is now v1.3.0 (commit 9c1e0a2b77d4 of ...) go1.27.3 linux/amd64, build go:...&quot; reason=binary</code></pre></li>
+<li><p>Check that the new version starts with your configuration. The new version may know options that the old one did not, or warn about others:</p>
+<pre><code># weed check -config /etc/weed/weed.toml
+/etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0...)</code></pre></li>
+<li><p>Restart, when the transfers in progress allow it (see <a href="monitoring.html#in-progress">Monitoring</a>):</p>
+<pre><code># curl -s localhost:9100/status | jq .in_progress.total
+# systemctl restart weed</code></pre>
+<p>weed gives the requests in progress 30 seconds to finish.</p></li>
+<li><p>Check what runs:</p>
+<pre><code># systemctl status weed
+# curl -s localhost:9100/status | jq &#39;.version.version, .restart_pending&#39;</code></pre></li>
+</ol>
+<h2 id="old-binary">Until the restart</h2>
+<p>Workers are started from /proc/self/exe, which is the binary that weed started from, even after it has been replaced on disk. So weed and every worker it starts run the same build. <code>ls -l /proc/&lt;pid&gt;/exe</code> shows the old binary as deleted, for weed and its workers alike.</p>
+<p>Each worker also reports its build, which weed compares with its own. Should the binary's content change without the file being replaced, new workers would run the new code, so weed refuses them: requests that need a new worker get 503, and weed logs "cannot start a worker" with both builds, until it is restarted.</p>
+<h2 id="several-servers">Several servers</h2>
+<p>Upgrade one server at a time, and watch <code>weed_build_info</code>: when every server runs the new build, <code>count(count by (build) (weed_build_info))</code> is 1 again. Macaroons stay valid across servers and restarts as long as <code>macaroons.secret_key</code> is the same.</p>
+</div>
+<!-- end content -->
+</body>
+</html>

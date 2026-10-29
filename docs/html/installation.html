@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Installation</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Installation</h1>
+</header>
+<p>weed is a single binary, without runtime dependencies. You build it from source with Go, install it, and run it as a systemd service.</p>
+<h2 id="building">Building</h2>
+<p>weed needs Go 1.26 or later to build. In a checkout of the source:</p>
+<pre><code>$ git clone https://github.com/labkode/weed.git
+$ cd weed
+$ make build
+$ ./weed version
+weed v1.2.0
+commit   46a37813bc81d7a1b9a8b1e2a9e1f3c3e6c2a0d4 (2026-10-28T16:07:11Z)
+go       go1.27.3 linux/amd64
+build    go:2CX-x4_-THjPR2Dy4JCE/TtMef8lUxfkIJsGhiXwh/3-NbDYhNvYZpdojQpjfp/Dg3...</code></pre>
+<p>Built from a git checkout, the binary records its version and commit, which weed reports when it runs (see <a href="what-runs.html">What runs</a>). Build where you can see the version: a tree with uncommitted changes gives a version ending in +dirty.</p>
+<p>How weed finds accounts depends on how it is built. With cgo (the default when a C compiler is installed), it asks the system's user database, so accounts in LDAP or SSSD work as configured in /etc/nsswitch.conf. Without cgo (<code>CGO_ENABLED=0</code>), it reads /etc/passwd and /etc/group only. Build with cgo if your users are not all in /etc/passwd.</p>
+<h2 id="installing">Installing</h2>
+<pre><code># install -m 0755 weed /usr/local/bin/weed</code></pre>
+<p>Keep the binary readable and executable by everyone (0755): the workers that run as the users are started from it.</p>
+<p>weed reads and writes these, which <a href="files.html">Files</a> lists in full:</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>/etc/weed/weed.toml</td>
+<td>the configuration file; mode 0600 if it holds secrets, which weed requires</td>
+</tr>
+<tr>
+<td>/etc/weed/issuers.json</td>
+<td>the token issuers, if you accept tokens</td>
+</tr>
+<tr>
+<td>/etc/grid-security/</td>
+<td>the host certificate and key, the CA certificates and CRLs, the grid-mapfile</td>
+</tr>
+<tr>
+<td>/run/weed/admin.sock</td>
+<td>the control plane's socket, which weed creates (see <a href="banning.html">Banning users</a>)</td>
+</tr>
+<tr>
+<td>/var/lib/weed/bans.json</td>
+<td>the banned users, written by weed at the first ban</td>
+</tr>
+</tbody>
+</table>
+<p>Create /etc/weed. weed creates /run/weed and /var/lib/weed when it needs them.</p>
+<pre><code># mkdir -m 0755 /etc/weed</code></pre>
+<h2 id="systemd">The systemd service</h2>
+<p>weed is a notify service: it tells systemd when it is ready (once it listens), when it reloads and when it stops, and keeps its status line current. Write /etc/systemd/system/weed.service:</p>
+<pre><code>[Unit]
+Description=weed WebDAV server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# systemd 253 or later; before, Type=notify and ExecReload=/bin/kill -HUP $MAINPID
+Type=notify-reload
+ExecStartPre=/usr/local/bin/weed check -config /etc/weed/weed.toml
+ExecStart=/usr/local/bin/weed -config /etc/weed/weed.toml
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target</code></pre>
+<p><em>weed check</em> reads the configuration and every file it names before weed starts, so that <em>systemctl start</em> fails with the reason weed would not start. A restart stops weed before ExecStartPre runs, so run <em>weed check</em> yourself before restarting (see <a href="upgrading.html">Upgrading</a>). With Type=notify-reload, <em>systemctl reload weed</em> re-reads the credentials (see <a href="reloading.html">Reloading</a>) and returns once that is done.</p>
+<pre><code># systemctl daemon-reload
+# systemctl enable --now weed
+# systemctl status weed
+...
+     Status: &quot;Serving since 2026-10-28 16:07:11 UTC: weed v1.2.0, /etc/weed/weed.toml
+              (sha256 b78bbdeed036)&quot;
+...</code></pre>
+<p>If weed cannot start, the journal says why, also when weed logs to a file (<code>server.log_file</code>):</p>
+<pre><code>weed: cannot start: failed to load the grid-mapfile: open /etc/grid-security/grid-mapfile: no such file or directory</code></pre>
+<p>On stop, weed stops taking connections, and gives the requests in progress 30 seconds to finish (so do the workers). Transfers still running after that are cancelled; an upload that is cancelled never replaces a file.</p>
+<p>Add <code>Delegate=yes</code> to [Service] if you run each worker in a cgroup of its own (<code>unix_users.cgroups</code>, see <a href="unix-accounts.html#cgroups">Unix accounts</a>).</p>
+<h2 id="without-root">Running without root</h2>
+<p>weed needs root only to start workers as other accounts. It can run as an account of its own with the CAP_SETUID and CAP_SETGID capabilities, and CAP_NET_BIND_SERVICE for port 443. Its workers get none of them. Add to [Service]:</p>
+<pre><code>User=weed
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE
+RuntimeDirectory=weed
+RuntimeDirectoryMode=0700
+StateDirectory=weed
+StateDirectoryMode=0700</code></pre>
+<p>RuntimeDirectory and StateDirectory create /run/weed and /var/lib/weed for that account. The account must be able to read the configuration file and every file it names, the host key included. Without the capabilities, weed does not start:</p>
+<pre><code>level=ERROR msg=&quot;cannot start&quot; error=&quot;cannot start the worker processes, which access files as Unix accounts: cannot start a worker for nobody: fork/exec /proc/self/exe: operation not permitted (weed must run as root, or with CAP_SETUID and CAP_SETGID)&quot;</code></pre>
+<h2 id="network">Network</h2>
+<p>Open the port of weed (<code>server.port</code>, 443 in production) to your clients and to the other storage endpoints, which connect to it for third-party copies. Keep the metrics address (<code>server.metrics_address</code>) local or on a management network: /metrics and /status need no authentication.</p>
+<p>weed accepts TLS 1.2 and later.</p>
+</div>
+<!-- end content -->
+</body>
+</html>

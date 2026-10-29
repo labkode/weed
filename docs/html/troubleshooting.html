@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Troubleshooting</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Troubleshooting</h1>
+</header>
+<p>weed says why it refuses something, in its log, and at startup on standard error. Start there. This page lists what weed says for the usual problems, and what to do.</p>
+<p>Ask weed first:</p>
+<pre><code># weed check -config /etc/weed/weed.toml       # would weed start with its file?
+# journalctl -u weed -n 50                      # or the end of server.log_file
+# curl -s localhost:9100/status | jq .          # what runs
+$ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a client</code></pre>
+<h2 id="startup">weed does not start</h2>
+<table>
+<thead>
+<tr>
+<th>weed says</th>
+<th>What to do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>unknown option server.prot</code></td>
+<td>A misspelt or obsolete option. <em>weed config</em> lists the options this version knows.</td>
+</tr>
+<tr>
+<td><code>/etc/weed/weed.toml holds secrets but every user can read it (chmod o-r /etc/weed/weed.toml)</code></td>
+<td><code>chmod 600 /etc/weed/weed.toml</code>.</td>
+</tr>
+<tr>
+<td><code>failed to load the grid-mapfile: open /etc/grid-security/grid-mapfile: no such file or directory</code></td>
+<td>X.509 needs a grid-mapfile: create it, or set <code>x509.gridmap</code>.</td>
+</tr>
+<tr>
+<td><code>cannot start a worker for nobody: fork/exec /proc/self/exe: operation not permitted (weed must run as root, or with CAP_SETUID and CAP_SETGID)</code></td>
+<td>Run weed as root, or give it the capabilities (see <a href="installation.html#without-root">Installation</a>).</td>
+</tr>
+<tr>
+<td><code>cannot read the banned users (admin.bans): open /var/lib/weed/bans.json: permission denied</code></td>
+<td>weed's user must be able to read and write <code>admin.bans</code> and its directory.</td>
+</tr>
+<tr>
+<td><code>control plane: /run/weed/admin.sock is in use, by another weed?</code></td>
+<td>Another weed runs with the same <code>admin.socket</code>. Stop it, or give each weed its own.</td>
+</tr>
+<tr>
+<td><code>listen tcp :443: bind: address already in use</code></td>
+<td>Something else listens on the port: <code>ss -ltnp 'sport = :443'</code>.</td>
+</tr>
+<tr>
+<td><code>x509 needs tls</code>, <code>oidc needs tokens.issuers, ...</code></td>
+<td>An option needs another one: set it as weed says.</td>
+</tr>
+</tbody>
+</table>
+<p>With systemd, a failing <code>weed check</code> in ExecStartPre stops the start, and <em>systemctl status weed</em> shows its message.</p>
+<h2 id="refused">Clients are refused</h2>
+<p>For every refused credential, weed logs "authentication failed" with the method and why, followed by the request's record (see <a href="logging.html#authentication">Logging</a>). Look the request up by time, client address or user:</p>
+<pre><code># grep -B1 &#39;status=40[13]&#39; /var/log/weed.log | tail</code></pre>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>weed says</th>
+<th>What to do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>403</td>
+<td><code>forbidden: /DC=org/DC=example/OU=Users/CN=Somebody Else is not in the grid-mapfile</code></td>
+<td>Add the DN to the grid-mapfile, exactly as weed shows it, and reload.</td>
+</tr>
+<tr>
+<td>403</td>
+<td><code>forbidden: "ghost" is not a usable Unix account: user: unknown user ghost</code></td>
+<td>Create the account, or map the identity to an existing one. Root is never usable.</td>
+</tr>
+<tr>
+<td>403</td>
+<td><code>forbidden: no user rule for https://iam.example.org/ matches subject "5f2c1d" and groups ["/atlas"]</code></td>
+<td>Add a users rule for that group or subject to the issuer (see <a href="authentication.html#tokens">Authentication</a>).</td>
+</tr>
+<tr>
+<td>403</td>
+<td><code>forbidden: the token's scopes do not allow this request on /webdav/cms/hosts</code></td>
+<td>The token needs a storage scope for that path: ask the issuer for it. Mind the issuer's base_path. storage.create does not allow overwriting.</td>
+</tr>
+<tr>
+<td>403</td>
+<td><code>forbidden: the token has no storage scopes</code></td>
+<td>The token grants no access: ask for storage.read or storage.modify scopes.</td>
+</tr>
+<tr>
+<td>403</td>
+<td><code>forbidden: alice is banned (since ...)</code></td>
+<td>The user is banned: <code>weed utils bans</code>.</td>
+</tr>
+<tr>
+<td>401</td>
+<td><code>no current CRL from "/DC=org/DC=example/CN=Example Grid CA" to check "..." against</code></td>
+<td>The CA's CRL is missing or expired: run fetch-crl, then reload (see <a href="reloading.html#crls">Reloading</a>).</td>
+</tr>
+<tr>
+<td>401</td>
+<td><code>certificate "..." (serial ...) has been revoked</code></td>
+<td>The certificate is revoked: the user needs a new one.</td>
+</tr>
+<tr>
+<td>401</td>
+<td><code>certificate verification failed: x509: certificate signed by unknown authority</code></td>
+<td>Its CA is not in <code>x509.ca</code>: install the CA (e.g. the IGTF bundle) and reload.</td>
+</tr>
+<tr>
+<td>401</td>
+<td><code>token audience ["https://other.example.org"] is not accepted here</code></td>
+<td>The token is for another service. Add the audience to the issuer's audiences, or have the client ask for a token for weed.</td>
+</tr>
+<tr>
+<td>401</td>
+<td><code>invalid token: go-jose/go-jose/jwt: validation failed, token is expired (exp)</code></td>
+<td>The client must get a new token. Check the clocks if tokens seem to expire early.</td>
+</tr>
+<tr>
+<td>401</td>
+<td><code>token issuer "https://other-iam.example.org/" is not trusted</code></td>
+<td>Add the issuer to <code>tokens.issuers</code> and reload, if its tokens should be accepted.</td>
+</tr>
+<tr>
+<td>401</td>
+<td>no "authentication failed" record</td>
+<td>The client sent no credentials that an enabled method looks at: e.g. no client certificate (check the client's options, and that [x509] is enabled), or a bearer token that is not a JWT while macaroons are disabled.</td>
+</tr>
+</tbody>
+</table>
+<p>Requests refused with 401 are logged with user=nobody, since the credentials named no one weed trusts; those refused with 403 with the user they map to.</p>
+<h2 id="filesystem">Access to files</h2>
+<p>Requests access files as the user's account, so a 403 without an "authentication failed" record comes from the filesystem: the account may not do it. Check as the account:</p>
+<pre><code># sudo -u alice ls -l /data/alice
+# sudo -u alice touch /data/alice/test</code></pre>
+<p>The account needs search permission on every directory above, and write permission on a directory to create or replace files in it. See <a href="unix-accounts.html#permissions">Unix accounts</a>.</p>
+<h2 id="unavailable">503 Service Unavailable</h2>
+<table>
+<thead>
+<tr>
+<th>weed says</th>
+<th>What to do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>no worker for the request ... the 256 workers allowed (unix_users.max_workers) are all busy</code></td>
+<td>More accounts are active at once than workers are allowed: raise <code>unix_users.max_workers</code>.</td>
+</tr>
+<tr>
+<td><code>cannot start a worker ...</code></td>
+<td>The worker could not start: weed logs why, e.g. a failed cgroup limit, or a binary that changed in place (see <a href="upgrading.html#old-binary">Upgrading</a>).</td>
+</tr>
+<tr>
+<td>Too many concurrent third-party copies</td>
+<td><code>tpc.max_transfers</code> copies are running; clients retry after the Retry-After. Raise it if the network and disks allow.</td>
+</tr>
+<tr>
+<td>/healthz: storage unavailable, storage not responding</td>
+<td>The exported directory cannot be read, or does not answer within 5 seconds: check the filesystem (a hung NFS or a lost mount).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="tpc">Third-party copies fail</h2>
+<p>The COPY answer ends with "failure: &lt;reason&gt;", and weed logs "third-party copy failed" with the same reason. The usual ones:</p>
+<ul>
+<li>A TLS error with the remote endpoint: its CA is not trusted. Set <code>tpc.ca_path</code> to /etc/grid-security/certificates.</li>
+<li>The remote endpoint's address is refused (loopback, private): see <a href="tpc.html#remote-endpoints">Remote endpoints</a>. Storage on a private network needs <code>tpc.allow_private</code>.</li>
+<li>The remote answers 401 or 403: the credential in TransferHeaderAuthorization is not valid there, or does not allow the path.</li>
+<li>"client/server checksum mismatch": the data received differs from the checksum that the client gave. Nothing was stored.</li>
+<li>The copy stalled for <code>tpc.stall_timeout</code>: the remote stopped sending.</li>
+</ul>
+<h2 id="debug">More detail</h2>
+<p>Set <code>server.log_level = "debug"</code> and restart, to log how each request was authenticated and which methods were tried. /proc/whoami and /proc/x509 show what weed makes of a client's credentials.</p>
+</div>
+<!-- end content -->
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Reloading</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Reloading</h1>
+</header>
+<p>Credentials change while weed runs: fetch-crl replaces CRLs, the grid-mapfile gets new users, the host certificate is renewed. weed re-reads them without a restart, on SIGHUP and every <code>server.reload_interval</code> (default 1h; "0s" reloads on SIGHUP only).</p>
+<pre><code># systemctl reload weed</code></pre>
+<p>With the unit of <a href="installation.html#systemd">Installation</a>, that sends SIGHUP and returns once the reload is done. Without systemd, <code>kill -HUP $(pidof -s weed)</code> does the same (weed ignores the SIGHUP that reaches its workers).</p>
+<h2 id="what">What is reloaded</h2>
+<ul>
+<li>the htpasswd and app tokens files;</li>
+<li>the grid-mapfile;</li>
+<li>the CAs and CRLs of client certificates;</li>
+<li>the token issuers file, and the CAs used to fetch their keys;</li>
+<li>the host certificate and key;</li>
+<li>the CAs of third-party copy endpoints, which the workers also re-read;</li>
+<li>Unix accounts, which are looked up again.</li>
+</ul>
+<p>The configuration file is not: it is read only at startup, and weed says when it has changed (see <a href="what-runs.html#restart-pending">What runs</a>). Neither are the banned users, which are weed's own (see <a href="banning.html">Banning users</a>). On SIGHUP, weed also reopens its log file.</p>
+<p>A file that cannot be read keeps its previous contents, so a file in the middle of being rewritten neither locks everybody out nor lets anybody in. Such a reload is partial: it is logged as a warning, counted in <code>weed_reloads_total{result="partial"}</code>, and <code>weed_reload_last_successful</code> is 0 until a reload reads everything. New connections and requests use what was read; established ones are not affected.</p>
+<pre><code>level=INFO msg=&quot;reloading credentials&quot;
+level=INFO msg=&quot;loaded grid-mapfile&quot; file=/etc/grid-security/grid-mapfile entries=2
+level=INFO msg=&quot;loaded CA certificates&quot; path=/etc/grid-security/certificates certificates=1
+level=INFO msg=&quot;loaded CRLs&quot; path=/etc/grid-security/certificates crls=1 mode=require
+level=INFO msg=&quot;loaded token issuers&quot; file=/etc/weed/issuers.json issuers=1</code></pre>
+<h2 id="gridmap">Adding and removing users</h2>
+<p>Edit the grid-mapfile, the issuers file or the htpasswd file, and reload. Removing a DN from the grid-mapfile revokes that certificate's access at the next reload. To stop a user at once, whatever their credentials, ban them instead (see <a href="banning.html">Banning users</a>).</p>
+<h2 id="crls">CRLs</h2>
+<p>fetch-crl keeps the CRLs current in /etc/grid-security/certificates. Reload weed after it runs, so that new CRLs apply before the old ones expire. With the default <code>x509.crl_mode = "require"</code>, a certificate whose CA has no current CRL is refused:</p>
+<pre><code>level=INFO msg=&quot;authentication failed&quot; method=x509 error=&quot;no current CRL from \&quot;/DC=org/DC=example/CN=Example Grid CA\&quot; to check \&quot;/DC=org/DC=example/OU=Users/CN=Alice Smith\&quot; against&quot; request_id=5bb0022b</code></pre>
+<p>The reload interval (1h) picks new CRLs up anyway. To reload as soon as fetch-crl has run, add to its service a drop-in, /etc/systemd/system/fetch-crl.service.d/weed.conf:</p>
+<pre><code>[Service]
+ExecStartPost=-/usr/bin/systemctl reload weed</code></pre>
+<p>Alert on <code>weed_crl_expiry_timestamp_seconds</code>, the time at which the first CA runs out of current CRLs: if fetch-crl stops working, that time arrives.</p>
+<pre><code>weed_crl_expiry_timestamp_seconds - time() &lt; 6 * 3600</code></pre>
+<h2 id="certificate">The host certificate</h2>
+<p>Replace /etc/grid-security/hostcert.pem and hostkey.pem, and reload: new connections use the new certificate. Alert on <code>weed_tls_certificate_expiry_timestamp_seconds</code> before it expires.</p>
+</div>
+<!-- end content -->
+</body>
+</html>

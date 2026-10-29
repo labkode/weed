@@ -28,6 +28,10 @@ Helpers:
     ./weed utils password <user> <password>   add a bcrypt entry to .htpasswd
     ./weed utils token generate <user>        create an app token in .app-tokens
 
+The administration guide, docs/html/index.html, explains how to install, set up and
+run weed, with every option, metric and command. Its pages are written in Markdown in
+docs/src, and made into docs/html by pandoc: "make docs" after changing them.
+
 
 Configuration
 

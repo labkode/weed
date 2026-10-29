@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Introduction</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Introduction</h1>
+</header>
+<p>weed, the WEbdav Exporter Daemon, exports a directory of a Linux server over WebDAV for the clients and services of the WLCG: gfal2, davix, FTS, Rucio and XRootD, and plain curl. It implements HTTP third-party copy (TPC) in both directions, and verifies checksums from end to end.</p>
+<p>This guide is for the administrators who install and run weed. It explains how weed works, how to configure it, and how to operate it: what it logs and measures, how to change credentials while it runs, how to upgrade it, and how to stop a user at once.</p>
+<h2 id="how-weed-works">How weed works</h2>
+<p>weed is one binary. It runs as root and listens on one port, normally with HTTPS. For each request, it:</p>
+<ol type="1">
+<li>authenticates the client, with an X.509 certificate or proxy, a WLCG or SciTokens bearer token, a macaroon or a password;</li>
+<li>maps the identity to a local Unix account: the grid-mapfile does it for certificates, the token issuer's rules for tokens;</li>
+<li>checks that the credentials allow the request (token scopes, macaroon caveats);</li>
+<li>hands the request to the <em>worker process</em> of that account, which serves it.</li>
+</ol>
+<p>A worker runs as its account, with the account's groups, without capabilities and without any way to gain privileges. The kernel checks every file access as for that user, new files belong to whoever wrote them, and <em>ps</em> shows who is doing what:</p>
+<pre><code>$ ps -o user,pid,ppid,args -C weed
+USER         PID    PPID COMMAND
+root         812       1 weed -config /etc/weed/weed.toml
+alice       1630     812 weed worker alice
+cms001      1702     812 weed worker cms001</code></pre>
+<p>weed itself never opens the exported files: it terminates TLS, authenticates and forwards. A worker starts with the first request of its account, and stops when the account has been idle for a while. See <a href="unix-accounts.html">Unix accounts</a>.</p>
+<p>weed is made so that nothing changes by surprise while it runs. It says which build runs, since when and with which configuration, and whether a restart would change any of it (<a href="what-runs.html">What runs</a>). Credential files are re-read without a restart, and a file that cannot be read keeps its previous contents (<a href="reloading.html">Reloading</a>). Every request is logged once, with the account it ran as (<a href="logging.html">Logging</a>).</p>
+<h2 id="what-you-need">What you need</h2>
+<ul>
+<li>A Linux server. weed serves on Linux only. On other systems, only its helpers work (<em>weed utils</em>, <em>config</em>, <em>check</em> and <em>version</em>).</li>
+<li>root, or the CAP_SETUID and CAP_SETGID capabilities, to start workers as other accounts.</li>
+<li>A local account for every user, in /etc/passwd or in a directory (LDAP, SSSD) that the system's user database reaches.</li>
+<li>For a grid storage node: a host certificate, the IGTF CA certificates in /etc/grid-security/certificates kept current by fetch-crl, a grid-mapfile, and the token issuers of your communities.</li>
+</ul>
+<h2 id="what-weed-is-not">What weed is not</h2>
+<p>weed serves a directory: it has no namespace database, no tape, no quotas and no replication. It relies on the filesystem for all of that, and on cgroups to limit what each account uses. Some features are not implemented:</p>
+<ul>
+<li>X.509 credential delegation for third-party copies (Credential: gridsite). Pass tokens or macaroons in TransferHeaderAuthorization instead.</li>
+<li>Authorization by token groups alone: a token needs storage scopes, even when its groups choose its account.</li>
+<li>WebDAV locks across accounts: each worker keeps its own.</li>
+<li>Shared locks, dead properties (PROPPATCH stores nothing) and the entity tags of If headers. WLCG clients do not use them.</li>
+</ul>
+<h2 id="conventions">About this guide</h2>
+<p>Commands that start with <code>#</code> are run as root, those that start with <code>$</code> as any user. The examples use the host weed.example.org, the token issuer https://iam.example.org/, and the accounts alice and cms001. An option is written section.key: <code>tpc.max_transfers</code> is the key max_transfers of the [tpc] section of the configuration file. The outputs of weed were recorded from it. Lines of the log are shown as they are written, one record per line, even when they are long.</p>
+<p>Start with <a href="installation.html">Installation</a> and <a href="getting-started.html">Getting started</a>. The Reference pages list every command, option, metric, endpoint and file. README.txt, in the source tree, covers the same ground for developers, with the tests.</p>
+</div>
+<!-- end content -->
+</body>
+</html>

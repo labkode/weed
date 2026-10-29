@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Authentication</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Authentication</h1>
+</header>
+<p>weed accepts X.509 certificates and proxies, WLCG and SciTokens bearer tokens, macaroons and passwords. Each method maps a client to a username, which must be a local account: the request then accesses files as that account (see <a href="unix-accounts.html">Unix accounts</a>).</p>
+<h2 id="order">How a request is authenticated</h2>
+<p>weed tries the enabled methods in this order: X.509, tokens, macaroons, passwords. The first one that accepts the request's credentials decides. Then:</p>
+<ul>
+<li>Credentials that are wrong, expired or of an unknown issuer get <strong>401</strong>.</li>
+<li>Valid credentials that do not allow the request get <strong>403</strong>: a DN that the grid-mapfile does not list, a token whose scopes do not cover the path, a user without a usable account, a <a href="banning.html">banned</a> user.</li>
+<li>A request without credentials gets 401, unless anonymous requests are allowed.</li>
+</ul>
+<p>Every failure is logged at INFO, as "authentication failed", with the method and the reason (see <a href="troubleshooting.html#refused">Troubleshooting</a>). The request's record names the user that the credentials map to, also when they are refused with 403.</p>
+<p>/proc/whoami shows how weed sees a client, and the account it would be served as:</p>
+<pre><code>$ curl -H &quot;Authorization: Bearer $TOKEN&quot; https://weed.example.org/proc/whoami
+=== WebDAV Server - Who Am I ===
+
+Status: Authenticated
+Username: cms001
+Authentication Method: token
+Unix Account: cms001 (uid 2001, gid 2001, groups [2001])
+
+Authentication Details:
+  scopes: storage.read:/ storage.create:/cms
+  expires: 2026-10-29 10:06:57 +0000 UTC
+  groups: /cms/production
+  issuer: https://iam.example.org/
+  subject: 5f2c1d
+...</code></pre>
+<h2 id="x509">X.509 certificates and proxies</h2>
+<pre><code>[tls]
+enabled = true
+cert = &quot;/etc/grid-security/hostcert.pem&quot;
+key = &quot;/etc/grid-security/hostkey.pem&quot;
+
+[x509]
+enabled = true
+ca = &quot;/etc/grid-security/certificates&quot;
+crl_path = &quot;/etc/grid-security/certificates&quot;
+gridmap = &quot;/etc/grid-security/grid-mapfile&quot;</code></pre>
+<p><code>x509.ca</code> is a PEM file or a directory of CA certificates, such as /etc/grid-security/certificates. weed accepts end-entity certificates, and RFC 3820 and legacy Globus proxies.</p>
+<h3 id="the-grid-mapfile">The grid-mapfile</h3>
+<p>Only the certificates whose DN the grid-mapfile lists are accepted, as the account it names. A certificate of a trusted CA whose DN is not listed gets 403, so trusting every IGTF CA does not let in every grid user. weed does not start without a readable grid-mapfile when X.509 is enabled.</p>
+<pre><code>&quot;/DC=org/DC=example/OU=Users/CN=Alice Smith&quot; alice
+&quot;/DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=jdoe/CN=123456/CN=John Doe&quot; jdoe
+&quot;/DC=ch/DC=cern/OU=computers/CN=cmsprod.cern.ch&quot; cms001,cmsprod</code></pre>
+<p>DNs are in the OpenSSL format, in certificate order. A proxy is mapped by the DN of the certificate it was made from. When a line names several accounts, the first is used. Lines starting with # are comments. To revoke a user's access, remove the line and reload (see <a href="reloading.html">Reloading</a>).</p>
+<h3 id="proxies">Proxies</h3>
+<p>weed refuses a proxy chain when a proxy:</p>
+<ul>
+<li>has a policy other than inherit-all or limited (e.g. independent);</li>
+<li>is followed by more proxies than its path length allows;</li>
+<li>is unrestricted but issued by a limited proxy;</li>
+<li>is legacy and RFC 3820 in the same chain;</li>
+<li>is expired or not yet valid, or its issuer lacks the digitalSignature key usage.</li>
+</ul>
+<p>Limited proxies are accepted: they are meant for data access. /proc/x509 shows how weed sees the certificate that a client presents.</p>
+<h3 id="crls">Revocation</h3>
+<p>With <code>x509.crl_path</code>, weed checks certificates against CRLs, PEM or DER, read from a file or a directory such as /etc/grid-security/certificates, where fetch-crl keeps them as &lt;hash&gt;.r0. A certificate is checked against the newest current CRL that its issuer signed.</p>
+<p><code>x509.crl_mode</code> says what happens when the issuer has no current CRL:</p>
+<dl>
+<dt>require (the default)</dt>
+<dd>
+the certificate is refused (401). An expired CRL fails closed: if fetch-crl stops working, the users of that CA are refused once their CA's CRL expires.
+</dd>
+<dt>if-valid</dt>
+<dd>
+certificates are checked against the CRLs that are present and current, and accepted otherwise.
+</dd>
+</dl>
+<p>The metric <code>weed_crl_expiry_timestamp_seconds</code> says when the first CA runs out of current CRLs: alert well before. Without <code>x509.crl_path</code>, revoked certificates are accepted.</p>
+<h2 id="tokens">WLCG and SciTokens bearer tokens</h2>
+<pre><code>[tokens]
+issuers = &quot;/etc/weed/issuers.json&quot;</code></pre>
+<p>weed accepts the JWTs of the issuers that the file lists, as the WLCG Common JWT Profiles and SciTokens define them. The file is a JSON list:</p>
+<pre><code>[{&quot;issuer&quot;: &quot;https://iam.example.org/&quot;,
+  &quot;audiences&quot;: [&quot;https://weed.example.org&quot;],
+  &quot;base_path&quot;: &quot;/&quot;,
+  &quot;users&quot;: [{&quot;group&quot;: &quot;/cms/production&quot;, &quot;user&quot;: &quot;cms001&quot;},
+            {&quot;sub&quot;: &quot;3f2a...&quot;, &quot;user&quot;: &quot;jdoe&quot;}]}]</code></pre>
+<dl>
+<dt>issuer</dt>
+<dd>
+the issuer's URL, exactly as in its tokens' iss claim.
+</dd>
+<dt>audiences</dt>
+<dd>
+the audiences weed accepts: a token's aud must include one of them, or https://wlcg.cern.ch/jwt/v1/any.
+</dd>
+<dt>base_path</dt>
+<dd>
+the path, below the exported directory, that the paths of the issuer's scopes are relative to (default "/").
+</dd>
+<dt>users</dt>
+<dd>
+rules that map tokens to accounts (see below). Without them, a token's account is its sub claim.
+</dd>
+</dl>
+<p>weed checks a token's signature with the keys that its issuer publishes, found through /.well-known/openid-configuration (or oauth-authorization-server). Keys are cached and refetched every hour, and fetched at most once a minute per issuer, so that forged tokens cannot make weed flood an issuer. If an issuer is down, its known keys keep working for 2 days after they were last fetched; after that, its tokens get 401 until it is back. Use <code>tokens.ca_path</code> to trust CAs other than the system's for the issuers.</p>
+<p>A token is refused with 401 if it is expired (1 minute of clock skew is allowed), if its aud is not accepted, or if its wlcg.ver is not 1.x (SciTokens have none).</p>
+<h3 id="scopes">Scopes</h3>
+<p>Scopes grant access to a path and everything below it. Paths are relative to the issuer's base_path.</p>
+<table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Allows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>storage.read:&lt;path&gt;</td>
+<td>read, list and stat (and the SciTokens read)</td>
+</tr>
+<tr>
+<td>storage.create:&lt;path&gt;</td>
+<td>create files and directories, rename, stat; never replace or delete data: PUT, COPY, MOVE and TPC pull onto an existing file get 403, before any data is sent</td>
+</tr>
+<tr>
+<td>storage.modify:&lt;path&gt;</td>
+<td>also overwrite and delete (and the SciTokens write)</td>
+</tr>
+<tr>
+<td>storage.stage, storage.poll</td>
+<td>nothing: they are for tape</td>
+</tr>
+</tbody>
+</table>
+<p>A path that ends in / is a directory: storage.create:/a/b/ allows creating the directory /a/b and anything in it, but not a file named /a/b. A storage scope without a path makes the token invalid (401). A token without storage scopes gets 403: groups choose an account, but grant nothing by themselves.</p>
+<p>What each request needs:</p>
+<table>
+<thead>
+<tr>
+<th>Request</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td>read</td>
+</tr>
+<tr>
+<td>HEAD, PROPFIND Depth: 0</td>
+<td>read, create or modify</td>
+</tr>
+<tr>
+<td>PROPFIND Depth: 1</td>
+<td>read</td>
+</tr>
+<tr>
+<td>PUT</td>
+<td>create (new files only) or modify</td>
+</tr>
+<tr>
+<td>MKCOL, LOCK, UNLOCK</td>
+<td>create or modify</td>
+</tr>
+<tr>
+<td>DELETE, PROPPATCH</td>
+<td>modify</td>
+</tr>
+<tr>
+<td>COPY (local)</td>
+<td>read on the source; create or modify on the destination</td>
+</tr>
+<tr>
+<td>MOVE</td>
+<td>create or modify on the source and the destination</td>
+</tr>
+<tr>
+<td>COPY (TPC pull)</td>
+<td>create or modify</td>
+</tr>
+<tr>
+<td>COPY (TPC push)</td>
+<td>read</td>
+</tr>
+</tbody>
+</table>
+<h3 id="which-account-a-token-is-served-as">Which account a token is served as</h3>
+<p>The users rules of an issuer map its tokens to accounts. The first rule that matches decides; a token that no rule matches gets 403.</p>
+<pre><code>&quot;users&quot;: [{&quot;sub&quot;: &quot;3f2a...&quot;, &quot;user&quot;: &quot;jdoe&quot;},
+          {&quot;group&quot;: &quot;/cms/production&quot;, &quot;user&quot;: &quot;cmsprod&quot;},
+          {&quot;sub&quot;: &quot;9c1e...&quot;, &quot;group&quot;: &quot;/cms&quot;, &quot;user&quot;: &quot;cmsuser&quot;},
+          {&quot;user&quot;: &quot;cmsguest&quot;}]</code></pre>
+<p>A rule matches the tokens whose sub equals its "sub", and whose wlcg.groups contains its "group", exactly: /cms does not match /cms/production. A field that a rule leaves out matches any token, so a rule with only "user" is a default.</p>
+<h2 id="oidc">The OIDC login page</h2>
+<p>For users with a browser, weed can serve a login page, at /auth/oidc, that gives out a token of one of the token issuers. Users log in at the issuer, and get a page with the access token, the account weed serves it as, its scopes and expiry, and how to use it with curl and gfal2.</p>
+<pre><code>[oidc]
+enabled = true
+issuer = &quot;https://iam.example.org/&quot;
+client_id = &quot;...&quot;
+client_secret = &quot;...&quot;
+redirect_url = &quot;https://weed.example.org/oidc_redirect&quot;
+scopes = [&quot;openid&quot;, &quot;storage.read:/&quot;, &quot;storage.modify:/&quot;]</code></pre>
+<p>Register weed as a client at the issuer, with that redirect URL. The issuer must be listed in <code>tokens.issuers</code>: weed does not start otherwise. Logins ask for <code>oidc.scopes</code>, of which the issuer grants those its policies allow, and for <code>oidc.audience</code> if it is set (the audience parameter of INDIGO IAM). weed checks the token as for any request before showing it: a token that weed would refuse is not given out, and the page says why. For tokens that renew themselves, users should use oidc-agent instead.</p>
+<p>weed keeps no sessions: a login in progress is in a cookie of the browser, used once. Any weed with the same configuration completes a login that another started, so a login works behind a load balancer.</p>
+<h2 id="macaroons">Macaroons</h2>
+<pre><code>[macaroons]
+enabled = true
+secret_key = &quot;...at least 32 characters, e.g. openssl rand -hex 32...&quot;</code></pre>
+<p>Any authenticated user can ask weed for a macaroon for a path, by POSTing to it. gfal2 and FTS do this for third-party copies:</p>
+<pre><code>$ curl --cert alice.pem --key alice.key -X POST https://weed.example.org/webdav/alice/ \
+    -H &#39;Content-Type: application/macaroon-request&#39; \
+    -d &#39;{&quot;caveats&quot;: [&quot;activity:DOWNLOAD,LIST&quot;], &quot;validity&quot;: &quot;PT1H&quot;}&#39;
+{&quot;expires_in&quot;:3599,&quot;macaroon&quot;:&quot;AgELd2VlZC13ZWJkYXYCIDRhOGNi...&quot;}</code></pre>
+<p>The macaroon is then a bearer token (Authorization: Bearer), valid for that path and below only, and as the user who asked for it. It always expires: the validity defaults to and is capped at <code>macaroons.max_validity</code> (24h). A macaroon asked for with a macaroon keeps every restriction of the first. A token cannot be used to ask for a macaroon, which would not be bound by the token's scopes.</p>
+<p>Caveats a client may ask for: <code>activity:</code> (DOWNLOAD, UPLOAD, LIST, MANAGE, DELETE, READ_METADATA, UPDATE_METADATA), <code>path:</code>, <code>before:</code> (an RFC 3339 time) and <code>ip:</code> (addresses or CIDRs). Unknown caveats are refused.</p>
+<p>Every weed that shares the secret key accepts the macaroons of the others. Changing the key invalidates every macaroon given out; it takes a restart.</p>
+<h2 id="basic">Passwords and app tokens</h2>
+<pre><code>[basic]
+enabled = true
+htpasswd = &quot;/etc/weed/htpasswd&quot;
+app_tokens = &quot;/etc/weed/app-tokens&quot;</code></pre>
+<p>HTTP Basic authentication checks passwords against the bcrypt entries of an htpasswd file, or against app tokens: random tokens, one per line as token:username, that a user gives as their password. Basic credentials are clear text without TLS: enable [tls] with [basic].</p>
+<p><em>weed utils password</em> and <em>weed utils token generate</em> add entries to .htpasswd and .app-tokens in the current directory:</p>
+<pre><code># cd /etc/weed
+# weed utils password bob &#39;s3cret&#39;
+Added user &#39;bob&#39; to .htpasswd
+# weed utils token generate bob
+Generated token for user &#39;bob&#39;: 23bb59e76eeeb0228d5a1d1b53f6bda289ce9e43fae29b85d64215d5422a5127
+Token saved to .app-tokens</code></pre>
+<p>Point <code>basic.htpasswd</code> and <code>basic.app_tokens</code> at those files, or use htpasswd -B. weed re-reads both on reload, so new users need no restart.</p>
+<h2 id="anonymous">Anonymous requests</h2>
+<p>With <code>server.anonymous</code>, requests without credentials are served as the account nobody. weed allows it only when <code>server.address</code> is a loopback address, so that only local clients reach it (but every local user does). It is the default without a configuration file. Credentials that an enabled method refuses still get 401.</p>
+</div>
+<!-- end content -->
+</body>
+</html>

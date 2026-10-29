@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Logging</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Logging</h1>
+</header>
+<p>weed logs to standard error, which systemd sends to the journal, or to <code>server.log_file</code>. Workers log through weed, so that everything is in one place.</p>
+<pre><code>[server]
+log_file = &quot;/var/log/weed.log&quot;
+log_level = &quot;info&quot;
+log_format = &quot;text&quot;</code></pre>
+<h2 id="format">Format</h2>
+<p>One record per line: key=value (<code>log_format = "text"</code>), or JSON (<code>"json"</code>) for a log collector. The records are the same; JSON nests the attributes that text joins with dots.</p>
+<pre><code>time=2026-10-29T09:06:57.571Z level=INFO msg=request method=PUT path=/webdav/alice/hosts proto=HTTP/1.1 status=201 bytes=0 duration=27.850916ms user=alice remote=192.0.2.7:43784 user_agent=curl/7.76.1 request_id=ea9b00ce
+
+{&quot;time&quot;:&quot;2026-10-29T09:10:09.954448632Z&quot;,&quot;level&quot;:&quot;INFO&quot;,&quot;msg&quot;:&quot;third-party copy started&quot;,&quot;worker&quot;:{&quot;user&quot;:&quot;alice&quot;,&quot;pid&quot;:203},&quot;mode&quot;:&quot;pull&quot;,&quot;local&quot;:&quot;/data/alice/big.copy&quot;,&quot;remote&quot;:&quot;https://other.example.org/webdav/data/big&quot;,&quot;request_id&quot;:&quot;32c0a9dc&quot;}</code></pre>
+<p>Errors found before the configuration is read, such as a configuration file that does not exist, are logged in Go's default format:</p>
+<pre><code>2026/10/29 09:10:12 ERROR cannot read the configuration error=&quot;open /etc/weed/weed.toml: no such file or directory&quot;</code></pre>
+<p>When weed cannot start, it also writes why to standard error, even when it logs to a file, so that the journal and the terminal show it:</p>
+<pre><code>weed: cannot start: failed to load the grid-mapfile: open /etc/grid-security/grid-mapfile: no such file or directory</code></pre>
+<h2 id="levels">Levels</h2>
+<dl>
+<dt>error</dt>
+<dd>
+something is wrong and needs you: weed cannot start or serve, a worker cannot start or failed, the bans cannot be saved, weed would not start with the configuration file. Requests that panicked.
+</dd>
+<dt>warn</dt>
+<dd>
+something to know: a file that a reload could not read, a restart pending, a ban or its lifting, a failed third-party copy, an upload that did not match its checksum, a request without a worker (503), a configuration that is risky (no CRLs, no TLS, anonymous requests).
+</dd>
+<dt>info (the default)</dt>
+<dd>
+what weed loaded and how it is set up, every request, every refused credential and why, third-party copies, workers starting and stopping.
+</dd>
+<dt>debug</dt>
+<dd>
+how each request was authenticated, and which methods were tried. For finding a problem, not for every day.
+</dd>
+</dl>
+<h2 id="requests">Requests</h2>
+<p>Every request to the main port is logged once, when it ends, as a "request" record:</p>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>method, path, proto</td>
+<td>the request</td>
+</tr>
+<tr>
+<td>status, bytes</td>
+<td>the status code, and the bytes of the response body</td>
+</tr>
+<tr>
+<td>duration</td>
+<td>from the request to the end of the response</td>
+</tr>
+<tr>
+<td>user</td>
+<td>the user that the credentials map to, also when the request was refused with 403; nobody for requests without credentials, or with credentials that were refused with 401</td>
+</tr>
+<tr>
+<td>remote, user_agent</td>
+<td>the client</td>
+</tr>
+<tr>
+<td>request_id</td>
+<td>the request's ID, which every record that weed and its worker log for the request also carries</td>
+</tr>
+<tr>
+<td>aborted, panic</td>
+<td>if the request ended abnormally: the client went away (aborted), or the handler panicked (at error)</td>
+</tr>
+</tbody>
+</table>
+<p>To follow one request, look for its ID:</p>
+<pre><code># grep request_id=869537c9 /var/log/weed.log</code></pre>
+<p>A third-party copy is a single COPY request, logged when it ends, which may be hours after it started. Its "third-party copy started" and "third-party copy completed" (or "failed") records say what was copied, how many bytes, and how long it took.</p>
+<h2 id="authentication">Refused credentials</h2>
+<p>Every credential that weed refuses is logged at info, as "authentication failed", with the method and why. The request's record follows, with the same request_id:</p>
+<pre><code>level=INFO msg=&quot;authentication failed&quot; method=token error=&quot;forbidden: the token&#39;s scopes do not allow this request on /webdav/cms/hosts&quot; request_id=a02c0ec1
+level=INFO msg=request method=PUT path=/webdav/cms/hosts proto=HTTP/1.1 status=403 bytes=10 duration=151.25µs user=cms001 remote=192.0.2.7:52494 user_agent=curl/7.76.1 request_id=a02c0ec1</code></pre>
+<p><a href="troubleshooting.html#refused">Troubleshooting</a> lists the reasons.</p>
+<h2 id="workers">Workers</h2>
+<p>The records of workers carry worker.user and worker.pid, and the request_id of the request they serve:</p>
+<pre><code>level=INFO msg=&quot;started a worker&quot; worker.user=alice worker.pid=127 account.name=alice account.uid=1001 account.gid=1001 account.groups=[1001]
+level=INFO msg=&quot;worker stopped&quot; worker.user=alice worker.pid=127</code></pre>
+<h2 id="rotation">Rotation</h2>
+<p>On SIGHUP, weed reopens its log file. With logrotate, /etc/logrotate.d/weed:</p>
+<pre><code>/var/log/weed.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    postrotate
+        systemctl reload weed &gt;/dev/null 2&gt;&amp;1 || true
+    endscript
+}</code></pre>
+<p>The reload also re-reads the credential files (see <a href="reloading.html">Reloading</a>), which does no harm. Without <code>server.log_file</code>, the journal rotates the log itself:</p>
+<pre><code># journalctl -u weed -f
+# journalctl -u weed --since today -g &#39;level=ERROR&#39;</code></pre>
+</div>
+<!-- end content -->
+</body>
+</html>

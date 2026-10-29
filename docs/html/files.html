@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Files</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Files</h1>
+</header>
+<p>The files that weed reads and writes, with the paths of the examples in this guide. The options name them; none has a default location except those marked.</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Option</th>
+<th>Who</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>/usr/local/bin/weed</td>
+<td></td>
+<td>root, 0755</td>
+<td>The binary. Replace it, do not write into it (see <a href="upgrading.html">Upgrading</a>).</td>
+</tr>
+<tr>
+<td>/etc/systemd/system/weed.service</td>
+<td></td>
+<td>root, 0644</td>
+<td>The unit (see <a href="installation.html#systemd">Installation</a>).</td>
+</tr>
+<tr>
+<td>/etc/weed/weed.toml</td>
+<td><code>-config</code></td>
+<td>root, 0600 if it holds secrets</td>
+<td>The configuration, read at startup.</td>
+</tr>
+<tr>
+<td>/etc/grid-security/hostcert.pem, hostkey.pem</td>
+<td><code>tls.cert</code>, <code>tls.key</code></td>
+<td>root; the key 0400</td>
+<td>The host certificate and key, reloaded.</td>
+</tr>
+<tr>
+<td>/etc/grid-security/certificates/</td>
+<td><code>x509.ca</code>, <code>x509.crl_path</code>, <code>tpc.ca_path</code></td>
+<td>readable by all</td>
+<td>CAs and CRLs, kept current by fetch-crl, reloaded. The workers read <code>tpc.ca_path</code> as their accounts.</td>
+</tr>
+<tr>
+<td>/etc/grid-security/grid-mapfile (default)</td>
+<td><code>x509.gridmap</code></td>
+<td>root, 0644</td>
+<td>DNs and their accounts, reloaded.</td>
+</tr>
+<tr>
+<td>/etc/weed/issuers.json</td>
+<td><code>tokens.issuers</code></td>
+<td>root, 0644</td>
+<td>Token issuers and their users rules, reloaded.</td>
+</tr>
+<tr>
+<td>/etc/weed/htpasswd, /etc/weed/app-tokens</td>
+<td><code>basic.htpasswd</code>, <code>basic.app_tokens</code></td>
+<td>root, 0600</td>
+<td>Passwords and app tokens, reloaded.</td>
+</tr>
+<tr>
+<td>/var/log/weed.log</td>
+<td><code>server.log_file</code></td>
+<td>weed</td>
+<td>The log, reopened on SIGHUP (see <a href="logging.html#rotation">Logging</a>).</td>
+</tr>
+<tr>
+<td>/run/weed/admin.sock (default)</td>
+<td><code>admin.socket</code></td>
+<td>weed, 0600 in a 0700 directory</td>
+<td>The control plane (see <a href="banning.html#control-plane">Banning users</a>), removed when weed stops.</td>
+</tr>
+<tr>
+<td>/var/lib/weed/bans.json (default)</td>
+<td><code>admin.bans</code></td>
+<td>weed, 0600 in a 0700 directory</td>
+<td>The banned users, written by weed, read at startup.</td>
+</tr>
+<tr>
+<td>/data/</td>
+<td><code>server.dir</code></td>
+<td>the accounts</td>
+<td>The exported directory, accessed as the users' accounts.</td>
+</tr>
+<tr>
+<td>.weed-upload-*</td>
+<td></td>
+<td>the accounts</td>
+<td>Uploads in progress, in the target directory, renamed into place when complete (see <a href="storage.html">Storage</a>).</td>
+</tr>
+<tr>
+<td>user.weed.digest.&lt;alg&gt;</td>
+<td></td>
+<td>the accounts</td>
+<td>Extended attributes of uploaded files: their checksums.</td>
+</tr>
+</tbody>
+</table>
+<p>weed writes nothing else. It needs no database, and keeps no sessions: OIDC logins in progress are in a browser cookie, and WebDAV locks are in the memory of the workers.</p>
+</div>
+<!-- end content -->
+</body>
+</html>
