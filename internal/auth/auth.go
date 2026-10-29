@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/labkode/weed/internal/bans"
 	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
@@ -76,6 +77,15 @@ func refusedAs(user string, err error) error {
 	return &refusal{user, err}
 }
 
+// RefusedUser returns the user whom the valid credentials that err refuses map to, if
+// any
+func RefusedUser(err error) string {
+	if ref := (*refusal)(nil); errors.As(err, &ref) {
+		return ref.user
+	}
+	return ""
+}
+
 // SetAuthInfoInContext stores authentication information in the context
 func SetAuthInfoInContext(ctx context.Context, authInfo *AuthInfo) context.Context {
 	// Store both username (for backward compatibility) and auth info
@@ -106,6 +116,8 @@ type AuthStore struct {
 	TokenEnabled    bool // WLCG and SciTokens JWTs, from Credentials.TokenIssuers
 	// Anonymous serves requests that carry no credentials, as nobody (logger.Nobody)
 	Anonymous bool
+	// Bans refuses the users it lists (403), whatever their credentials; nil bans no one
+	Bans *bans.List
 
 	// UnixUsers requires every identity to be a local account (see unix.go), found
 	// with LookupUnixUser (default fsuser.Lookup); anonymous requests are nobody's.
@@ -457,9 +469,19 @@ func (as *AuthStore) challenge(w http.ResponseWriter, msg string) {
 func (as *AuthStore) BasicAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		info, err := as.authenticateBasic(r)
+		if info != nil {
+			if err = as.banned(info.Username); err != nil {
+				info = nil
+			}
+		}
 		if info == nil {
 			if err != nil {
 				slog.InfoContext(r.Context(), "authentication failed", "method", "basic", "error", err)
+			}
+			if user := RefusedUser(err); user != "" {
+				logger.SetUsername(r.Context(), user)
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
 			}
 			w.Header().Set("WWW-Authenticate", `Basic realm="WebDAV Server"`)
 			http.Error(w, "Authorization required", http.StatusUnauthorized)
@@ -475,11 +497,19 @@ func (as *AuthStore) BasicAuthMiddleware(next http.Handler) http.Handler {
 func (as *AuthStore) X509AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		info, err := as.authenticateX509(r)
+		if info != nil {
+			if err = as.banned(info.Username); err != nil {
+				info = nil
+			}
+		}
 		if info == nil {
 			if err == nil {
 				err = errors.New("no client certificate provided")
 			}
 			slog.InfoContext(r.Context(), "authentication failed", "method", "x509", "error", err)
+			if user := RefusedUser(err); user != "" {
+				logger.SetUsername(r.Context(), user)
+			}
 			if errors.Is(err, errForbidden) {
 				http.Error(w, "Certificate not authorized", http.StatusForbidden)
 				return
@@ -491,6 +521,30 @@ func (as *AuthStore) X509AuthMiddleware(next http.Handler) http.Handler {
 		slog.DebugContext(r.Context(), "authenticated", "method", "x509", "user", info.Username, "dn", info.Details["distinguished_name"])
 		next.ServeHTTP(w, r.WithContext(SetAuthInfoInContext(r.Context(), info)))
 	})
+}
+
+// banned refuses a user that the bans list
+func (as *AuthStore) banned(user string) error {
+	if b, ok := as.Bans.Get(user); ok {
+		return refusedAs(user, fmt.Errorf("%w: %s is banned (since %s)", errForbidden, user, b.Since.Format(time.RFC3339)))
+	}
+	return nil
+}
+
+// admit checks that the user whom credentials map to may be served: not banned, and
+// (with UnixUsers) with a usable Unix account, which it sets in info
+func (as *AuthStore) admit(info *AuthInfo) error {
+	if err := as.banned(info.Username); err != nil {
+		return err
+	}
+	if as.UnixUsers {
+		u, err := as.unixUser(info.Username)
+		if err != nil {
+			return refusedAs(info.Username, err)
+		}
+		info.Unix = u
+	}
+	return nil
 }
 
 // UnifiedAuthMiddleware provides authentication in the specified order: X.509 -> token -> macaroon -> Basic
@@ -522,9 +576,9 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 		forbiddenBy, forbiddenUser := "", ""
 		for i, m := range methods {
 			info, err := m.authenticate(r)
-			if info != nil && as.UnixUsers {
-				if info.Unix, err = as.unixUser(info.Username); err != nil {
-					info, err = nil, refusedAs(info.Username, err)
+			if info != nil {
+				if err = as.admit(info); err != nil {
+					info = nil
 				}
 			}
 			switch {
@@ -538,9 +592,7 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 				status[i] = "fail"
 				if forbiddenBy == "" && errors.Is(err, errForbidden) {
 					forbiddenBy = m.name
-					if ref := (*refusal)(nil); errors.As(err, &ref) {
-						forbiddenUser = ref.user
-					}
+					forbiddenUser = RefusedUser(err)
 				}
 				slog.InfoContext(ctx, "authentication failed", "method", m.name, "error", err)
 			default:
@@ -551,13 +603,15 @@ func (as *AuthStore) UnifiedAuthMiddleware(next http.Handler) http.Handler {
 		// Requests without credentials may be anonymous (only on loopback, see config)
 		if as.Anonymous && !slices.ContainsFunc(status, func(s string) bool { return s != "skip" }) {
 			info := &AuthInfo{Username: logger.Nobody, Method: "anonymous"}
-			if as.UnixUsers {
-				var err error
-				if info.Unix, err = as.unixUser(logger.Nobody); err != nil {
-					slog.ErrorContext(ctx, "cannot serve anonymous requests", "error", err)
-					http.Error(w, "Forbidden", http.StatusForbidden)
-					return
+			if err := as.admit(info); err != nil {
+				level := slog.LevelError // nobody has no usable account
+				if _, banned := as.Bans.Get(logger.Nobody); banned {
+					level = slog.LevelInfo
 				}
+				slog.Log(ctx, level, "cannot serve anonymous requests", "error", err)
+				metrics.Auth.Inc("anonymous", "forbidden")
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
 			}
 			slog.DebugContext(ctx, "anonymous request", flow())
 			metrics.Auth.Inc("anonymous", "success")

@@ -24,6 +24,12 @@ func HandleUtilsCommand(args []string) {
 		// Token operations use the same default file as the server (basic.app_tokens)
 		cfg := &config.Config{AppTokensFile: ".app-tokens"}
 		HandleToken(cfg)
+	case "ban":
+		HandleBan()
+	case "unban":
+		HandleUnban()
+	case "bans":
+		HandleBans()
 	default:
 		fmt.Printf("Unknown utils command: %s\n", args[2])
 		PrintHelp()
@@ -58,6 +64,13 @@ func PrintHelp() {
 	fmt.Println("  cert     - Generate TLS certificates")
 	fmt.Println("  password - Generate password hashes")
 	fmt.Println("  token    - Manage application tokens")
+	fmt.Println("")
+	fmt.Println("Commands of a running weed, through its control plane (admin.socket):")
+	fmt.Println("  ban      - Ban a user: refuse its requests, stop its worker processes")
+	fmt.Println("  unban    - Lift the ban of a user")
+	fmt.Println("  bans     - List the banned users")
+	fmt.Println("")
+	fmt.Println("weed utils <command> -h describes a command.")
 }
 
 // HandleCert handles certificate generation

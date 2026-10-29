@@ -33,6 +33,10 @@ func (s *Server) startWorkers() error {
 		MaxWorkers:   s.Config.MaxWorkers,
 		Cgroups:      s.Config.WorkerCgroups,
 		CgroupLimits: s.Config.WorkerCgroupLimits,
+		Refused: func(account string) bool {
+			_, banned := s.Bans.Get(account)
+			return banned
+		},
 	}
 	if s.checking {
 		// Setting cgroups up moves this process and enables controllers in its cgroup,

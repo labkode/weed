@@ -55,8 +55,8 @@ A TOML file, in which every option is optional, for example:
     enabled = true
     ca_path = "/etc/grid-security/certificates"
 
-The sections are server, tls, x509, basic, oidc, macaroons, tokens, tpc and
-unix_users; below, section.key names an option (e.g. tpc.max_transfers). Unknown
+The sections are server, tls, x509, basic, oidc, macaroons, tokens, tpc, unix_users
+and admin; below, section.key names an option (e.g. tpc.max_transfers). Unknown
 sections and keys are errors, so a misspelt option stops weed instead of being
 ignored. Durations are strings such as "90s", "10m" or "24h". weed refuses to read a
 file that holds secrets (macaroons.secret_key, oidc.client_secret) if every user can
@@ -366,7 +366,9 @@ capabilities, or it does not start ("weed must run as root, ..."):
 
     User=weed
     AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE
-    Delegate=yes        # for unix_users.cgroups
+    Delegate=yes           # for unix_users.cgroups
+    RuntimeDirectory=weed  # for admin.socket (see Banning users)
+    StateDirectory=weed    # for admin.bans
 
 Downloads relayed from workers run at ~95% of the speed of serving files directly,
 and uploads at the same speed (Linux, 1 GiB files over loopback without TLS:
@@ -410,6 +412,46 @@ data. The configuration file itself is only read at startup: weed says when it h
 changed (see What runs).
 
 
+Banning users
+
+    # weed utils ban -reason "compromised credentials" alice
+    banned alice; stopped its 1 worker process(es)
+    # weed utils bans
+    USER   SINCE                    BY                REASON
+    alice  2026-10-29 01:12:03 CET  uid 0, pid 51234  compromised credentials
+    # weed utils unban alice
+    lifted the ban of alice
+
+weed refuses the requests of a banned user with 403, whatever their credentials. The
+user is the Unix account that they map to, as the request records log it (nobody:
+anonymous requests). A ban takes effect at once: weed kills the user's worker
+processes, aborting its requests in progress (an upload never replaces a file unless
+complete), and starts none for it until the ban is lifted; nor does the OIDC login
+give the user tokens. Refused requests are logged as "authentication failed", with
+the ban; bans as "user banned" and "ban lifted", with who did it (the uid and pid of
+weed utils). weed_banned_users and /status count the banned users.
+
+Bans are kept in admin.bans (default /var/lib/weed/bans.json), which weed writes on
+every change and reads at startup. If it cannot write it, weed utils says so and
+exits with 1: the change lasts until weed stops.
+
+weed utils talks to the running weed through its control plane, an HTTP API with JSON
+bodies on the Unix socket admin.socket (default /run/weed/admin.sock, "" disables
+it), which only root and the user weed runs as can use: the socket is 0600 in a
+directory that only its owner may enter, and weed checks who connects (SO_PEERCRED).
+weed utils finds the socket with -config (the file weed runs with) or -socket,
+otherwise it uses the default. A weed does not start while another listens on its
+socket, and replaces one left by a weed that died. The API is versioned, so that
+operations can be added:
+
+    GET    /v1/bans         -> {"bans": [{"user", "since", "reason", "by"}, ...]}
+    PUT    /v1/bans/{user}  {"reason": "..."} -> the ban, "added", "workers_killed"
+    DELETE /v1/bans/{user}  -> {"user", "removed"}
+
+Errors are {"error": "..."}, with a status other than 2xx; a weed that does not have
+an operation answers 404.
+
+
 Logging
 
 weed logs with Go's log/slog to standard error, or to server.log_file, one record per
@@ -417,7 +459,7 @@ line: key=value text, or JSON with server.log_format = "json". server.log_level 
 the least severe level logged (default "info"):
 
   error  what weed could not do, such as storing an upload, or a worker that failed
-  warn   credentials it cannot reload, failed third-party copies, aborted uploads
+  warn   credentials it cannot reload, failed third-party copies, aborted uploads, bans
   info   a "request" record per HTTP request, failed authentications and why,
          workers starting and stopping, third-party copies, credentials loaded
   debug  how each request was authenticated, uploads stored (with their adler32)
@@ -460,7 +502,9 @@ write every file. The metrics:
   weed_tpc_active_transfers{mode}             weed_tpc_rejected_total
   weed_reloads_total{result}                  (success, partial)
   weed_workers                                weed_worker_starts_total{result}
-  weed_worker_exits_total{reason}             (stopped when asked to, or failed)
+  weed_worker_exits_total{reason}             (stopped when asked to, killed by a
+                                              ban, or failed)
+  weed_banned_users
   weed_crl_expiry_timestamp_seconds           when the first CA runs out of current
                                               CRLs (alert before it is reached)
   weed_tls_certificate_expiry_timestamp_seconds
@@ -568,7 +612,8 @@ across servers that should run the same build.
         "last_success": "2026-10-28T18:07:11.6Z", "successful": true},
       "restart_pending": {"config": "the configuration file has changed: server.port"},
       "workers": [{"account": "alice", "uid": 1001, "pid": 4250, "started": "...",
-        "requests": 1, "retired": false}]
+        "requests": 1, "retired": false}],
+      "banned_users": 0
     }
 
 sha256sum /etc/weed/weed.toml tells whether the file is still the one weed runs with.
@@ -602,7 +647,7 @@ Testing
 The interoperability tests run weed in a container against real WLCG software:
 gfal2, davix and curl as clients; XRootD (with its macaroons, SciTokens and HTTP-TPC
 plugins) as a second implementation; and a test token issuer. They cover X.509
-proxies, macaroons, tokens, revocation with SIGHUP, metrics, Unix accounts, and
+proxies, macaroons, tokens, revocation with SIGHUP, metrics, Unix accounts, bans, and
 third-party copies in both directions between two weed servers and between weed and
 XRootD. Each parser also has a fuzz test (go test -fuzz). CI (.github/workflows/ci.yml)
 runs the tests with -race on Linux and macOS and as root on Linux, go vet, gofmt,

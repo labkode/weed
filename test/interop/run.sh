@@ -77,6 +77,9 @@ dir = "/srv/$1"
 log_file = "$W/weed-$1.log"
 log_format = "${LOG_FORMAT:-text}"
 metrics_address = "${METRICS:-}"
+[admin]
+socket = "/run/weed/$1.sock"
+bans = "$W/bans-$1.json"
 [tls]
 enabled = true
 cert = "host.pem"
@@ -326,6 +329,20 @@ for i in $(seq 100); do [ -z "$(workers)" ] && break; sleep 0.1; done
 check "idle workers stop (unix_users.idle_timeout)" workers_are
 check "...and start again when needed" gfal-ls $C/interop
 
+echo "== Banning users (weed utils, through the control plane)"
+check "weed utils ban" sh -c "weed utils ban -config weed-c.toml -reason 'interop test' interop | grep -q '^banned interop'"
+check "...stops the user's worker processes at once" sh -c "! workers | grep -q 'weed worker interop'"
+check "...and weed refuses its requests" sh -c "! gfal-ls $C/interop"
+check "...logged as the user" grep -q '"msg":"request","method":"PROPFIND","path":"/webdav/interop/\?",.*"status":403,.*"user":"interop"' $W/weed-c.log
+check "...with the reason" grep -q '"msg":"authentication failed",.*"error":"forbidden: interop is banned (since ' $W/weed-c.log
+check "...and who banned it" grep -q '"msg":"user banned",.*"user":"interop","reason":"interop test","by":"uid 0, pid [0-9]*"' $W/weed-c.log
+check "weed utils bans lists it" sh -c "weed utils bans -config weed-c.toml | grep -q '^interop .* uid 0, pid [0-9]* *interop test\$'"
+check "...as /status counts it" sh -c "curl -s localhost:9101/status | jq -e '.banned_users == 1' >/dev/null"
+check "...kept in admin.bans for the next start" jq -e '.[0].user == "interop" and .[0].reason == "interop test"' $W/bans-c.json
+check "the control plane is only root's" sh -c "! setpriv --reuid=65534 --regid=65534 --clear-groups weed utils bans -socket /run/weed/c.sock"
+check "weed utils unban" sh -c "weed utils unban -config weed-c.toml interop | grep -qx 'lifted the ban of interop'"
+check "...serves the user again" gfal-ls $C/interop
+
 echo "== grid-mapfile, revocation and reloading"
 check "valid certificate with an openssl CRL" $CURL -o /dev/null https://localhost:8443/webdav/g.bin
 check "...logged as the grid-mapfile's user" grep -q 'msg=request method=GET path=/webdav/g.bin proto=HTTP/[0-9.]* status=200 .* user=interop ' $W/weed-a.log
@@ -377,6 +394,7 @@ Q_PID=$!
 for i in $(seq 50); do curl -sf localhost:9000/healthz >/dev/null && break; sleep 0.1; done
 check "without a configuration file: /status on the main port" sh -c "curl -sf localhost:9000/status | jq -e '.config.file == \"\" and .config.settings.server.anonymous' >/dev/null"
 check "...and /metrics" sh -c "curl -sf localhost:9000/metrics | grep -q '^weed_build_info{'"
+check "...and weed utils reaches its control plane at the default socket" sh -c "weed utils bans | grep -qx 'no user is banned'"
 check "...anonymous uploads belong to nobody" sh -c "! curl -sf -T f.bin localhost:9000/webdav/f.bin && chmod 1777 /srv/q &&
 	curl -sf -T f.bin localhost:9000/webdav/f.bin && [ \$(stat -c %U /srv/q/f.bin) = nobody ]"
 kill $Q_PID

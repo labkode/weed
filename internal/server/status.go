@@ -220,6 +220,7 @@ func (s *Server) writeStatusGauges(w io.Writer) {
 		ok = 1
 	}
 	metrics.WriteGauge(w, "weed_reload_last_successful", "1 if the last reload read every credential file, CA and certificate (0: some kept their previous contents).", ok, nil, nil)
+	metrics.WriteGauge(w, "weed_banned_users", "Users that weed refuses whatever their credentials (weed utils ban).", float64(s.Bans.Len()), nil, nil)
 }
 
 // status is what /status reports
@@ -232,6 +233,7 @@ type status struct {
 	Reload         statusReload      `json:"reload"`
 	RestartPending map[string]string `json:"restart_pending"` // why, by reason
 	Workers        []worker.Info     `json:"workers"`
+	BannedUsers    int               `json:"banned_users"` // weed utils bans lists them
 }
 
 type statusConfig struct {
@@ -260,6 +262,7 @@ func (s *Server) statusHandler(w http.ResponseWriter, r *http.Request) {
 		Reload:         statusReload{Last: s.run.lastReload, LastSuccess: s.run.lastReloadSuccess, Successful: s.run.lastReloadOK},
 		RestartPending: make(map[string]string),
 		Workers:        []worker.Info{},
+		BannedUsers:    s.Bans.Len(),
 	}
 	for reason, p := range s.run.pending {
 		st.RestartPending[reason] = p.why

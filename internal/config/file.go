@@ -39,6 +39,8 @@ func Default() *Config {
 		TPCStallTimeout:     2 * time.Minute,
 		WorkerIdleTimeout:   10 * time.Minute,
 		MaxWorkers:          256,
+		AdminSocket:         "/run/weed/admin.sock",
+		BansFile:            "/var/lib/weed/bans.json",
 		WorkerCgroupLimits:  []string{},
 		OIDCScopes:          []string{"openid", "storage.read:/"},
 	}
@@ -132,6 +134,10 @@ func (c *Config) sections() []section {
 			{"max_workers", "at most this many worker processes take requests; once they are all busy, requests of other accounts get 503", &c.MaxWorkers},
 			{"cgroups", "run each worker process in a cgroup of its own, below weed's, which must be delegated to weed (systemd: Delegate=yes); cgroup v2", &c.WorkerCgroups},
 			{"cgroup_limits", `write these file=value settings to the cgroup of every worker process, e.g. ["memory.max=8G", "pids.max=1000"] (implies cgroups)`, &c.WorkerCgroupLimits},
+		}},
+		{"admin", "The control plane: a Unix socket that weed utils talks to (ban, unban, bans), which only root and weed's own user can use", []option{
+			{"socket", `its path ("" disables); weed creates the directory, which only its owner may enter, if missing`, &c.AdminSocket},
+			{"bans", `the users banned with weed utils ban, which weed refuses (403) whatever their credentials, are kept in this file across restarts ("": until weed stops); weed writes it, and reads it at startup`, &c.BansFile},
 		}},
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/labkode/weed/internal/auth"
+	"github.com/labkode/weed/internal/bans"
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/handlers"
 	"github.com/labkode/weed/internal/logger"
@@ -39,6 +40,8 @@ type Server struct {
 	Handler   *handlers.WebDAVHandler
 	// Workers serve the files of each Unix account
 	Workers *worker.Pool
+	// Bans are the users refused whatever their credentials (weed utils ban)
+	Bans *bans.List
 	// MonitorOnMainPort also serves /metrics and /status on the main port, as weed
 	// does without a configuration file (see config.QuickStart): its clients are local,
 	// and can already read and write every file
@@ -90,6 +93,13 @@ func (s *Server) Initialize() error {
 		return err
 	}
 	s.AuthStore.SetCredentials(creds)
+	if s.Bans, err = bans.Load(s.Config.BansFile); err != nil {
+		return fmt.Errorf("cannot read the banned users (admin.bans): %w", err)
+	}
+	s.AuthStore.Bans = s.Bans
+	if n := s.Bans.Len(); n > 0 {
+		slog.Info("users are banned", "count", n, "file", s.Config.BansFile)
+	}
 
 	// The OIDC login page gives out tokens of one of the token issuers
 	if s.Config.OIDCAuth {
@@ -491,6 +501,12 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.MonitorOnMainPort {
 		slog.Info("serving metrics", "address", ln.Addr().String())
 	}
+	stopAdmin, err := s.startAdmin()
+	if err != nil {
+		s.server.Close()
+		return err
+	}
+	defer stopAdmin()
 
 	if s.Config.MetricsAddress != "" {
 		ml, err := net.Listen("tcp", s.Config.MetricsAddress)
@@ -545,8 +561,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 // Check does what starting does, without serving, to report what would keep weed
 // from starting with its configuration (weed check). Listening on the configured
-// addresses is not tried: they are in use while weed runs; nor are worker cgroups set
-// up (see startWorkers).
+// addresses and the control plane's socket is not tried: they are in use while weed
+// runs; nor are worker cgroups set up (see startWorkers).
 func (s *Server) Check() error {
 	defer s.Close()
 	s.checking = true

@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labkode/weed/internal/admin"
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/logger"
@@ -851,5 +852,74 @@ func TestRelativeDirectory(t *testing.T) {
 	}
 	if content, _ := n.read("/alice/f"); content != "data" {
 		t.Errorf("stored %q", content)
+	}
+}
+
+// A ban stops the worker processes of the user at once, aborting its requests, and
+// no worker starts for it until the ban is lifted
+func TestBanStopsWorkers(t *testing.T) {
+	socket := socketPath(t)
+	n := newUnixNode(t, func(cfg *config.Config) { cfg.AdminSocket = socket })
+	stop, err := n.srv.startAdmin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	c := admin.NewClient(socket)
+	n.setup("/alice/", 0755, 6001, 6001)
+	n.setup("/bob/", 0755, 6002, 6002)
+	if code := n.status("PUT", "/bob/f", "data", n.as("bob")...); code != 201 {
+		t.Fatalf("PUT as bob: %d", code)
+	}
+	bob := workerOf(t, "bob")
+
+	body, send := io.Pipe()
+	req, _ := http.NewRequest("PUT", n.url("/alice/slow"), body)
+	req.SetBasicAuth(basicUser, basicPass)
+	req.ContentLength = 10
+	done := make(chan int, 1)
+	go func() {
+		resp, err := n.ts.Client().Do(req)
+		if err != nil {
+			done <- 0
+			return
+		}
+		resp.Body.Close()
+		done <- resp.StatusCode
+	}()
+	send.Write([]byte("12345"))
+	eventually(t, "alice's worker", func() bool { return len(workers(t)["alice"]) == 1 })
+
+	killed := metrics.WorkerExits.Get("killed")
+	var res admin.BanResult
+	if err := c.Do("PUT", "/v1/bans/alice", nil, &res); err != nil || !res.Added || res.WorkersKilled != 1 {
+		t.Fatalf("ban: %+v, %v", res, err)
+	}
+	if len(workers(t)["alice"]) != 0 || metrics.WorkerExits.Get("killed") != killed+1 {
+		t.Errorf("alice's workers once banned: %v", workers(t)["alice"])
+	}
+	send.CloseWithError(errors.New("banned"))
+	if code := <-done; code == 201 {
+		t.Error("alice's upload completed")
+	}
+	if _, ok := n.read("/alice/slow"); ok {
+		t.Error("alice's aborted upload was stored")
+	}
+	if code := n.status("GET", "/bob/f", "", n.as("bob")...); code != 200 || workerOf(t, "bob") != bob {
+		t.Errorf("bob's GET: %d, bob's worker %d (was %d)", code, workerOf(t, "bob"), bob)
+	}
+
+	// Requests that were authenticated before the ban get no worker
+	rec := httptest.NewRecorder()
+	n.srv.Workers.ServeHTTP(rec, httptest.NewRequest("GET", "/webdav/alice/", nil), n.accounts["alice"])
+	if rec.Code != 403 || len(workers(t)["alice"]) != 0 {
+		t.Errorf("a request of alice past authentication: %d, workers %v", rec.Code, workers(t)["alice"])
+	}
+
+	if err := c.Do("DELETE", "/v1/bans/alice", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if code := n.status("PUT", "/alice/f", "data"); code != 201 {
+		t.Errorf("PUT as alice once the ban is lifted: %d", code)
 	}
 }

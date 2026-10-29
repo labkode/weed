@@ -134,10 +134,9 @@ func (as *AuthStore) FinishOIDCLogin(ctx context.Context, login string, query ur
 	if err != nil {
 		return nil, err
 	}
-	if as.UnixUsers {
-		if _, err := as.unixUser(username); err != nil {
-			return nil, err
-		}
+	// No token for a user whom weed would refuse
+	if err := as.admit(&AuthInfo{Username: username}); err != nil {
+		return nil, err
 	}
 	return &IssuedToken{
 		Token:    t.AccessToken,

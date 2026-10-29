@@ -878,6 +878,9 @@ func (h *WebDAVHandler) OIDCRedirectHandler(authStore *auth.AuthStore) http.Hand
 				status, level = http.StatusUnauthorized, slog.LevelInfo
 			case auth.IsForbidden(err):
 				status, level = http.StatusForbidden, slog.LevelInfo
+				if user := auth.RefusedUser(err); user != "" {
+					logger.SetUsername(ctx, user)
+				}
 			}
 			slog.Log(ctx, level, "OIDC login failed", "status", status, "error", err)
 			oidcPage(w, status, "Login failed", "<p>"+html.EscapeString(err.Error())+"</p>\n<p><a href=\"/auth/oidc\">Try again</a></p>")

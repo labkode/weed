@@ -44,6 +44,10 @@ type Config struct {
 	ReloadInterval time.Duration
 	// MetricsAddress serves /metrics, /status and /healthz without authentication ("" disables)
 	MetricsAddress string
+	// AdminSocket is the control plane's Unix socket ("" disables), see internal/admin
+	AdminSocket string
+	// BansFile keeps the banned users across restarts ("": until weed stops)
+	BansFile string
 	// OIDC login page, which gives out tokens of a token issuer
 	OIDCAuth         bool
 	OIDCIssuer       string
@@ -71,6 +75,9 @@ type Config struct {
 	TPCStallTimeout   time.Duration
 }
 
+// maxSocketPath is the longest path of a Unix socket (Linux: 108 bytes with a NUL)
+const maxSocketPath = 107
+
 // CRL modes (x509.crl_mode)
 const (
 	CRLRequire = "require"
@@ -92,6 +99,9 @@ var cgroupLimitFile = regexp.MustCompile(`^[a-z]+\.[a-z0-9_.]+$`)
 
 // Validate checks that the configuration is consistent
 func (c *Config) Validate() error {
+	if len(c.AdminSocket) > maxSocketPath {
+		return fmt.Errorf("admin.socket is too long for a Unix socket (at most %d bytes): %s", maxSocketPath, c.AdminSocket)
+	}
 	if c.X509Auth && !c.TLS {
 		return errors.New("x509 needs tls")
 	}

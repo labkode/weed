@@ -176,7 +176,7 @@ var (
 	WorkerStarts = NewCounter("weed_worker_starts_total",
 		"Worker processes started, by result (success, failure).", "result")
 	WorkerExits = NewCounter("weed_worker_exits_total",
-		"Worker processes that exited, by reason (stopped when asked to, e.g. when idle; failed otherwise).", "reason")
+		"Worker processes that exited, by reason (stopped when asked to, e.g. when idle; killed, when its account was banned; failed otherwise).", "reason")
 )
 
 // Worker processes forward the changes to their metrics to the front process, which

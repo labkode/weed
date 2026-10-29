@@ -51,7 +51,13 @@ type Options struct {
 	// CgroupLimits are written to the cgroup of each worker: file=value, e.g.
 	// memory.max=4G (implies Cgroups)
 	CgroupLimits []string
+	// Refused, if set, says which accounts get no worker: their requests get 403
+	// (banned users, see Kill)
+	Refused func(account string) bool
 }
+
+// errRefused is the error of accounts that Options.Refused refuses
+var errRefused = errors.New("the account is refused")
 
 // Pool runs the workers of the front process: one per account that is in use
 type Pool struct {
@@ -86,6 +92,7 @@ type worker struct {
 	lastUsed time.Time // when the last request finished
 	retired  bool      // takes no new requests
 	closing  bool      // told to exit once its requests are done
+	killed   bool      // see Kill
 }
 
 func (wk *worker) String() string {
@@ -168,6 +175,11 @@ func (p *Pool) Check() error {
 // it if needed
 func (p *Pool) ServeHTTP(w http.ResponseWriter, r *http.Request, u *fsuser.User) {
 	wk, err := p.acquire(u)
+	if errors.Is(err, errRefused) {
+		slog.InfoContext(r.Context(), "the account gets no worker (Options.Refused)", "user", u.Name)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 	if err != nil {
 		slog.WarnContext(r.Context(), "no worker for the request", "user", u.Name, "error", err)
 		w.Header().Set("Retry-After", "10")
@@ -184,6 +196,10 @@ func (p *Pool) acquire(u *fsuser.User) (*worker, error) {
 	if p.closed {
 		p.mu.Unlock()
 		return nil, errors.New("shutting down")
+	}
+	if p.opts.Refused != nil && p.opts.Refused(u.Name) {
+		p.mu.Unlock()
+		return nil, errRefused
 	}
 	wk := p.workers[u.Name]
 	if wk != nil && !sameAccount(&wk.user, u) {
@@ -312,6 +328,32 @@ func (p *Pool) Reload() {
 	for _, wk := range running {
 		wk.ctl.Write([]byte{msgReload})
 	}
+}
+
+// Kill stops the workers of an account at once, aborting the requests they serve (an
+// upload in progress never replaces a file), and returns how many it stopped. Once
+// Options.Refused refuses the account, call Kill: no worker starts for it after.
+func (p *Pool) Kill(account string) int {
+	p.mu.Lock()
+	var kill []*worker
+	for wk := range p.all {
+		if wk.user.Name == account {
+			wk.killed = true
+			p.retireLocked(wk)
+			kill = append(kill, wk)
+		}
+	}
+	p.mu.Unlock()
+	n := 0
+	for _, wk := range kill {
+		<-wk.ready
+		if wk.err == nil { // else it did not start
+			wk.cmd.Process.Kill()
+			n++
+		}
+		<-wk.exited
+	}
+	return n
 }
 
 // Close stops every worker: they get until ctx is done to finish their requests,
@@ -504,7 +546,7 @@ func (p *Pool) watch(wk *worker) {
 	metrics.Workers.Dec()
 
 	p.mu.Lock()
-	expected := wk.closing || p.closed
+	expected, killed := wk.closing || p.closed, wk.killed
 	if p.workers[wk.user.Name] == wk {
 		delete(p.workers, wk.user.Name)
 	}
@@ -513,10 +555,14 @@ func (p *Pool) watch(wk *worker) {
 	if p.cgroups != nil {
 		p.cgroups.remove(&wk.user)
 	}
-	if expected && err == nil {
+	switch {
+	case killed:
+		slog.Info("worker killed", "worker", wk)
+		metrics.WorkerExits.Inc("killed")
+	case expected && err == nil:
 		slog.Info("worker stopped", "worker", wk)
 		metrics.WorkerExits.Inc("stopped")
-	} else {
+	default:
 		if err == nil {
 			err = errors.New("exited without being asked to")
 		}
