@@ -508,7 +508,17 @@ write every file. The metrics:
   weed_crl_expiry_timestamp_seconds           when the first CA runs out of current
                                               CRLs (alert before it is reached)
   weed_tls_certificate_expiry_timestamp_seconds
+  weed_requests_in_progress{kind}             (download, upload, tpc_pull, tpc_push,
+                                              other)
 and what runs (see What runs).
+
+weed_requests_in_progress counts the authenticated WebDAV requests being served now:
+downloads (GET), uploads (PUT), third-party copies (COPY with Source: tpc_pull; to
+another server's Destination: tpc_push), and the others (PROPFIND, MKCOL, DELETE,
+MOVE, local COPY, ...). weed counts them for all accounts together, as it hands them
+to the workers; /status also counts them by user (see What runs). A copy counts for
+as long as its COPY request lasts: also while weed checks it, before
+weed_tpc_active_transfers counts it.
 
 
 What runs
@@ -613,12 +623,18 @@ across servers that should run the same build.
       "restart_pending": {"config": "the configuration file has changed: server.port"},
       "workers": [{"account": "alice", "uid": 1001, "pid": 4250, "started": "...",
         "requests": 1, "retired": false}],
-      "banned_users": 0
+      "banned_users": 0,
+      "in_progress": {"total": {"download": 2, "upload": 1, "tpc_pull": 0,
+          "tpc_push": 1, "other": 0},
+        "by_user": {"alice": {"download": 1, "tpc_push": 1},
+                    "cms001": {"download": 1, "upload": 1}}}
     }
 
 sha256sum /etc/weed/weed.toml tells whether the file is still the one weed runs with.
 workers lists the worker processes; a retired one finishes its requests
-and takes no new ones (its account's groups changed).
+and takes no new ones (its account's groups changed). in_progress counts the requests
+being served (see weed_requests_in_progress in Monitoring): in total, by kind, and for
+each user that has some, by the kinds it has.
 
 
 Performance

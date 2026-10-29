@@ -167,6 +167,8 @@ var (
 		"Bytes moved by third-party copies, by mode.", "mode")
 	TPCActive = NewGauge("weed_tpc_active_transfers",
 		"Third-party copies in progress, by mode.", "mode")
+	RequestsInProgress = NewGauge("weed_requests_in_progress",
+		"Authenticated WebDAV requests being served, by kind: download (GET), upload (PUT), tpc_pull and tpc_push (third-party copies, for as long as their COPY lasts), other (PROPFIND, MKCOL, DELETE, MOVE, local COPY, ...).", "kind")
 	TPCRejected = NewCounter("weed_tpc_rejected_total",
 		"Third-party copies refused because tpc.max_transfers were already running.")
 	Reloads = NewCounter("weed_reloads_total",

@@ -153,15 +153,6 @@ func procStatus(pid int) map[string]string {
 	return fields
 }
 
-func eventually(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); !cond(); time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-	}
-}
-
 func TestUnixUsers(t *testing.T) {
 	n := newUnixNode(t, nil)
 	n.setup("/alice/", 0755, 6001, 6001)

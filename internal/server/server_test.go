@@ -138,6 +138,16 @@ func startNode(t testing.TB, inProcess bool, mod func(cfg *config.Config, baseUR
 
 func (n *node) url(p string) string { return n.ts.URL + "/webdav" + p }
 
+// eventually waits up to 5s for cond
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); !cond(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+}
+
 func (n *node) write(p, content string) {
 	n.t.Helper()
 	full := filepath.Join(n.dir, filepath.FromSlash(p))

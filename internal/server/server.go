@@ -48,6 +48,8 @@ type Server struct {
 	MonitorOnMainPort bool
 	server            *http.Server
 
+	inProgress inProgress // the requests being served, by user and kind
+
 	reloadMu sync.Mutex
 	cert     atomic.Pointer[tls.Certificate] // TLS server certificate, replaced on reload
 
@@ -380,7 +382,7 @@ func (s *Server) SetupRoutes() http.Handler {
 	mux.HandleFunc("/", s.Handler.IndexHandler)
 
 	// WebDAV content requires authentication - use unified auth middleware
-	mux.Handle("/webdav/", s.applyAuthMiddleware(s.webdavHandler()))
+	mux.Handle("/webdav/", s.applyAuthMiddleware(s.track(s.webdavHandler())))
 
 	// Authentication trigger routes - only create routes for enabled methods
 	if s.Config.BasicAuth {

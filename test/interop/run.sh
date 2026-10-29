@@ -343,6 +343,16 @@ check "the control plane is only root's" sh -c "! setpriv --reuid=65534 --regid=
 check "weed utils unban" sh -c "weed utils unban -config weed-c.toml interop | grep -qx 'lifted the ban of interop'"
 check "...serves the user again" gfal-ls $C/interop
 
+echo "== Transfers in progress"
+(head -c 5 f.bin; sleep 3) | curl -s -o /dev/null --capath $CERTS -H "Authorization: Bearer $ROBOT" -T - $(https $C)/robot/slow.bin &
+SLOW=$!
+in_progress() { curl -s localhost:9101/status | jq -e "$1" >/dev/null; }
+check "/status counts them, by kind and user" sh -c "for i in \$(seq 50); do curl -s localhost:9101/status |
+	jq -e '.in_progress.by_user == {\"robot\": {\"upload\": 1}} and .in_progress.total.upload == 1' >/dev/null && exit; sleep 0.1; done; exit 1"
+check "...as weed_requests_in_progress does" sh -c "curl -s localhost:9101/metrics | grep -qx 'weed_requests_in_progress{kind=\"upload\"} 1'"
+wait $SLOW
+check "...until they end" sh -c "curl -s localhost:9101/status | jq -e '.in_progress.by_user == {} and ([.in_progress.total[]] | add) == 0' >/dev/null"
+
 echo "== grid-mapfile, revocation and reloading"
 check "valid certificate with an openssl CRL" $CURL -o /dev/null https://localhost:8443/webdav/g.bin
 check "...logged as the grid-mapfile's user" grep -q 'msg=request method=GET path=/webdav/g.bin proto=HTTP/[0-9.]* status=200 .* user=interop ' $W/weed-a.log

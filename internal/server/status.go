@@ -234,6 +234,7 @@ type status struct {
 	RestartPending map[string]string `json:"restart_pending"` // why, by reason
 	Workers        []worker.Info     `json:"workers"`
 	BannedUsers    int               `json:"banned_users"` // weed utils bans lists them
+	InProgress     statusInProgress  `json:"in_progress"`
 }
 
 type statusConfig struct {
@@ -263,6 +264,7 @@ func (s *Server) statusHandler(w http.ResponseWriter, r *http.Request) {
 		RestartPending: make(map[string]string),
 		Workers:        []worker.Info{},
 		BannedUsers:    s.Bans.Len(),
+		InProgress:     s.inProgress.status(),
 	}
 	for reason, p := range s.run.pending {
 		st.RestartPending[reason] = p.why
