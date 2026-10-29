@@ -1,11 +1,13 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/labkode/weed/internal/config"
@@ -118,5 +120,36 @@ func TestHealthz(t *testing.T) {
 	os.RemoveAll(n.dir)
 	if resp, _ := n.do("GET", n.ts.URL+"/healthz", "", "Authorization", "none"); resp.StatusCode != 503 {
 		t.Fatalf("/healthz without storage: %d", resp.StatusCode)
+	}
+}
+
+// While storage hangs, /healthz makes no other stat than the one in progress, so that
+// polling it does not block a thread at every call
+func TestStorageProbe(t *testing.T) {
+	var sp storageProbe
+	var stats atomic.Int32
+	hung := make(chan struct{})
+	stat := func() error {
+		stats.Add(1)
+		<-hung
+		return nil
+	}
+	first := sp.check(stat)
+	for range 10 {
+		if p := sp.check(stat); p != first {
+			t.Fatal("a second stat while one is in progress")
+		}
+	}
+	close(hung)
+	<-first.done
+	if first.err != nil || stats.Load() != 1 {
+		t.Fatalf("first stat: %v, %d stats", first.err, stats.Load())
+	}
+	// Once it has returned, the next call makes a new one
+	gone := errors.New("gone")
+	p := sp.check(func() error { stats.Add(1); return gone })
+	<-p.done
+	if p == first || p.err != gone || stats.Load() != 2 {
+		t.Errorf("stat after the first returned: %v, %d stats", p.err, stats.Load())
 	}
 }

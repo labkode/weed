@@ -48,7 +48,8 @@ type Server struct {
 	MonitorOnMainPort bool
 	server            *http.Server
 
-	inProgress inProgress // the requests being served, by user and kind
+	inProgress inProgress   // the requests being served, by user and kind
+	storage    storageProbe // /healthz's stat of the exported directory
 
 	reloadMu sync.Mutex
 	cert     atomic.Pointer[tls.Certificate] // TLS server certificate, replaced on reload
@@ -326,14 +327,13 @@ func (s *Server) writeGauges(w io.Writer) {
 // healthz reports whether the exported directory responds (a hung network
 // filesystem would otherwise only show up as hanging requests)
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
-	errc := make(chan error, 1)
-	go func() {
+	p := s.storage.check(func() error {
 		_, err := os.Stat(s.Config.Directory)
-		errc <- err
-	}()
+		return err
+	})
 	select {
-	case err := <-errc:
-		if err != nil {
+	case <-p.done:
+		if p.err != nil {
 			http.Error(w, "storage unavailable", http.StatusServiceUnavailable)
 			return
 		}
@@ -341,6 +341,40 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	case <-time.After(5 * time.Second):
 		http.Error(w, "storage not responding", http.StatusServiceUnavailable)
 	}
+}
+
+// storageProbe makes one stat of the exported directory at a time. While the storage
+// does not answer, a stat waits in the kernel, and so does the thread that makes it:
+// later calls wait for that stat rather than each block another thread (until there
+// are too many for the Go runtime, which then stops weed).
+type storageProbe struct {
+	mu   sync.Mutex
+	last *probe // in progress, or the last one
+}
+
+type probe struct {
+	done chan struct{}
+	err  error // once done is closed
+}
+
+// check returns the stat in progress, or else starts one with stat
+func (sp *storageProbe) check(stat func() error) *probe {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	if sp.last != nil {
+		select {
+		case <-sp.last.done:
+		default:
+			return sp.last
+		}
+	}
+	p := &probe{done: make(chan struct{})}
+	sp.last = p
+	go func() {
+		p.err = stat()
+		close(p.done)
+	}()
+	return p
 }
 
 // MetricsHandler serves /metrics, /healthz and /status

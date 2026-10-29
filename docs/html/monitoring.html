@@ -102,7 +102,7 @@
 metrics_address = &quot;localhost:9100&quot;</code></pre>
 <p>These endpoints have no authentication. /status shows the configuration (secrets redacted) and the names of the users with requests in progress, so serve them on localhost, or on an address that only your monitoring reaches. Without a configuration file, they are on the main port, whose clients are local.</p>
 <h2 id="healthz">/healthz</h2>
-<p>/healthz answers "ok" (200) when the exported directory responds, and 503 when it does not, or not within 5 seconds: a hung network filesystem otherwise shows only as hanging requests. It is also on the main port, for load balancers.</p>
+<p>/healthz answers "ok" (200) when the exported directory responds, and 503 when it does not, or not within 5 seconds: a hung network filesystem otherwise shows only as hanging requests. It is also on the main port, for load balancers. While the directory does not answer, weed looks at it again only once the look in progress has returned, however often /healthz is called: each look waits in the kernel with a thread of weed's, until the storage answers.</p>
 <pre><code>$ curl -s https://weed.example.org/healthz
 ok</code></pre>
 <h2 id="status">/status</h2>

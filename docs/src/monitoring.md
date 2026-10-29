@@ -11,7 +11,7 @@ These endpoints have no authentication. /status shows the configuration (secrets
 
 ## /healthz
 
-/healthz answers "ok" (200) when the exported directory responds, and 503 when it does not, or not within 5 seconds: a hung network filesystem otherwise shows only as hanging requests. It is also on the main port, for load balancers.
+/healthz answers "ok" (200) when the exported directory responds, and 503 when it does not, or not within 5 seconds: a hung network filesystem otherwise shows only as hanging requests. It is also on the main port, for load balancers. While the directory does not answer, weed looks at it again only once the look in progress has returned, however often /healthz is called: each look waits in the kernel with a thread of weed's, until the storage answers.
 
     $ curl -s https://weed.example.org/healthz
     ok
