@@ -709,6 +709,28 @@ func TestWorkersOfUnprivilegedFront(t *testing.T) {
 	}
 }
 
+// Without the privileges to start workers, weed does not start, and says what it
+// needs (once)
+func TestUnprivilegedFront(t *testing.T) {
+	if os.Getenv("WEED_TEST_FRONT") == "" {
+		if os.Geteuid() != 0 {
+			t.Skip("needs root (make test-root)")
+		}
+		cmd := exec.Command("/proc/self/exe", "-test.run=^TestUnprivilegedFront$", "-test.v")
+		cmd.Env = append(os.Environ(), "WEED_TEST_FRONT=1")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 6009, Gid: 6009, Groups: []uint32{6009}}}
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "--- PASS: TestUnprivilegedFront") {
+			t.Fatalf("as uid 6009: %v\n%s", err, out)
+		}
+		return
+	}
+	err := New(&config.Config{Directory: t.TempDir()}).Initialize()
+	if err == nil || strings.Count(err.Error(), "weed must run as root, or with CAP_SETUID and CAP_SETGID") != 1 {
+		t.Errorf("starting without privileges: %v", err)
+	}
+}
+
 // Workers verify TPC endpoints with the CAs as they are after a reload
 func TestWorkersReloadTPCCAs(t *testing.T) {
 	src := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

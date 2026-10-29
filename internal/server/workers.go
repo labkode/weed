@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -50,10 +49,7 @@ func (s *Server) startWorkers() error {
 	}
 	if err := pool.Check(); err != nil {
 		pool.Close(context.Background())
-		if os.Geteuid() != 0 {
-			err = fmt.Errorf("%w (weed must run as root, or with the CAP_SETUID and CAP_SETGID capabilities)", err)
-		}
-		return err
+		return err // which says when weed lacks the privileges for it
 	}
 	s.Workers = pool
 	slog.Info("files are accessed by a worker process per Unix account",

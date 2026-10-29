@@ -1,7 +1,9 @@
 package tpc
 
 import (
+	"log/slog"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -45,5 +47,13 @@ func TestAddressPolicy(t *testing.T) {
 	}
 	if err := (addressPolicy{}).control("tcp", "[::ffff:10.0.0.1]:443", nil); err == nil {
 		t.Error("control allowed a mapped private address")
+	}
+}
+
+func TestModeLogged(t *testing.T) {
+	var b strings.Builder
+	slog.New(slog.NewJSONHandler(&b, nil)).Info("x", "pull", Pull, "push", Push)
+	if !strings.Contains(b.String(), `"pull":"pull","push":"push"`) {
+		t.Errorf("logged as %s", b.String())
 	}
 }

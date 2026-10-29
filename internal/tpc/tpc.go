@@ -54,6 +54,9 @@ func (m Mode) String() string {
 	return "pull"
 }
 
+// LogValue logs a mode as String does, in every log format
+func (m Mode) LogValue() slog.Value { return slog.StringValue(m.String()) }
+
 // ErrChecksumMismatch is wrapped by the errors of transfers that failed because the
 // data did not match the checksum given by the client
 var ErrChecksumMismatch = errors.New("client/server checksum mismatch")
