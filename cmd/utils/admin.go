@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/labkode/weed/internal/admin"
@@ -27,7 +28,7 @@ func adminFlags(name, operands string, argc int, define func(*flag.FlagSet)) (*a
 		define(fs)
 	}
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: weed utils %s [options] %s\n\nOptions (before the arguments):\n", name, operands)
+		fmt.Fprintf(fs.Output(), "Usage: %s\n\nOptions (before the arguments):\n", strings.TrimSpace("weed utils "+name+" [options] "+operands))
 		fs.PrintDefaults()
 	}
 	var args []string

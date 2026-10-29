@@ -120,7 +120,7 @@ func HandleToken(cfg *config.Config) {
 	case "generate":
 		HandleTokenGenerate(cfg)
 	default:
-		fmt.Println("Usage: weed utils token <generate>")
+		fmt.Println("Usage: weed utils token generate <username>")
 	}
 }
 
