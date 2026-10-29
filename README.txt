@@ -730,7 +730,8 @@ Testing
     make interop       interoperability tests (test/interop/interop.sh, Docker)
     make lab           weed with 22 Unix accounts under a load that does not stop, in
                        a container, to watch /status, /metrics and the logs
-                       (test/lab/lab.sh, Docker); make lab-ssh opens a shell in it
+                       (test/lab/lab.sh, Docker); make lab-ssh opens a shell in it,
+                       make lab-stop stops it
     make check         gofmt and go vet; make fuzz, make cross, make vulncheck and
                        make bench run the rest; make help lists every target
 

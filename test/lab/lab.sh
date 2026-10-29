@@ -2,8 +2,9 @@
 # The lab: weed serving 22 Unix accounts that authenticate with certificates, WLCG
 # tokens and passwords, with limits per account and group, under a load that does not
 # stop, in a privileged container (weed-lab), to watch /status, /metrics and the logs
-# while it runs. It runs until removed (docker rm -f weed-lab); make lab-ssh opens a
-# shell in it. Ports are published on this host's loopback only. Needs Go and Docker.
+# while it runs. It runs until make lab-stop (docker rm -f weed-lab); make lab-ssh
+# opens a shell in it. Ports are published on this host's loopback only. Needs Go and
+# Docker.
 #
 #     test/lab/lab.sh
 set -eu
@@ -52,5 +53,5 @@ The lab runs: weed serves 22 accounts under a load that does not stop.
                                     https://localhost:9443/proc/whoami
   docker logs -f weed-lab         the scenes of the load
   make lab-ssh                    a shell in the lab
-  docker rm -f weed-lab           stops it
+  make lab-stop                   stops it
 EOF
