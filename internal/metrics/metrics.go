@@ -17,6 +17,7 @@ import (
 type Vec struct {
 	name, help, kind string
 	labels           []string
+	seconds          bool // values are nanoseconds, written as seconds (see InSeconds)
 
 	mu     sync.RWMutex
 	values map[string]*atomic.Int64 // joined label values -> value
@@ -43,6 +44,13 @@ func NewCounter(name, help string, labels ...string) *Vec {
 // NewGauge registers a gauge family
 func NewGauge(name, help string, labels ...string) *Vec {
 	return newVec("gauge", name, help, labels...)
+}
+
+// InSeconds makes the values of v durations: added as nanoseconds (time.Duration),
+// written as seconds
+func (v *Vec) InSeconds() *Vec {
+	v.seconds = true
+	return v
 }
 
 func (v *Vec) value(labelValues []string) *atomic.Int64 {
@@ -96,7 +104,11 @@ func (v *Vec) write(w io.Writer) {
 		v.mu.RLock()
 		val := v.values[k].Load()
 		v.mu.RUnlock()
-		fmt.Fprintf(w, "%s%s %d\n", v.name, Labels(v.labels, strings.Split(k, "\x00")), val)
+		if v.seconds {
+			fmt.Fprintf(w, "%s%s %g\n", v.name, Labels(v.labels, strings.Split(k, "\x00")), float64(val)/1e9)
+		} else {
+			fmt.Fprintf(w, "%s%s %d\n", v.name, Labels(v.labels, strings.Split(k, "\x00")), val)
+		}
 	}
 }
 

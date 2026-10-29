@@ -16,7 +16,8 @@ With the unit of [Installation](installation.html#systemd), that sends SIGHUP an
 - the token issuers file, and the CAs used to fetch their keys;
 - the host certificate and key;
 - the CAs of third-party copy endpoints, which the workers also re-read;
-- Unix accounts, which are looked up again.
+- Unix accounts, which are looked up again;
+- the limits file, whose network rates and cgroup limits apply at once (see [Limits per account](limits.html)).
 
 The configuration file is not: it is read only at startup, and weed says when it has changed (see [What runs](what-runs.html#restart-pending)). Neither are the banned users, which are weed's own (see [Banning users](banning.html)). On SIGHUP, weed also reopens its log file.
 

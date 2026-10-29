@@ -18,7 +18,7 @@ These endpoints have no authentication. /status shows the configuration (secrets
 
 ## /status
 
-/status tells, as JSON, which build runs and since when, with which configuration, how the last reload went, whether a restart is pending, the workers, and the requests in progress. It is what to look at first when something is odd. (See also [What runs](what-runs.html).)
+/status tells, as JSON, which build runs and since when, with which configuration, how the last reload went, whether a restart is pending, the workers, and the requests in progress; with network rates, also what they allow each account, and what they hold back (see [Limits per account](limits.html#shows)). It is what to look at first when something is odd. (See also [What runs](what-runs.html).)
 
     $ curl -s localhost:9100/status | jq .
     {

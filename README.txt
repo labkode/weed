@@ -59,8 +59,8 @@ A TOML file, in which every option is optional, for example:
     enabled = true
     ca_path = "/etc/grid-security/certificates"
 
-The sections are server, tls, x509, basic, oidc, macaroons, tokens, tpc, unix_users
-and admin; below, section.key names an option (e.g. tpc.max_transfers). Unknown
+The sections are server, tls, x509, basic, oidc, macaroons, tokens, tpc, unix_users,
+network and admin; below, section.key names an option (e.g. tpc.max_transfers). Unknown
 sections and keys are errors, so a misspelt option stops weed instead of being
 ignored. Durations are strings such as "90s", "10m" or "24h". weed refuses to read a
 file that holds secrets (macaroons.secret_key, oidc.client_secret) if every user can
@@ -398,18 +398,56 @@ Operations the filesystem refuses get 403. As with local tools:
 * WebDAV locks are kept by each worker: they only hold against requests of the same
   account, and are lost when its worker stops.
 
-cgroups. With unix_users.cgroups, each worker runs in a cgroup of its own below
-weed's, which must be delegated to weed (systemd's Delegate=yes; cgroup v2): weed
-moves into <its cgroup>/main and starts the workers of alice in <its
+cgroups. With unix_users.cgroups, the workers of each account run in a cgroup of
+their own below weed's, which must be delegated to weed (systemd's Delegate=yes;
+cgroup v2): weed moves into <its cgroup>/main and starts the workers of alice in <its
 cgroup>/worker-alice, with the cpu, io, memory and pids controllers when they are
 available. systemd-cgtop and systemd-cgls then show what each account uses, and
-unix_users.cgroup_limits writes limits into the cgroup of every worker:
+unix_users.cgroup_limits writes limits into the cgroup of every account:
 
     [unix_users]
     cgroup_limits = ["memory.max=8G", "pids.max=5000", "cpu.weight=100"]
 
 pids.max counts threads, and a worker that cannot make one dies: keep it above
-unix_users.max_requests.
+unix_users.max_requests. The Go runtime of a worker keeps below 90% of the lower of
+its cgroup's memory.max and memory.high (GOMEMLIMIT prevails), which it reads when it
+starts and when weed reloads.
+
+Network rates. [network] limits the bytes weed sends (egress: downloads, third-party
+copies it pushes) and receives (ingress: uploads, copies it pulls), bodies only:
+
+    [network]
+    egress_rate = "9Gbit/s"          # all accounts together
+    ingress_rate = "9Gbit/s"
+    account_egress_rate = "2Gbit/s"  # each account, all its transfers together
+    account_ingress_rate = "2Gbit/s"
+
+weed paces what it relays, and the workers ask it for each part of a third-party
+copy they move (over a socket of their own, fd 4), so one shaper in weed keeps all
+the rates (internal/limits). Transfers pay for bytes once they have moved them, and
+wait until their account's rate and the total allow more: a rate holds on average,
+with a lead of 256 KiB per transfer (512 KiB for a third-party copy). When a total
+holds transfers back, the accounts that want more share it in proportion to their
+weights (start-time fair queueing); an account that wants less gets what it wants,
+one alone gets all. Weights only decide where weed is the bottleneck: set the totals
+a little below what the network carries.
+
+Limits per user and group. unix_users.limits names a JSON file of rules, which weed
+reads at startup (it does not start if it cannot) and on every reload (one that
+cannot be read keeps the previous rules, and the reload is partial):
+
+    [{"group": "cms", "cgroup_limits": ["memory.max=32G"], "weight": 300},
+     {"user": "cmsprod", "weight": 1000},
+     {"user": "alice", "egress_rate": "100MB/s", "ingress_rate": "max"}]
+
+Each setting of an account comes from the first rule for the user that has it, else
+from the first for one of its groups, else from the configuration; cgroup limits
+file by file. weight (1 to 10000, default 100) is the account's share of the totals.
+A reload applies the rates to transfers in progress, and writes the cgroup limits of
+the accounts that have workers; a limit no longer configured stays until they have
+all exited (weed says so: set it to its unlimited value, e.g. memory.max=max). /status
+shows the rates and weight of each account with workers, and how many of its
+transfers a rate holds back now.
 
 Storage that does not answer. A request whose file system does not answer (a hung
 NFS server, a failing disk) waits in the kernel with one of its worker's threads,
@@ -430,8 +468,9 @@ Reloading credentials
 
 On SIGHUP, and every server.reload_interval (default 1h, "0s" disables), weed
 re-reads the htpasswd and app tokens files, the grid-mapfile, the CAs and CRLs, the
-token issuers, the TLS certificate, and the CAs for TPC endpoints (also in the worker
-processes) and token issuers, and looks Unix accounts up again. A file
+token issuers, the TLS certificate, the CAs for TPC endpoints (also in the worker
+processes) and token issuers, and the limits file (unix_users.limits), and looks
+Unix accounts up again. A file
 that cannot be read keeps its previous contents, so a file being rewritten neither
 locks everybody out nor lets anybody in. New connections and requests use the new
 data. The configuration file itself is only read at startup: weed says when it has
@@ -539,6 +578,9 @@ write every file. The metrics:
   weed_tls_certificate_expiry_timestamp_seconds
   weed_requests_in_progress{kind}             (download, upload, tpc_pull, tpc_push,
                                               other)
+  weed_network_delay_seconds_total{direction,limit}
+                                              how long transfers waited for network
+                                              rates (egress, ingress; account, total)
 and what runs (see What runs).
 
 weed_requests_in_progress counts the authenticated WebDAV requests being served now:

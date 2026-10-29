@@ -4,11 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/labkode/weed/internal/fsuser"
 	"golang.org/x/sys/unix"
@@ -17,27 +20,21 @@ import (
 // cgroupRoot is where the cgroup v2 hierarchy is mounted
 const cgroupRoot = "/sys/fs/cgroup"
 
-// cgroups gives each worker a cgroup of its own below weed's (cgroup v2): systemd
-// shows them (systemd-cgls, systemd-cgtop), the kernel accounts for the CPU, memory,
-// I/O and processes of each, and limits can apply to each
+// cgroups gives the workers of each account a cgroup of their own below weed's
+// (cgroup v2): systemd shows them (systemd-cgls, systemd-cgtop), the kernel accounts
+// for the CPU, memory, I/O and processes of each, and limits can apply to each
 type cgroups struct {
-	base   string // weed's cgroup
-	limits [][2]string
+	base string // weed's cgroup
+
+	mu      sync.Mutex
+	written map[string]map[string]string // by cgroup: the limits written, file -> value
 }
 
 // controllers are enabled for the workers' cgroups when weed's cgroup has them
 var controllers = []string{"cpu", "io", "memory", "pids"}
 
-func newCgroups(limits []string) (*cgroups, error) {
-	c := &cgroups{}
-	for _, l := range limits {
-		file, value, ok := strings.Cut(l, "=") // checked by config.Validate
-		if !ok {
-			return nil, fmt.Errorf("invalid cgroup limit %q: want file=value, e.g. memory.max=4G", l)
-		}
-		c.limits = append(c.limits, [2]string{file, value})
-	}
-
+func newCgroups() (*cgroups, error) {
+	c := &cgroups{written: make(map[string]map[string]string)}
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
 		return nil, err
@@ -95,22 +92,56 @@ func (c *cgroups) dir(u *fsuser.User) string {
 	return filepath.Join(c.base, "worker-"+name)
 }
 
-// prepare creates the cgroup of a worker of u, applies the limits, and returns a file
-// descriptor for starting the worker in it
-func (c *cgroups) prepare(u *fsuser.User) (int, error) {
-	dir := c.dir(u)
-	if err := os.Mkdir(dir, 0755); err != nil && !errors.Is(err, fs.ErrExist) {
+// prepare creates the cgroup of a worker of u, writes the limits (file=value) to it,
+// and returns a file descriptor for starting the worker in it
+func (c *cgroups) prepare(u *fsuser.User, limits []string) (int, error) {
+	if err := c.apply(u, limits); err != nil {
 		return -1, err
 	}
-	for _, l := range c.limits {
-		if err := os.WriteFile(filepath.Join(dir, l[0]), []byte(l[1]), 0); err != nil {
-			return -1, fmt.Errorf("cannot set %s=%s in %s: %w", l[0], l[1], dir, err)
+	return unix.Open(c.dir(u), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+}
+
+// apply writes the limits (file=value) to the cgroup of u's workers, which it creates
+// if need be. A limit written before and no longer among them stays: the kernel has
+// no way back to the value it had, which depends on the file (memory.max=max,
+// cpu.weight=100, ...). It is logged, once.
+func (c *cgroups) apply(u *fsuser.User, limits []string) error {
+	dir := c.dir(u)
+	c.mu.Lock() // also against remove
+	defer c.mu.Unlock()
+	if err := os.Mkdir(dir, 0755); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	written := maps.Clone(c.written[dir])
+	if written == nil {
+		written = make(map[string]string)
+	}
+	c.written[dir] = written
+	configured := make(map[string]bool)
+	for _, l := range limits {
+		file, value, _ := strings.Cut(l, "=") // checked by limits.CheckCgroupLimit
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(value), 0); err != nil {
+			return fmt.Errorf("cannot set %s=%s in %s: %w", file, value, dir, err)
+		}
+		written[file] = value
+		configured[file] = true
+	}
+	for file, value := range written {
+		if !configured[file] {
+			slog.Warn("a cgroup limit that is no longer configured stays until the account's workers have all exited; to lift it now, set it to the value without limit, e.g. memory.max=max",
+				"account", u.Name, "cgroup", dir, "limit", file+"="+value)
+			delete(written, file)
 		}
 	}
-	return unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	return nil
 }
 
 // remove removes the cgroup of u's workers, unless another worker of u is in it
 func (c *cgroups) remove(u *fsuser.User) {
-	os.Remove(c.dir(u))
+	dir := c.dir(u)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if os.Remove(dir) == nil {
+		delete(c.written, dir)
+	}
 }

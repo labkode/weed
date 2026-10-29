@@ -134,8 +134,15 @@ func (c *Config) sections() []section {
 			{"idle_timeout", "stop the worker process of an account once it has served no request for this long", &c.WorkerIdleTimeout},
 			{"max_workers", "at most this many worker processes take requests; once they are all busy, requests of other accounts get 503", &c.MaxWorkers},
 			{"max_requests", "at most this many requests in progress in each worker process, counted until the worker has finished them, also once their clients have gone; beyond, requests of its account get 503. A request whose storage does not answer blocks a thread of the worker until it does", &c.WorkerMaxRequests},
-			{"cgroups", "run each worker process in a cgroup of its own, below weed's, which must be delegated to weed (systemd: Delegate=yes); cgroup v2", &c.WorkerCgroups},
-			{"cgroup_limits", `write these file=value settings to the cgroup of every worker process, e.g. ["memory.max=8G", "pids.max=5000"] (implies cgroups); pids.max counts threads, and a worker that cannot make one dies: keep it above max_requests`, &c.WorkerCgroupLimits},
+			{"cgroups", "run the worker processes of each account in a cgroup of their own, below weed's, which must be delegated to weed (systemd: Delegate=yes); cgroup v2", &c.WorkerCgroups},
+			{"cgroup_limits", `write these file=value settings to the cgroup of every account, e.g. ["memory.max=8G", "pids.max=5000"] (implies cgroups), unless limits says otherwise; pids.max counts threads, and a worker that cannot make one dies: keep it above max_requests. The Go runtime of workers keeps below 90% of memory.max and memory.high`, &c.WorkerCgroupLimits},
+			{"limits", `limits of some users and Unix groups, in this JSON file ("" for none), which weed re-reads when it reloads: [{"user": "alice", "egress_rate": "100MB/s"}, {"group": "cms", "cgroup_limits": ["memory.max=32G"], "ingress_rate": "1GB/s", "weight": 400}]. A setting of a rule for the user prevails over one for a group, which prevails over cgroup_limits (file by file) and network.account_*_rate; weight, from 1 to 10000 (default 100), is the account's share of network.egress_rate and ingress_rate when they hold transfers back`, &c.LimitsFile},
+		}},
+		{"network", `Network rate limits, such as "100MB/s", "10Gbit/s" or "1GiB/s" ("" or "max": no limit). Egress are the bytes weed sends (downloads, third-party copies it pushes), ingress those it receives (uploads, third-party copies it pulls); bodies count, headers do not`, []option{
+			{"egress_rate", "the most weed sends, all accounts together: when it holds transfers back, the accounts that want more share it in proportion to their weights (unix_users.limits). For weed to decide who gets what, rather than the network, set it a little below the network's capacity", &c.EgressRate},
+			{"ingress_rate", "the most weed receives, all accounts together, shared in the same way", &c.IngressRate},
+			{"account_egress_rate", "the most each account sends, unless unix_users.limits says otherwise", &c.AccountEgressRate},
+			{"account_ingress_rate", "the most each account receives, unless unix_users.limits says otherwise", &c.AccountIngressRate},
 		}},
 		{"admin", "The control plane: a Unix socket that weed utils talks to (ban, unban, bans), which only root and weed's own user can use", []option{
 			{"socket", `its path ("" disables); weed creates the directory, which only its owner may enter, if missing`, &c.AdminSocket},

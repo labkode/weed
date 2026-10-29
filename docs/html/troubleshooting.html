@@ -50,6 +50,7 @@
 				</ul>
 			</li>
 			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
 		</ul>
@@ -263,6 +264,9 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 </tr>
 </tbody>
 </table>
+<h2 id="slow">Slow transfers</h2>
+<p>A network rate may hold them back: the account's own, or the total, which accounts share by weight. /status has the rates of each account with workers, and how many of its transfers a rate holds back now; <code>weed_network_delay_seconds_total</code> adds up how long transfers waited, by limit (see <a href="limits.html#shows">Limits per account</a>).</p>
+<pre><code># curl -s localhost:9100/status | jq &#39;.network.accounts[] | select(.held_egress + .held_ingress &gt; 0)&#39;</code></pre>
 <h2 id="hung-storage">Storage that does not answer</h2>
 <p>When the filesystem of the exported directory stops answering, a hung NFS server or a failing disk, the requests that need it wait in the kernel. Each waits with a thread of its worker, which nothing interrupts, not even SIGKILL, until the storage answers, also once its client has given up. Meanwhile:</p>
 <ul>

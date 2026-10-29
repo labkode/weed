@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExposition(t *testing.T) {
@@ -18,6 +19,8 @@ func TestExposition(t *testing.T) {
 	g.Inc()
 	g.Inc()
 	g.Dec()
+	d := NewCounter("test_wait_seconds_total", "Test durations.").InSeconds()
+	d.Add(int64(1500 * time.Millisecond))
 
 	w := httptest.NewRecorder()
 	Handler(func(w io.Writer) {
@@ -29,6 +32,7 @@ func TestExposition(t *testing.T) {
 		`test_requests_total{method="GET",path="a\"b\\c\n"} 1` + "\n",
 		`test_requests_total{method="PUT",path="/x"} 2` + "\n",
 		"# TYPE test_active gauge\ntest_active 1\n",
+		"# TYPE test_wait_seconds_total counter\ntest_wait_seconds_total 1.5\n",
 		"# TYPE test_computed gauge\ntest_computed{k=\"v\"} 1.5e+09\n",
 	} {
 		if !strings.Contains(body, want) {

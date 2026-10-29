@@ -24,6 +24,7 @@ import (
 
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/fsuser"
+	"github.com/labkode/weed/internal/limits"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/version"
@@ -51,12 +52,15 @@ type Options struct {
 	IdleTimeout time.Duration
 	// MaxWorkers bounds the number of workers that take requests
 	MaxWorkers int
-	// Cgroups gives each worker a cgroup of its own, below weed's, which must have
-	// been delegated to weed (e.g. by systemd's Delegate=yes)
+	// Cgroups gives the workers of each account a cgroup of their own, below weed's,
+	// which must have been delegated to weed (e.g. by systemd's Delegate=yes)
 	Cgroups bool
-	// CgroupLimits are written to the cgroup of each worker: file=value, e.g.
-	// memory.max=4G (implies Cgroups)
-	CgroupLimits []string
+	// CgroupLimits, if set, are the limits written to the cgroup of an account's
+	// workers: file=value, e.g. memory.max=4G (with Cgroups)
+	CgroupLimits func(u *fsuser.User) []string
+	// Shaper, if set, paces what the requests of each account send and receive, and
+	// what its third-party copies move: the workers pay over a socket of their own
+	Shaper *limits.Shaper
 	// Refused, if set, says which accounts get no worker: their requests get 403
 	// (banned users, see Kill)
 	Refused func(account string) bool
@@ -125,8 +129,8 @@ func New(opts Options) (*Pool, error) {
 	if p.build, err = version.ExecutableBuild(); err != nil {
 		return nil, fmt.Errorf("cannot identify the build of weed's executable, which workers must run: %w", err)
 	}
-	if opts.Cgroups || len(opts.CgroupLimits) > 0 {
-		cg, err := newCgroups(opts.CgroupLimits)
+	if opts.Cgroups {
+		cg, err := newCgroups()
 		if err != nil {
 			return nil, err
 		}
@@ -197,6 +201,15 @@ func (p *Pool) ServeHTTP(w http.ResponseWriter, r *http.Request, u *fsuser.User)
 		return
 	}
 	defer p.release(wk)
+	if s := p.opts.Shaper; s != nil && s.Limited(u) {
+		m := s.Meter(u)
+		defer m.Close()
+		if r.Body != nil && r.Body != http.NoBody {
+			r = r.WithContext(r.Context()) // a copy, whose body is metered
+			r.Body = m.Body(r.Context(), r.Body)
+		}
+		w = m.ResponseWriter(r.Context(), w)
+	}
 	wk.proxy.ServeHTTP(w, r)
 }
 
@@ -331,9 +344,11 @@ func (p *Pool) reap() {
 	}
 }
 
-// Reload makes the running workers re-read what they read at startup (the CAs of
-// TPC endpoints); those that are starting read it anyway
-func (p *Pool) Reload() {
+// Reload writes the cgroup limits of the accounts that have workers again, as
+// Options.CgroupLimits now gives them, and makes the running workers re-read what
+// they read at startup (the CAs of TPC endpoints, their Go memory limit); those that
+// are starting read it anyway. It returns why limits could not be written.
+func (p *Pool) Reload() error {
 	p.mu.Lock()
 	var running []*worker
 	for wk := range p.all {
@@ -346,9 +361,22 @@ func (p *Pool) Reload() {
 		}
 	}
 	p.mu.Unlock()
+	var errs []error
+	if p.cgroups != nil && p.opts.CgroupLimits != nil {
+		done := make(map[string]bool)
+		for _, wk := range running {
+			if !done[wk.user.Name] {
+				done[wk.user.Name] = true
+				if err := p.cgroups.apply(&wk.user, p.opts.CgroupLimits(&wk.user)); err != nil {
+					errs = append(errs, err)
+				}
+			}
+		}
+	}
 	for _, wk := range running {
 		wk.ctl.Write([]byte{msgReload})
 	}
+	return errors.Join(errs...)
 }
 
 // Kill stops the workers of an account at once, aborting the requests they serve (an
@@ -482,7 +510,7 @@ func (p *Pool) start(wk *worker) {
 
 // spawn starts the process of a worker and waits until it reports that it is ready
 func (p *Pool) spawn(wk *worker) (err error) {
-	settings, err := json.Marshal(Settings{User: wk.user, Config: p.opts.Config})
+	settings, err := json.Marshal(Settings{User: wk.user, Config: p.opts.Config, Cgroup: p.cgroups != nil, Pay: p.opts.Shaper != nil})
 	if err != nil {
 		return err
 	}
@@ -496,6 +524,21 @@ func (p *Pool) spawn(wk *worker) (err error) {
 			ctl.Close()
 		}
 	}()
+	extra := []*os.File{child} // file descriptor 3
+	var pay *net.UnixConn
+	if p.opts.Shaper != nil {
+		var payChild *os.File
+		if pay, payChild, err = socketPair(unix.SOCK_SEQPACKET); err != nil {
+			return err
+		}
+		defer payChild.Close()
+		defer func() {
+			if err != nil {
+				pay.Close()
+			}
+		}()
+		extra = append(extra, payChild) // file descriptor 4
+	}
 	logs, logw, err := os.Pipe()
 	if err != nil {
 		return err
@@ -514,13 +557,17 @@ func (p *Pool) spawn(wk *worker) (err error) {
 		Dir:        "/",
 		Stdout:     logw,
 		Stderr:     logw,
-		ExtraFiles: []*os.File{child}, // file descriptor 3
+		ExtraFiles: extra,
 		SysProcAttr: &syscall.SysProcAttr{
 			Credential: &syscall.Credential{Uid: uint32(wk.user.UID), Gid: uint32(wk.user.GID), Groups: groups},
 		},
 	}
 	if p.cgroups != nil {
-		fd, err := p.cgroups.prepare(&wk.user)
+		var cgroupLimits []string
+		if p.opts.CgroupLimits != nil {
+			cgroupLimits = p.opts.CgroupLimits(&wk.user)
+		}
+		fd, err := p.cgroups.prepare(&wk.user, cgroupLimits)
 		if err != nil {
 			logs.Close()
 			return err
@@ -570,6 +617,9 @@ func (p *Pool) spawn(wk *worker) (err error) {
 	}
 
 	wk.ctl = ctl
+	if pay != nil {
+		go p.servePayments(wk, pay)
+	}
 	wk.transport = &http.Transport{
 		DialContext:         func(context.Context, string, string) (net.Conn, error) { return wk.dial() },
 		MaxIdleConnsPerHost: 64,

@@ -6,9 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 	"time"
+
+	"github.com/labkode/weed/internal/limits"
 )
 
 // Config holds all configuration options
@@ -32,10 +33,19 @@ type Config struct {
 	MaxWorkers int
 	// WorkerMaxRequests bounds the requests in progress in each worker
 	WorkerMaxRequests int
-	// WorkerCgroups runs each worker in a cgroup of its own
+	// WorkerCgroups runs the workers of each account in a cgroup of their own
 	WorkerCgroups bool
-	// WorkerCgroupLimits are written to the cgroup of every worker (file=value)
+	// WorkerCgroupLimits are written to the cgroup of every account (file=value),
+	// unless LimitsFile says otherwise
 	WorkerCgroupLimits []string
+	// LimitsFile sets limits for some users and groups (see internal/limits)
+	LimitsFile string
+	// Network rate limits (e.g. "100MB/s"; "": none), of all accounts together
+	EgressRate  string
+	IngressRate string
+	// and of each account, unless LimitsFile says otherwise
+	AccountEgressRate  string
+	AccountIngressRate string
 	BasicAuth          bool
 	HtpasswdFile       string
 	AppTokensFile      string
@@ -96,9 +106,6 @@ func (c *Config) Level() (slog.Level, error) {
 	return l, errors.New(`server.log_level must be "debug", "info", "warn" or "error"`)
 }
 
-// cgroupLimitFile is the name of a cgroup interface file that limits may be written to
-var cgroupLimitFile = regexp.MustCompile(`^[a-z]+\.[a-z0-9_.]+$`)
-
 // Validate checks that the configuration is consistent
 func (c *Config) Validate() error {
 	if len(c.AdminSocket) > maxSocketPath {
@@ -138,8 +145,14 @@ func (c *Config) Validate() error {
 		return errors.New(`server.anonymous is only allowed on a loopback address (server.address = "127.0.0.1")`)
 	}
 	for _, l := range c.WorkerCgroupLimits {
-		if file, _, ok := strings.Cut(l, "="); !ok || !cgroupLimitFile.MatchString(file) || strings.HasPrefix(file, "cgroup.") {
-			return fmt.Errorf("invalid unix_users.cgroup_limits entry %q: want file=value, e.g. memory.max=4G", l)
+		if err := limits.CheckCgroupLimit(l); err != nil {
+			return fmt.Errorf("unix_users.cgroup_limits: %w", err)
+		}
+	}
+	for key, rate := range map[string]string{"egress_rate": c.EgressRate, "ingress_rate": c.IngressRate,
+		"account_egress_rate": c.AccountEgressRate, "account_ingress_rate": c.AccountIngressRate} {
+		if _, err := limits.ParseRate(rate); err != nil {
+			return fmt.Errorf("network.%s: %w", key, err)
 		}
 	}
 	if c.TokenCAPath != "" && c.TokenIssuers == "" {

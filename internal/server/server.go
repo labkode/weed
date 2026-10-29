@@ -21,6 +21,7 @@ import (
 	"github.com/labkode/weed/internal/bans"
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/handlers"
+	"github.com/labkode/weed/internal/limits"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/systemd"
@@ -50,6 +51,10 @@ type Server struct {
 
 	inProgress inProgress   // the requests being served, by user and kind
 	storage    storageProbe // /healthz's stat of the exported directory
+
+	limits  atomic.Pointer[limits.Limits] // what accounts are allowed, replaced on reload
+	shaper  *limits.Shaper                // paces the network, if rates may apply
+	cgroups bool                          // the workers of each account have a cgroup
 
 	reloadMu sync.Mutex
 	cert     atomic.Pointer[tls.Certificate] // TLS server certificate, replaced on reload
@@ -127,7 +132,7 @@ func (s *Server) Initialize() error {
 
 	// Initialize third-party copy if enabled
 	if s.Config.TPC {
-		if s.Handler.TPC, err = newTPCEngine(s.Config); err != nil {
+		if s.Handler.TPC, err = newTPCEngine(s.Config, nil); err != nil {
 			return err
 		}
 	}
@@ -140,9 +145,11 @@ func (s *Server) Initialize() error {
 	return nil
 }
 
-// newTPCEngine creates the engine that runs third-party copies
-func newTPCEngine(cfg *config.Config) (*tpc.Engine, error) {
+// newTPCEngine creates the engine that runs third-party copies, which pay with payer
+// for the bytes they move (nil: not paced)
+func newTPCEngine(cfg *config.Config, payer limits.Payer) (*tpc.Engine, error) {
 	tpcCfg := tpc.Config{
+		Payer:          payer,
 		MarkerInterval: cfg.TPCMarkerInterval,
 		StallTimeout:   cfg.TPCStallTimeout,
 		MaxTransfers:   cfg.TPCMaxTransfers,
@@ -276,7 +283,13 @@ func (s *Server) Reload() {
 	}
 	s.AuthStore.ForgetUnixUsers()
 	if s.Workers != nil {
-		s.Workers.Reload()
+		if ok, _ := s.loadLimits(); !ok {
+			complete = false
+		}
+		if err := s.Workers.Reload(); err != nil {
+			slog.Warn("cannot write the cgroup limits of accounts", "error", err)
+			complete = false
+		}
 	}
 	if s.Config.TLS && s.cert.Load() != nil {
 		if err := s.loadCertificate(); err != nil {

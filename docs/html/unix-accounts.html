@@ -50,6 +50,7 @@
 				</ul>
 			</li>
 			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
 		</ul>
@@ -132,7 +133,7 @@ cms001      1702     812 weed worker cms001</code></pre>
 # chmod 2755 /data/cms        # the group reads; what is created inside stays in group cms</code></pre>
 <p>New files and directories get the permissions that weed's umask leaves (0644 and 0755 with systemd's default of 0022).</p>
 <h2 id="cgroups">cgroups</h2>
-<p>With <code>unix_users.cgroups</code>, each worker runs in a cgroup of its own, below weed's. weed's cgroup must be delegated to it (cgroup v2; with systemd, <code>Delegate=yes</code> in the unit). weed then moves itself into &lt;its cgroup&gt;/main, and starts the workers of alice in &lt;its cgroup&gt;/worker-alice, with the cpu, io, memory and pids controllers when they are available. systemd-cgtop and systemd-cgls show what each account uses:</p>
+<p>With <code>unix_users.cgroups</code>, the workers of each account run in a cgroup of their own, below weed's. weed's cgroup must be delegated to it (cgroup v2; with systemd, <code>Delegate=yes</code> in the unit). weed then moves itself into &lt;its cgroup&gt;/main, and starts the workers of alice in &lt;its cgroup&gt;/worker-alice, with the cpu, io, memory and pids controllers when they are available. systemd-cgtop and systemd-cgls show what each account uses:</p>
 <pre><code># systemd-cgls -u weed.service
 Unit weed.service (/system.slice/weed.service):
 ├─main
@@ -141,11 +142,11 @@ Unit weed.service (/system.slice/weed.service):
 │ └─1630 weed worker alice
 └─worker-cms001
   └─1702 weed worker cms001</code></pre>
-<p><code>unix_users.cgroup_limits</code> writes limits into the cgroup of every worker (and implies cgroups):</p>
+<p><code>unix_users.cgroup_limits</code> writes limits into the cgroup of every account (and implies cgroups), unless the limits file sets others for the account (see <a href="limits.html">Limits per account</a>):</p>
 <pre><code>[unix_users]
 cgroup_limits = [&quot;memory.max=8G&quot;, &quot;pids.max=5000&quot;, &quot;cpu.weight=100&quot;]</code></pre>
 <p>pids.max counts the worker's threads, and a worker that cannot make a thread dies, with all its requests. Each request waiting for its files has a thread, so keep pids.max above <code>unix_users.max_requests</code>, with room for the few tens that Go uses besides.</p>
-<p>weed checks that each limit has the form file=value when it reads the configuration; the kernel checks the values when weed writes them. <em>weed check</em> does not set cgroups up, since that would move the process it runs in, so it does not try the values.</p>
+<p>weed checks that each limit has the form file=value when it reads the configuration; the kernel checks the values when weed writes them, when a worker of the account starts and when weed reloads. <em>weed check</em> does not set cgroups up, since that would move the process it runs in, so it does not try the values.</p>
 <h2 id="performance">Performance</h2>
 <p>Downloads relayed from workers run at about 95% of the speed of serving files directly, and uploads at the same speed (1 GiB files over loopback without TLS: about 5800 MB/s against 6100 MB/s). That needs 4 MiB socket buffers, which root gets. If weed runs as another account, also raise net.core.wmem_max and net.core.rmem_max to 4194304, or downloads lose a third:</p>
 <pre><code># sysctl -w net.core.wmem_max=4194304 net.core.rmem_max=4194304</code></pre>

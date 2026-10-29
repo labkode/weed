@@ -50,6 +50,7 @@
 				</ul>
 			</li>
 			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
 		</ul>
@@ -123,7 +124,7 @@ cms001      1702     812 weed worker cms001</code></pre>
 <li>For a grid storage node: a host certificate, the IGTF CA certificates in /etc/grid-security/certificates kept current by fetch-crl, a grid-mapfile, and the token issuers of your communities.</li>
 </ul>
 <h2 id="what-weed-is-not">What weed is not</h2>
-<p>weed serves a directory: it has no namespace database, no tape, no quotas and no replication. It relies on the filesystem for all of that, and on cgroups to limit what each account uses. Some features are not implemented:</p>
+<p>weed serves a directory: it has no namespace database, no tape, no quotas and no replication. It relies on the filesystem for all of that, and on cgroups and its own network rates to limit what each account uses (see <a href="limits.html">Limits per account</a>). Some features are not implemented:</p>
 <ul>
 <li>X.509 credential delegation for third-party copies (Credential: gridsite). Pass tokens or macaroons in TransferHeaderAuthorization instead.</li>
 <li>Authorization by token groups alone: a token needs storage scopes, even when its groups choose its account.</li>

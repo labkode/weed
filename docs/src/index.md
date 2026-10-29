@@ -36,7 +36,7 @@ weed is made so that nothing changes by surprise while it runs. It says which bu
 
 ## What weed is not
 
-weed serves a directory: it has no namespace database, no tape, no quotas and no replication. It relies on the filesystem for all of that, and on cgroups to limit what each account uses. Some features are not implemented:
+weed serves a directory: it has no namespace database, no tape, no quotas and no replication. It relies on the filesystem for all of that, and on cgroups and its own network rates to limit what each account uses (see [Limits per account](limits.html)). Some features are not implemented:
 
 - X.509 credential delegation for third-party copies (Credential: gridsite). Pass tokens or macaroons in TransferHeaderAuthorization instead.
 - Authorization by token groups alone: a token needs storage scopes, even when its groups choose its account.

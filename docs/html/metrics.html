@@ -50,6 +50,7 @@
 				</ul>
 			</li>
 			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
 		</ul>
@@ -218,6 +219,25 @@
 <td>gauge</td>
 <td></td>
 <td>Threads of the worker processes that wait in the kernel, uninterruptibly: for a moment while they read or write files; for long while the storage does not answer, and then their requests do not end, nor do their workers exit, even when killed (see <a href="troubleshooting.html#hung-storage">Troubleshooting</a>).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="network">Network</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span id="weed_network_delay_seconds_total"><code>weed_network_delay_seconds_total</code></span></td>
+<td>counter</td>
+<td>direction, limit</td>
+<td>How long transfers waited because of network rates, by direction (egress, ingress) and limit: account, the account's own rate, or total, weed's total rate, which accounts share by weight. Transfers in parallel each count, so its rate is how many wait, on average (see <a href="limits.html#shows">Limits per account</a>). Absent without network rates.</td>
 </tr>
 </tbody>
 </table>

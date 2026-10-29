@@ -119,7 +119,7 @@ At startup weed logs what it loaded, which build runs, every option (secrets red
     level=INFO msg="loaded token issuers" file=/etc/weed/issuers.json issuers=1
     level=INFO msg="started a worker" worker.user=nobody worker.pid=108 account.name=nobody account.uid=65534 account.gid=65534 account.groups=[65534]
     level=INFO msg="worker stopped" worker.user=nobody worker.pid=108
-    level=INFO msg="files are accessed by a worker process per Unix account" idle_timeout=10m0s max_workers=256 cgroups=false
+    level=INFO msg="files are accessed by a worker process per Unix account" idle_timeout=10m0s max_workers=256 max_requests=4000 cgroups=false
     level=INFO msg="starting weed" version=v1.2.0 commit=46a37813bc81d7a1b9a8b1e2a9e1f3c3e6c2a0d4 ... pid=95 executable=/usr/local/bin/weed dir=/data tls=true authentication=x509,tokens,macaroons tpc=true reload_interval=1h0m0s
     level=INFO msg=configuration file=/etc/weed/weed.toml sha256=6794c30b95c0972e5a032630bb90ccdf474c3df01a9dd983f88c9fdc5baf417e config.server.address="" config.server.port=443 config.server.dir=/data ...
     level=INFO msg="X.509 authentication" ca=/etc/grid-security/certificates gridmap=/etc/grid-security/grid-mapfile crl_path=/etc/grid-security/certificates crl_mode=require

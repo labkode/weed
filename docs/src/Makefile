@@ -27,6 +27,7 @@ SRC += getting-started.md
 SRC += configuration.md
 SRC += authentication.md
 SRC += unix-accounts.md
+SRC += limits.md
 SRC += tpc.md
 SRC += storage.md
 SRC += what-runs.md

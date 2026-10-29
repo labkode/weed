@@ -50,6 +50,7 @@
 				</ul>
 			</li>
 			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
 		</ul>
@@ -155,6 +156,12 @@
 <td><code>basic.htpasswd</code>, <code>basic.app_tokens</code></td>
 <td>root, 0600</td>
 <td>Passwords and app tokens, reloaded.</td>
+</tr>
+<tr>
+<td>/etc/weed/limits.json</td>
+<td><code>unix_users.limits</code></td>
+<td>root, 0644</td>
+<td>The limits of some users and groups, reloaded (see <a href="limits.html#file">Limits per account</a>).</td>
 </tr>
 <tr>
 <td>/var/log/weed.log</td>

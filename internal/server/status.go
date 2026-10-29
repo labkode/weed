@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/labkode/weed/internal/config"
+	"github.com/labkode/weed/internal/limits"
 	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/systemd"
 	"github.com/labkode/weed/internal/version"
@@ -235,6 +236,28 @@ type status struct {
 	Workers        []worker.Info     `json:"workers"`
 	BannedUsers    int               `json:"banned_users"` // weed utils bans lists them
 	InProgress     statusInProgress  `json:"in_progress"`
+	Network        *statusNetwork    `json:"network,omitempty"` // if rates may apply
+}
+
+// statusNetwork is what the network rate limits allow, in bytes per second (0: no
+// limit), and what they hold back
+type statusNetwork struct {
+	EgressRate  int64 `json:"egress_rate"`
+	IngressRate int64 `json:"ingress_rate"`
+	Rules       int   `json:"rules"` // in the limits file
+	// Accounts are those with workers or requests in progress
+	Accounts []statusAccount `json:"accounts"`
+}
+
+type statusAccount struct {
+	Account     string `json:"account"`
+	EgressRate  int64  `json:"egress_rate"`
+	IngressRate int64  `json:"ingress_rate"`
+	Weight      int    `json:"weight"`
+	// Held are the account's transfers that its rates, or the total ones, hold back
+	// now: those of requests, and the third-party copies of its workers
+	HeldEgress  int `json:"held_egress"`
+	HeldIngress int `json:"held_ingress"`
 }
 
 type statusConfig struct {
@@ -278,6 +301,15 @@ func (s *Server) statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.Workers != nil {
 		st.Workers = s.Workers.Workers()
+	}
+	if s.shaper != nil {
+		l := s.limits.Load()
+		st.Network = &statusNetwork{EgressRate: l.EgressRate, IngressRate: l.IngressRate, Rules: len(l.Rules), Accounts: []statusAccount{}}
+		for _, u := range s.shaper.Usage() {
+			st.Network.Accounts = append(st.Network.Accounts, statusAccount{Account: u.Account,
+				EgressRate: u.Limits.EgressRate, IngressRate: u.Limits.IngressRate, Weight: u.Limits.Weight,
+				HeldEgress: u.Held[limits.Egress], HeldIngress: u.Held[limits.Ingress]})
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)

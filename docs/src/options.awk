@@ -14,6 +14,7 @@ BEGIN {
 	guide["tokens"] = "[Authentication](authentication.html#tokens)"
 	guide["tpc"] = "[Third-party copy](tpc.html)"
 	guide["unix_users"] = "[Unix accounts](unix-accounts.html)"
+	guide["network"] = "[Limits per account](limits.html#network)"
 	guide["admin"] = "[Banning users](banning.html)"
 	sections = 0
 }

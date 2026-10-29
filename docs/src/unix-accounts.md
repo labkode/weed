@@ -58,7 +58,7 @@ New files and directories get the permissions that weed's umask leaves (0644 and
 
 ## cgroups
 
-With `unix_users.cgroups`, each worker runs in a cgroup of its own, below weed's. weed's cgroup must be delegated to it (cgroup v2; with systemd, `Delegate=yes` in the unit). weed then moves itself into \<its cgroup\>/main, and starts the workers of alice in \<its cgroup\>/worker-alice, with the cpu, io, memory and pids controllers when they are available. systemd-cgtop and systemd-cgls show what each account uses:
+With `unix_users.cgroups`, the workers of each account run in a cgroup of their own, below weed's. weed's cgroup must be delegated to it (cgroup v2; with systemd, `Delegate=yes` in the unit). weed then moves itself into \<its cgroup\>/main, and starts the workers of alice in \<its cgroup\>/worker-alice, with the cpu, io, memory and pids controllers when they are available. systemd-cgtop and systemd-cgls show what each account uses:
 
     # systemd-cgls -u weed.service
     Unit weed.service (/system.slice/weed.service):
@@ -69,14 +69,14 @@ With `unix_users.cgroups`, each worker runs in a cgroup of its own, below weed's
     └─worker-cms001
       └─1702 weed worker cms001
 
-`unix_users.cgroup_limits` writes limits into the cgroup of every worker (and implies cgroups):
+`unix_users.cgroup_limits` writes limits into the cgroup of every account (and implies cgroups), unless the limits file sets others for the account (see [Limits per account](limits.html)):
 
     [unix_users]
     cgroup_limits = ["memory.max=8G", "pids.max=5000", "cpu.weight=100"]
 
 pids.max counts the worker's threads, and a worker that cannot make a thread dies, with all its requests. Each request waiting for its files has a thread, so keep pids.max above `unix_users.max_requests`, with room for the few tens that Go uses besides.
 
-weed checks that each limit has the form file=value when it reads the configuration; the kernel checks the values when weed writes them. *weed check* does not set cgroups up, since that would move the process it runs in, so it does not try the values.
+weed checks that each limit has the form file=value when it reads the configuration; the kernel checks the values when weed writes them, when a worker of the account starts and when weed reloads. *weed check* does not set cgroups up, since that would move the process it runs in, so it does not try the values.
 
 ## Performance
 

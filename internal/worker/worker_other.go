@@ -9,6 +9,7 @@ import (
 
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/fsuser"
+	"github.com/labkode/weed/internal/limits"
 )
 
 // Options configure a Pool
@@ -17,7 +18,8 @@ type Options struct {
 	IdleTimeout  time.Duration
 	MaxWorkers   int
 	Cgroups      bool
-	CgroupLimits []string
+	CgroupLimits func(u *fsuser.User) []string
+	Shaper       *limits.Shaper
 	Refused      func(account string) bool
 }
 
@@ -31,7 +33,7 @@ func (p *Pool) Check() error                                                    
 func (p *Pool) Workers() []Info                                                  { return nil }
 func (p *Pool) Kill(string) (int, error)                                         { return 0, nil }
 func (p *Pool) ServeHTTP(w http.ResponseWriter, r *http.Request, u *fsuser.User) {}
-func (p *Pool) Reload()                                                          {}
+func (p *Pool) Reload() error                                                    { return nil }
 func (p *Pool) Close(ctx context.Context)                                        {}
 
 // Child is only supported on Linux
@@ -41,4 +43,5 @@ type Child struct{ Settings Settings }
 func Attach() (*Child, error) { return nil, errUnsupported }
 
 func (c *Child) Fail(err error) error                      { return err }
+func (c *Child) Payer() limits.Payer                       { return nil }
 func (c *Child) Serve(h http.Handler, reload func()) error { return errUnsupported }

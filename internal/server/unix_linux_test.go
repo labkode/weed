@@ -643,12 +643,23 @@ func TestWorkerCgroups(t *testing.T) {
 		t.Fatalf("after weed check, weed is in %s, with controllers %q enabled below", got, subtree)
 	}
 
+	var logs lockedBuffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(logger.NewHandler(&logs, logger.FormatJSON, slog.LevelInfo)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	limitsFile := filepath.Join(t.TempDir(), "limits.json")
+	os.WriteFile(limitsFile, []byte(`[{"user": "alice", "cgroup_limits": ["memory.max=128M"]}]`), 0644)
 	n := newUnixNode(t, func(cfg *config.Config) {
 		cfg.WorkerCgroupLimits = []string{"pids.max=64", "memory.max=256M"}
-		cfg.WorkerIdleTimeout = 500 * time.Millisecond
+		cfg.LimitsFile = limitsFile
+		cfg.WorkerIdleTimeout = 2 * time.Second
 	})
 	n.setup("/alice/", 0755, 6001, 6001)
+	n.setup("/bob/", 0755, 6002, 6002)
 	if code := n.status("PUT", "/alice/f", "data"); code != 201 {
+		t.Fatalf("PUT: %d", code)
+	}
+	if code := n.status("PUT", "/bob/f", "data", n.as("bob")...); code != 201 {
 		t.Fatalf("PUT: %d", code)
 	}
 	if got, want := cgroupOf(os.Getpid()), filepath.Join(own, "weed", "main"); got != want {
@@ -658,10 +669,47 @@ func TestWorkerCgroups(t *testing.T) {
 		t.Errorf("alice's worker is in %s, want %s", got, want)
 	}
 	dir := filepath.Join(delegated, "worker-alice")
-	for file, want := range map[string]string{"pids.max": "64", "memory.max": "268435456"} {
-		if got, _ := os.ReadFile(filepath.Join(dir, file)); strings.TrimSpace(string(got)) != want {
-			t.Errorf("%s = %q, want %s", file, got, want)
+	limits := func(account string, want map[string]string) {
+		t.Helper()
+		for file, want := range want {
+			if got, _ := os.ReadFile(filepath.Join(delegated, "worker-"+account, file)); strings.TrimSpace(string(got)) != want {
+				t.Errorf("%s of %s = %q, want %s", file, account, got, want)
+			}
 		}
+	}
+	// The limits file prevails, file by file
+	limits("alice", map[string]string{"pids.max": "64", "memory.max": "134217728"})
+	limits("bob", map[string]string{"pids.max": "64", "memory.max": "268435456"})
+	// and the Go runtime keeps below 90% of memory.max
+	goLimit := func(want int) {
+		t.Helper()
+		eventually(t, fmt.Sprintf("alice's worker to set its Go memory limit to %d", want), func() bool {
+			for _, line := range strings.Split(logs.String(), "\n") {
+				var r struct {
+					Msg           string `json:"msg"`
+					GoMemoryLimit int    `json:"go_memory_limit"`
+					Worker        struct {
+						User string `json:"user"`
+					} `json:"worker"`
+				}
+				if json.Unmarshal([]byte(line), &r) == nil && r.Msg == "set the Go memory limit from the cgroup's" &&
+					r.GoMemoryLimit == want && r.Worker.User == "alice" {
+					return true
+				}
+			}
+			return false
+		})
+	}
+	goLimit(134217728 / 10 * 9)
+
+	// A reload writes the limits of the accounts that have workers, which those
+	// workers apply to the Go runtime
+	os.WriteFile(limitsFile, []byte(`[{"user": "alice", "cgroup_limits": ["memory.max=200M"]}]`), 0644)
+	n.srv.Reload()
+	limits("alice", map[string]string{"memory.max": "209715200"})
+	goLimit(209715200 / 10 * 9)
+	if workerOf(t, "alice") == 0 {
+		t.Fatal("no worker")
 	}
 	// The cgroup goes with the worker
 	eventually(t, "the cgroup to be removed", func() bool {

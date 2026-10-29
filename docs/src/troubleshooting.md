@@ -69,6 +69,12 @@ The account needs search permission on every directory above, and write permissi
 | Too many concurrent third-party copies | `tpc.max_transfers` copies are running; clients retry after the Retry-After. Raise it if the network and disks allow. |
 | /healthz: storage unavailable, storage not responding | The exported directory cannot be read, or does not answer within 5 seconds: check the filesystem (a hung NFS or a lost mount, see [below](#hung-storage)). |
 
+## Slow transfers {#slow}
+
+A network rate may hold them back: the account's own, or the total, which accounts share by weight. /status has the rates of each account with workers, and how many of its transfers a rate holds back now; `weed_network_delay_seconds_total` adds up how long transfers waited, by limit (see [Limits per account](limits.html#shows)).
+
+    # curl -s localhost:9100/status | jq '.network.accounts[] | select(.held_egress + .held_ingress > 0)'
+
 ## Storage that does not answer {#hung-storage}
 
 When the filesystem of the exported directory stops answering, a hung NFS server or a failing disk, the requests that need it wait in the kernel. Each waits with a thread of its worker, which nothing interrupts, not even SIGKILL, until the storage answers, also once its client has given up. Meanwhile:

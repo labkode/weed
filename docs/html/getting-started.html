@@ -50,6 +50,7 @@
 				</ul>
 			</li>
 			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
 		</ul>
@@ -180,7 +181,7 @@ level=INFO msg=&quot;loaded CRLs&quot; path=/etc/grid-security/certificates crls
 level=INFO msg=&quot;loaded token issuers&quot; file=/etc/weed/issuers.json issuers=1
 level=INFO msg=&quot;started a worker&quot; worker.user=nobody worker.pid=108 account.name=nobody account.uid=65534 account.gid=65534 account.groups=[65534]
 level=INFO msg=&quot;worker stopped&quot; worker.user=nobody worker.pid=108
-level=INFO msg=&quot;files are accessed by a worker process per Unix account&quot; idle_timeout=10m0s max_workers=256 cgroups=false
+level=INFO msg=&quot;files are accessed by a worker process per Unix account&quot; idle_timeout=10m0s max_workers=256 max_requests=4000 cgroups=false
 level=INFO msg=&quot;starting weed&quot; version=v1.2.0 commit=46a37813bc81d7a1b9a8b1e2a9e1f3c3e6c2a0d4 ... pid=95 executable=/usr/local/bin/weed dir=/data tls=true authentication=x509,tokens,macaroons tpc=true reload_interval=1h0m0s
 level=INFO msg=configuration file=/etc/weed/weed.toml sha256=6794c30b95c0972e5a032630bb90ccdf474c3df01a9dd983f88c9fdc5baf417e config.server.address=&quot;&quot; config.server.port=443 config.server.dir=/data ...
 level=INFO msg=&quot;X.509 authentication&quot; ca=/etc/grid-security/certificates gridmap=/etc/grid-security/grid-mapfile crl_path=/etc/grid-security/certificates crl_mode=require

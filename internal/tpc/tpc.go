@@ -34,6 +34,7 @@ import (
 
 	"github.com/labkode/weed/internal/davfs"
 	"github.com/labkode/weed/internal/digest"
+	"github.com/labkode/weed/internal/limits"
 	"github.com/labkode/weed/internal/metrics"
 )
 
@@ -79,6 +80,9 @@ type Config struct {
 	AllowPrivate bool
 	// RootCAs verifies remote TLS endpoints; nil means the system roots
 	RootCAs *x509.CertPool
+	// Payer, if set, paces the bytes of transfers: pulls are received (ingress),
+	// pushes sent (egress)
+	Payer limits.Payer
 }
 
 // Job is one transfer
@@ -421,7 +425,7 @@ func (e *Engine) pull(ctx context.Context, job *Job, p *progress) error {
 	hasher := digest.NewHasher(append([]string{digest.Adler}, job.Expected.Algorithms()...)...)
 	counter := new(atomic.Int64)
 	p.counter.Store(counter)
-	n, readErr, writeErr := digest.Copy(af, &countingReader{r: resp.Body, n: counter}, hasher)
+	n, readErr, writeErr := digest.Copy(af, &countingReader{r: e.paced(ctx, resp.Body, limits.Ingress), n: counter}, hasher)
 	if writeErr != nil {
 		return fmt.Errorf("writing local file after %d bytes: %w", n, writeErr)
 	}
@@ -486,7 +490,7 @@ func (e *Engine) push(ctx context.Context, job *Job, p *progress) error {
 			return struct {
 				io.Reader
 				io.Closer
-			}{&countingReader{r: f, n: a.counter}, f}, nil
+			}{&countingReader{r: e.paced(ctx, f, limits.Egress), n: a.counter}, f}, nil
 		}
 		// The file is read ahead and hashed while the transport sends what was read
 		pr, pw := io.Pipe()
@@ -504,7 +508,7 @@ func (e *Engine) push(ctx context.Context, job *Job, p *progress) error {
 		return struct {
 			io.Reader
 			io.Closer
-		}{&countingReader{r: pr, n: a.counter}, pr}, nil
+		}{&countingReader{r: e.paced(ctx, pr, limits.Egress), n: a.counter}, pr}, nil
 	}
 	body, err := newBody()
 	if err != nil {
@@ -550,6 +554,14 @@ func (e *Engine) push(ctx context.Context, job *Job, p *progress) error {
 		return fmt.Errorf("%w: source file does not match the client checksum for %s (the destination did not verify it)", ErrChecksumMismatch, alg)
 	}
 	return nil
+}
+
+// paced pays for what is read from r, if the engine has a Payer
+func (e *Engine) paced(ctx context.Context, r io.Reader, d limits.Direction) io.Reader {
+	if e.cfg.Payer == nil {
+		return r
+	}
+	return limits.Reader(ctx, r, e.cfg.Payer, d)
 }
 
 type countingReader struct {

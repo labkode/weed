@@ -14,6 +14,7 @@ The files that weed reads and writes, with the paths of the examples in this gui
 | /etc/grid-security/grid-mapfile (default) | `x509.gridmap` | root, 0644 | DNs and their accounts, reloaded. |
 | /etc/weed/issuers.json | `tokens.issuers` | root, 0644 | Token issuers and their users rules, reloaded. |
 | /etc/weed/htpasswd, /etc/weed/app-tokens | `basic.htpasswd`, `basic.app_tokens` | root, 0600 | Passwords and app tokens, reloaded. |
+| /etc/weed/limits.json | `unix_users.limits` | root, 0644 | The limits of some users and groups, reloaded (see [Limits per account](limits.html#file)). |
 | /var/log/weed.log | `server.log_file` | weed | The log, reopened on SIGHUP (see [Logging](logging.html#rotation)). |
 | /run/weed/admin.sock (default) | `admin.socket` | weed, 0600 in a 0700 directory | The control plane (see [Banning users](banning.html#control-plane)), removed when weed stops. |
 | /var/lib/weed/bans.json (default) | `admin.bans` | weed, 0600 in a 0700 directory | The banned users, written by weed, read at startup. |

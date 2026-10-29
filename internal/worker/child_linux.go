@@ -6,14 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime/debug"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/labkode/weed/internal/fsuser"
+	"github.com/labkode/weed/internal/limits"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/version"
@@ -28,6 +35,7 @@ type Child struct {
 	Settings Settings
 	ctl      *net.UnixConn
 	build    string // of its executable (see version.Build)
+	payer    *payer // if Settings.Pay
 }
 
 // Attach takes over the control socket that the front process passed as file
@@ -65,7 +73,91 @@ func Attach() (*Child, error) {
 	if child.build, err = version.ExecutableBuild(); err != nil {
 		return nil, child.Fail(fmt.Errorf("cannot identify the build of its executable: %w", err))
 	}
+	if child.Settings.Pay {
+		f := os.NewFile(4, "payments")
+		c, err := net.FileConn(f)
+		f.Close()
+		conn, ok := c.(*net.UnixConn)
+		if err != nil || !ok {
+			return nil, child.Fail(fmt.Errorf("no socket to pay for third-party copies over: %v", err))
+		}
+		child.payer = newPayer(conn)
+	}
+	if child.Settings.Cgroup {
+		limitMemory()
+	}
 	return child, nil
+}
+
+// Payer is what the worker's third-party copies pay with, nil if their bytes are
+// not paced
+func (c *Child) Payer() limits.Payer {
+	if c.payer == nil {
+		return nil
+	}
+	return c.payer
+}
+
+// limitMemory sets the Go runtime's memory limit to 90% of the lower of the cgroup's
+// memory.max and memory.high, so that the garbage collector works harder before the
+// kernel reclaims the worker's memory or kills it. GOMEMLIMIT, if set, prevails.
+func limitMemory() {
+	if _, ok := os.LookupEnv("GOMEMLIMIT"); ok {
+		return
+	}
+	limit, err := cgroupMemoryLimit()
+	if err != nil {
+		slog.Warn("cannot read the memory limits of the worker's cgroup", "error", err)
+		return
+	}
+	goLimit := int64(math.MaxInt64) // none, as without GOMEMLIMIT
+	if limit > 0 {
+		goLimit = limit / 10 * 9
+	}
+	if prev := debug.SetMemoryLimit(goLimit); prev != goLimit {
+		if limit > 0 {
+			slog.Info("set the Go memory limit from the cgroup's", "cgroup_memory_limit", limit, "go_memory_limit", goLimit)
+		} else {
+			slog.Info("the cgroup has no memory limit, nor has Go")
+		}
+	}
+}
+
+// cgroupMemoryLimit is the lower of memory.max and memory.high of the process's
+// cgroup, 0 if neither is set
+func cgroupMemoryLimit() (int64, error) {
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return 0, err
+	}
+	var dir string
+	for _, line := range strings.Split(string(data), "\n") {
+		if p, ok := strings.CutPrefix(line, "0::"); ok {
+			dir = filepath.Join(cgroupRoot, p)
+		}
+	}
+	if dir == "" {
+		return 0, errors.New("not in the cgroup v2 hierarchy")
+	}
+	var limit int64
+	for _, file := range []string{"memory.max", "memory.high"} {
+		b, err := os.ReadFile(filepath.Join(dir, file))
+		if err != nil {
+			return 0, err
+		}
+		v := strings.TrimSpace(string(b))
+		if v == "max" {
+			continue
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %q", file, v)
+		}
+		if limit == 0 || n < limit {
+			limit = n
+		}
+	}
+	return limit, nil
 }
 
 // Fail tells the front process why the worker cannot serve, and returns err
@@ -118,8 +210,16 @@ func (c *Child) Serve(h http.Handler, reload func()) error {
 	}
 	metrics.ForwardTo(c.ctl)
 
+	onReload := func() {
+		if c.Settings.Cgroup {
+			limitMemory() // the front process has written the cgroup's limits again
+		}
+		if reload != nil {
+			reload()
+		}
+	}
 	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(&listener{ctl: c.ctl, reload: reload}) }()
+	go func() { errc <- srv.Serve(&listener{ctl: c.ctl, reload: onReload}) }()
 	select {
 	case err := <-errc:
 		if !errors.Is(err, io.EOF) {

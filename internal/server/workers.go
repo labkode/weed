@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/davreq"
 	"github.com/labkode/weed/internal/handlers"
+	"github.com/labkode/weed/internal/limits"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/worker"
 	"github.com/labkode/weed/internal/x509utils"
@@ -26,12 +28,20 @@ func (s *Server) startWorkers() error {
 	if err != nil {
 		return err
 	}
+	if _, err := s.loadLimits(); err != nil {
+		return err
+	}
+	if s.limitsConfigured() {
+		s.shaper = limits.NewShaper(s.limits.Load())
+	}
+	s.cgroups = s.Config.WorkerCgroups || len(s.Config.WorkerCgroupLimits) > 0 || s.limits.Load().HasCgroupLimits()
 	opts := worker.Options{
 		Config:       workerConfig(s.Config, dir),
 		IdleTimeout:  s.Config.WorkerIdleTimeout,
 		MaxWorkers:   s.Config.MaxWorkers,
-		Cgroups:      s.Config.WorkerCgroups,
-		CgroupLimits: s.Config.WorkerCgroupLimits,
+		Cgroups:      s.cgroups,
+		CgroupLimits: s.cgroupLimits,
+		Shaper:       s.shaper,
 		Refused: func(account string) bool {
 			_, banned := s.Bans.Get(account)
 			return banned
@@ -41,7 +51,7 @@ func (s *Server) startWorkers() error {
 		// Setting cgroups up moves this process and enables controllers in its cgroup,
 		// which would then refuse weed (systemd: ExecStartPre) or the shell weed check
 		// runs in
-		opts.Cgroups, opts.CgroupLimits = false, nil
+		opts.Cgroups = false
 	}
 	pool, err := worker.New(opts)
 	if err != nil {
@@ -53,7 +63,12 @@ func (s *Server) startWorkers() error {
 	}
 	s.Workers = pool
 	slog.Info("files are accessed by a worker process per Unix account",
-		"idle_timeout", s.Config.WorkerIdleTimeout, "max_workers", s.Config.MaxWorkers, "max_requests", s.Config.WorkerMaxRequests, "cgroups", s.Config.WorkerCgroups || len(s.Config.WorkerCgroupLimits) > 0)
+		"idle_timeout", s.Config.WorkerIdleTimeout, "max_workers", s.Config.MaxWorkers, "max_requests", s.Config.WorkerMaxRequests, "cgroups", s.cgroups)
+	if s.shaper != nil {
+		c := s.Config
+		slog.Info("network rates are limited", "egress_rate", cmp.Or(c.EgressRate, "max"), "ingress_rate", cmp.Or(c.IngressRate, "max"),
+			"account_egress_rate", cmp.Or(c.AccountEgressRate, "max"), "account_ingress_rate", cmp.Or(c.AccountIngressRate, "max"), "limits_file", c.LimitsFile)
+	}
 	return nil
 }
 
@@ -125,7 +140,7 @@ func RunWorker() error {
 	}
 	h := handlers.NewWebDAVHandler(cfg.Directory, &cfg, nil)
 	if cfg.TPC {
-		if h.TPC, err = newTPCEngine(&cfg); err != nil {
+		if h.TPC, err = newTPCEngine(&cfg, c.Payer()); err != nil {
 			return c.Fail(err)
 		}
 	}
