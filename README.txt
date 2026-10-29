@@ -15,8 +15,8 @@ check, version).
 
 serves the current directory at http://127.0.0.1:9000/webdav/ to local clients,
 without authentication, as the account nobody (so they can read and write what nobody
-can), with its metrics and status at http://127.0.0.1:9000/metrics and /status.
-Anything else is set in a configuration file:
+can), with its metrics, status and dashboard at http://127.0.0.1:9000/metrics,
+/status and /dashboard/. Anything else is set in a configuration file:
 
     ./weed config >weed.toml     every option, its default and what it does
     ./weed check -config weed.toml   would weed start with it? (see What runs)
@@ -557,9 +557,12 @@ the exported directory cannot be stat'ed within 5 seconds (e.g. a hung network
 filesystem). It makes one stat at a time: while one hangs, calls wait for it.
 
 server.metrics_address = "localhost:9100" serves, without authentication, /healthz,
-/status (see What runs) and Prometheus metrics on /metrics. Without a configuration
-file, the main port serves them: its clients are local, and can already read and
-write every file. The metrics:
+/status (see What runs), Prometheus metrics on /metrics, and a dashboard of both at
+http://localhost:9100/: the browser reads them every 2 seconds and shows throughput,
+requests, rate limits, accounts and workers, with the last 10 minutes as charts. The
+dashboard only reads. Without a configuration file, the main port serves them all
+(the dashboard at /dashboard/): its clients are local, and can already read and write
+every file. The metrics:
   weed_http_requests_total{method,code}       weed_http_response_bytes_total{method}
   weed_auth_requests_total{method,result}     weed_upload_bytes_total
   weed_checksum_mismatches_total{operation}   (put, tpc_pull, tpc_push)
@@ -729,9 +732,9 @@ Testing
     make test-cgroups  the cgroups of worker processes, in a privileged container
     make interop       interoperability tests (test/interop/interop.sh, Docker)
     make lab           weed with 22 Unix accounts under a load that does not stop, in
-                       a container, to watch /status, /metrics and the logs
-                       (test/lab/lab.sh, Docker); make lab-ssh opens a shell in it,
-                       make lab-stop stops it
+                       a container, to watch its dashboard, /status, /metrics and the
+                       logs, with Prometheus and Grafana (test/lab/lab.sh, Docker);
+                       make lab-ssh opens a shell in it, make lab-stop stops it
     make check         gofmt and go vet; make fuzz, make cross, make vulncheck and
                        make bench run the rest; make help lists every target
 

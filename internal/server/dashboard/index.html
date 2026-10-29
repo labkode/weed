@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>weed</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="dashboard.css">
+<script src="dashboard.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>weed<span class="host" id="host"></span></h1>
+  <div class="facts" id="facts"></div>
+  <div class="controls">
+    <span id="updated">connecting…</span>
+    <button type="button" id="pause" aria-pressed="false">Pause</button>
+  </div>
+</header>
+<div class="alerts" id="alerts" aria-live="polite"></div>
+<main>
+  <div class="tiles" id="tiles"></div>
+  <div class="charts" id="charts"></div>
+
+  <section class="card">
+    <div class="section-head">
+      <h2>Accounts</h2>
+      <span class="note">with workers or requests in progress</span>
+      <input type="search" id="filter" placeholder="Filter accounts" aria-label="Filter accounts">
+    </div>
+    <div class="scroll" id="accounts"></div>
+  </section>
+
+  <section class="card">
+    <div class="section-head"><h2>Workers</h2><span class="note" id="workers-note"></span></div>
+    <div class="scroll" id="workers"></div>
+  </section>
+
+  <section class="card">
+    <div class="section-head"><h2>Authentication</h2><span class="note">outcomes of WebDAV requests, by the method that decided them</span></div>
+    <div class="scroll" id="auth"></div>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>Configuration and build</summary>
+      <div id="config"></div>
+    </details>
+  </section>
+</main>
+<footer>
+  Read-only: this page shows what <a href="../status">/status</a> and <a href="../metrics">/metrics</a> say, and changes nothing.
+  <a href="../healthz">/healthz</a>
+</footer>
+</body>
+</html>

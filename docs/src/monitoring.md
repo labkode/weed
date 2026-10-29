@@ -2,12 +2,24 @@
 title: 'Monitoring'
 ---
 
-weed serves Prometheus metrics at /metrics, what runs at /status, and a health check at /healthz, on `server.metrics_address`:
+weed serves Prometheus metrics at /metrics, what runs at /status, a dashboard of both at /, and a health check at /healthz, on `server.metrics_address`:
 
     [server]
     metrics_address = "localhost:9100"
 
-These endpoints have no authentication. /status shows the configuration (secrets redacted) and the names of the users with requests in progress, so serve them on localhost, or on an address that only your monitoring reaches. Without a configuration file, they are on the main port, whose clients are local.
+These endpoints have no authentication. /status shows the configuration (secrets redacted) and the names of the users with requests in progress, so serve them on localhost, or on an address that only your monitoring reaches. Without a configuration file, they are on the main port, whose clients are local (the dashboard at /dashboard/).
+
+## The dashboard {#dashboard}
+
+http://localhost:9100/ is a page that your browser fills from /status and /metrics every 2 seconds, and that changes nothing:
+
+- tiles: egress and ingress now, against the total rates; requests per second, with the 4xx and 5xx; requests in progress, by kind; transfers that rates hold back; workers and their blocked threads; third-party copies; banned users;
+- charts of the last 10 minutes, kept by the browser while the page is open: throughput, with the total rates; requests per second, by status; requests in progress, by kind; transfers held back by an account's rate or by the total, on average;
+- the accounts with workers or requests in progress: their workers, their requests in progress and of which kind, their transfers held back now, their rates and weight. Click a column to sort by it;
+- the workers, their requests and how long they have run; the outcomes of authentication, by method; the build and the configuration;
+- warnings: a pending restart, a partial reload, blocked threads, a TLS certificate or CRLs about to expire, and weed not answering.
+
+It needs no other software, and loads nothing from elsewhere. weed counts the bytes of a transfer when it ends, so the charts of rates average over 10 seconds, and a long transfer counts when it ends. For history beyond the page, scrape /metrics with Prometheus (see below).
 
 ## /healthz
 

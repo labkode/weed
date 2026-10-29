@@ -399,18 +399,21 @@ func (sp *storageProbe) check(stat func() error) *probe {
 	return p
 }
 
-// MetricsHandler serves /metrics, /healthz and /status
+// MetricsHandler serves /metrics, /healthz, /status and the dashboard, to which /
+// leads
 func (s *Server) MetricsHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
+	mux.Handle("GET /{$}", http.RedirectHandler("dashboard/", http.StatusFound))
 	s.handleMonitoring(mux)
 	return mux
 }
 
-// handleMonitoring adds /metrics and /status to mux
+// handleMonitoring adds /metrics, /status and the dashboard to mux
 func (s *Server) handleMonitoring(mux *http.ServeMux) {
 	mux.Handle("/metrics", metrics.Handler(s.writeGauges))
 	mux.HandleFunc("/status", s.statusHandler)
+	mux.Handle("GET /dashboard/", dashboardHandler())
 }
 
 // applyAuthMiddleware applies the unified authentication middleware to a handler

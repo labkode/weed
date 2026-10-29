@@ -15,15 +15,17 @@ title: 'HTTP endpoints'
 | /auth/x509 | X.509 | Checks the client certificate, with `x509.enabled`. |
 | /healthz | none | "ok" if the exported directory responds, 503 otherwise (see [Monitoring](monitoring.html#healthz)). |
 | / | none | An index page with links to the above. |
-| /metrics, /status | none | Only without a configuration file, whose clients are local. |
+| /metrics, /status, /dashboard/ | none | Only without a configuration file, whose clients are local. |
 
 ## On server.metrics_address {#metrics-address}
 
-| Path     | What                                                           |
-|----------|----------------------------------------------------------------|
-| /metrics | Prometheus metrics (see [Metrics](metrics.html)).              |
-| /status  | What runs, as JSON (see [Monitoring](monitoring.html#status)). |
-| /healthz | As on the main port.                                           |
+| Path        | What                                                                                  |
+|-------------|---------------------------------------------------------------------------------------|
+| /           | Leads to /dashboard/.                                                                 |
+| /dashboard/ | A dashboard of /status and /metrics, which only reads (see [Monitoring](monitoring.html#dashboard)). |
+| /metrics    | Prometheus metrics (see [Metrics](metrics.html)).                                     |
+| /status     | What runs, as JSON (see [Monitoring](monitoring.html#status)).                        |
+| /healthz    | As on the main port.                                                                  |
 
 None of these require authentication: serve them on localhost or a management network.
 

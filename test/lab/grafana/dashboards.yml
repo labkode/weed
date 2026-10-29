@@ -1,0 +1,8 @@
+# The dashboards that Grafana loads at startup (see lab.sh): weed.json, which sites
+# can import into their own Grafana too
+apiVersion: 1
+providers:
+  - name: weed
+    type: file
+    options:
+      path: /etc/grafana/dashboards

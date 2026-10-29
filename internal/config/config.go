@@ -54,7 +54,8 @@ type Config struct {
 	LogFormat          string // text or json
 	// ReloadInterval is how often credential files are re-read (0: only on SIGHUP)
 	ReloadInterval time.Duration
-	// MetricsAddress serves /metrics, /status and /healthz without authentication ("" disables)
+	// MetricsAddress serves /metrics, /status, the dashboard and /healthz without
+	// authentication ("" disables)
 	MetricsAddress string
 	// AdminSocket is the control plane's Unix socket ("" disables), see internal/admin
 	AdminSocket string

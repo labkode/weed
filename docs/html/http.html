@@ -154,7 +154,7 @@
 <td>An index page with links to the above.</td>
 </tr>
 <tr>
-<td>/metrics, /status</td>
+<td>/metrics, /status, /dashboard/</td>
 <td>none</td>
 <td>Only without a configuration file, whose clients are local.</td>
 </tr>
@@ -169,6 +169,14 @@
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>/</td>
+<td>Leads to /dashboard/.</td>
+</tr>
+<tr>
+<td>/dashboard/</td>
+<td>A dashboard of /status and /metrics, which only reads (see <a href="monitoring.html#dashboard">Monitoring</a>).</td>
+</tr>
 <tr>
 <td>/metrics</td>
 <td>Prometheus metrics (see <a href="metrics.html">Metrics</a>).</td>

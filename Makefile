@@ -39,7 +39,7 @@ test-cgroups: ## The cgroups of worker processes, in a privileged Linux containe
 interop: ## Interoperability tests with gfal2, davix and XRootD (Docker)
 	test/interop/interop.sh
 
-lab: ## weed with 22 Unix accounts under a load that does not stop, in a container (Docker)
+lab: ## weed with 22 Unix accounts under a load that does not stop, with Grafana (Docker)
 	test/lab/lab.sh
 
 lab-ssh: ## A shell in the running lab
@@ -48,9 +48,7 @@ lab-ssh: ## A shell in the running lab
 	docker exec -it weed-lab bash
 
 lab-stop: ## Stop the lab
-	@if docker inspect weed-lab >/dev/null 2>&1; then \
-		docker rm -f weed-lab >/dev/null && echo "the lab is stopped"; \
-	else echo "the lab does not run"; fi
+	@test/lab/lab.sh stop
 
 check: ## gofmt and go vet
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "needs gofmt:"; echo "$$out"; exit 1; fi
