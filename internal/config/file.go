@@ -39,6 +39,7 @@ func Default() *Config {
 		TPCStallTimeout:     2 * time.Minute,
 		WorkerIdleTimeout:   10 * time.Minute,
 		MaxWorkers:          256,
+		WorkerMaxRequests:   4000,
 		AdminSocket:         "/run/weed/admin.sock",
 		BansFile:            "/var/lib/weed/bans.json",
 		WorkerCgroupLimits:  []string{},
@@ -132,8 +133,9 @@ func (c *Config) sections() []section {
 		{"unix_users", "Unix accounts: every request accesses files as the Unix account its credentials map to (anonymous ones: nobody), from a worker process running as that account; an identity without an account gets 403. weed runs on Linux, as root (or with CAP_SETUID and CAP_SETGID)", []option{
 			{"idle_timeout", "stop the worker process of an account once it has served no request for this long", &c.WorkerIdleTimeout},
 			{"max_workers", "at most this many worker processes take requests; once they are all busy, requests of other accounts get 503", &c.MaxWorkers},
+			{"max_requests", "at most this many requests in progress in each worker process, counted until the worker has finished them, also once their clients have gone; beyond, requests of its account get 503. A request whose storage does not answer blocks a thread of the worker until it does", &c.WorkerMaxRequests},
 			{"cgroups", "run each worker process in a cgroup of its own, below weed's, which must be delegated to weed (systemd: Delegate=yes); cgroup v2", &c.WorkerCgroups},
-			{"cgroup_limits", `write these file=value settings to the cgroup of every worker process, e.g. ["memory.max=8G", "pids.max=1000"] (implies cgroups)`, &c.WorkerCgroupLimits},
+			{"cgroup_limits", `write these file=value settings to the cgroup of every worker process, e.g. ["memory.max=8G", "pids.max=5000"] (implies cgroups); pids.max counts threads, and a worker that cannot make one dies: keep it above max_requests`, &c.WorkerCgroupLimits},
 		}},
 		{"admin", "The control plane: a Unix socket that weed utils talks to (ban, unban, bans), which only root and weed's own user can use", []option{
 			{"socket", `its path ("" disables); weed creates the directory, which only its owner may enter, if missing`, &c.AdminSocket},

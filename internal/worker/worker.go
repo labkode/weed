@@ -19,10 +19,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/labkode/weed/internal/auth"
@@ -49,6 +51,9 @@ type Info struct {
 	Started  time.Time `json:"started"`
 	Requests int       `json:"requests"` // in progress
 	Retired  bool      `json:"retired"`  // finishing its requests, taking no new ones
+	// BlockedThreads wait in the kernel, uninterruptibly: for long, for storage that
+	// does not answer. Their requests do not end, even once their clients have gone.
+	BlockedThreads int `json:"blocked_threads"`
 }
 
 // Messages from the front process to a worker over the control socket, after the settings
@@ -121,6 +126,28 @@ func Handler(next http.Handler, u *fsuser.User) http.Handler {
 		}
 		stripHeaders(r.Header)
 		next.ServeHTTP(w, r)
+	})
+}
+
+// limitRequests answers 503 to the requests beyond max in progress (max < 1: no
+// limit). A request counts until its handler returns, also once its client has gone:
+// while the storage does not answer, that is how long one of the worker's threads
+// waits in the kernel. So the limit also bounds those threads: the Go runtime stops
+// a process at 10000, and so does a cgroup's pids.max that refuses one.
+func limitRequests(h http.Handler, max int) http.Handler {
+	if max < 1 {
+		return h
+	}
+	var n atomic.Int64
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer n.Add(-1)
+		if n.Add(1) > int64(max) {
+			slog.WarnContext(r.Context(), "too many requests in progress for the account (unix_users.max_requests)", "max_requests", max)
+			w.Header().Set("Retry-After", "10")
+			http.Error(w, "Too many requests in progress for this account", http.StatusServiceUnavailable)
+			return
+		}
+		h.ServeHTTP(w, r)
 	})
 }
 

@@ -65,7 +65,8 @@ These endpoints have no authentication. /status shows the configuration (secrets
           "pid": 127,
           "started": "2026-10-29T09:06:57.546247626Z",
           "requests": 1,
-          "retired": false
+          "retired": false,
+          "blocked_threads": 0
         },
         {
           "account": "cms001",
@@ -73,7 +74,8 @@ These endpoints have no authentication. /status shows the configuration (secrets
           "pid": 166,
           "started": "2026-10-29T09:06:57.874668126Z",
           "requests": 3,
-          "retired": false
+          "retired": false,
+          "blocked_threads": 0
         }
       ],
       "banned_users": 0,
@@ -104,7 +106,7 @@ restart_pending
 :   why a restart would change what runs, by reason: config, binary. Empty when nothing would change.
 
 workers
-:   each worker: its account, its pid, since when it runs, and how many requests it is serving. A retired worker finishes its requests and takes no new ones, e.g. after its account's groups changed.
+:   each worker: its account, its pid, since when it runs, and how many requests weed waits for it to answer. A retired worker finishes its requests and takes no new ones, e.g. after its account's groups changed. blocked_threads are the worker's threads that wait in the kernel, uninterruptibly: for a moment while they read or write files, and for long when its storage does not answer, also once their clients have gone (see [Troubleshooting](troubleshooting.html#hung-storage)).
 
 ## Transfers in progress {#in-progress}
 

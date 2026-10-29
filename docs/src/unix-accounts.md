@@ -25,9 +25,11 @@ A worker runs as its account: its UID, GID and supplementary groups, with no cap
     alice       1630     812 weed worker alice
     cms001      1702     812 weed worker cms001
 
-A worker starts with the first request of its account, and stops after `unix_users.idle_timeout` (default 10m) without one. A worker that dies is replaced at the next request. /status lists the workers, with their pids and how many requests each is serving (see [Monitoring](monitoring.html#status)).
+A worker starts with the first request of its account, and stops after `unix_users.idle_timeout` (default 10m) without one, unless threads of its requests still wait for its storage (see [Troubleshooting](troubleshooting.html#hung-storage)). A worker that dies is replaced at the next request. /status lists the workers, with their pids and how many requests each is serving (see [Monitoring](monitoring.html#status)).
 
 At most `unix_users.max_workers` (default 256) workers take requests. When they are all busy, weed stops the idlest one to make room; when none is idle, requests of other accounts get 503, with Retry-After. Raise the limit if your site has more active accounts than that.
+
+A worker serves at most `unix_users.max_requests` (default 4000) requests at once. It counts each until it has finished it, also once its client has gone, and answers its account's requests beyond with 503 and Retry-After. A request whose storage does not answer stays in progress until the storage does, with one of the worker's threads: the limit keeps such threads from piling up until the worker cannot make more, and dies.
 
 Before it serves, weed starts a worker as nobody, to find problems before the first request. Each worker checks that all its threads run as its account, without capabilities and with no_new_privs, and refuses to serve otherwise. Workers get none of weed's environment, and ignore SIGHUP, which is for weed.
 
@@ -70,7 +72,9 @@ With `unix_users.cgroups`, each worker runs in a cgroup of its own, below weed's
 `unix_users.cgroup_limits` writes limits into the cgroup of every worker (and implies cgroups):
 
     [unix_users]
-    cgroup_limits = ["memory.max=8G", "pids.max=1000", "cpu.weight=100"]
+    cgroup_limits = ["memory.max=8G", "pids.max=5000", "cpu.weight=100"]
+
+pids.max counts the worker's threads, and a worker that cannot make a thread dies, with all its requests. Each request waiting for its files has a thread, so keep pids.max above `unix_users.max_requests`, with room for the few tens that Go uses besides.
 
 weed checks that each limit has the form file=value when it reads the configuration; the kernel checks the values when weed writes them. *weed check* does not set cgroups up, since that would move the process it runs in, so it does not try the values.
 

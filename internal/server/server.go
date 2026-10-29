@@ -322,6 +322,15 @@ func (s *Server) writeGauges(w io.Writer) {
 			float64(cert.Leaf.NotAfter.Unix()), nil, nil)
 	}
 	s.writeStatusGauges(w)
+	blocked := 0
+	if s.Workers != nil {
+		for _, wk := range s.Workers.Workers() {
+			blocked += wk.BlockedThreads
+		}
+	}
+	metrics.WriteGauge(w, "weed_worker_blocked_threads",
+		"Threads of the worker processes that wait in the kernel, uninterruptibly: for a moment while they read or write files; for long while the storage does not answer, and then their requests do not end, nor do their workers exit, even when killed.",
+		float64(blocked), nil, nil)
 }
 
 // healthz reports whether the exported directory responds (a hung network

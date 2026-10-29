@@ -111,8 +111,9 @@ USER         PID    PPID COMMAND
 root         812       1 weed -config /etc/weed/weed.toml
 alice       1630     812 weed worker alice
 cms001      1702     812 weed worker cms001</code></pre>
-<p>A worker starts with the first request of its account, and stops after <code>unix_users.idle_timeout</code> (default 10m) without one. A worker that dies is replaced at the next request. /status lists the workers, with their pids and how many requests each is serving (see <a href="monitoring.html#status">Monitoring</a>).</p>
+<p>A worker starts with the first request of its account, and stops after <code>unix_users.idle_timeout</code> (default 10m) without one, unless threads of its requests still wait for its storage (see <a href="troubleshooting.html#hung-storage">Troubleshooting</a>). A worker that dies is replaced at the next request. /status lists the workers, with their pids and how many requests each is serving (see <a href="monitoring.html#status">Monitoring</a>).</p>
 <p>At most <code>unix_users.max_workers</code> (default 256) workers take requests. When they are all busy, weed stops the idlest one to make room; when none is idle, requests of other accounts get 503, with Retry-After. Raise the limit if your site has more active accounts than that.</p>
+<p>A worker serves at most <code>unix_users.max_requests</code> (default 4000) requests at once. It counts each until it has finished it, also once its client has gone, and answers its account's requests beyond with 503 and Retry-After. A request whose storage does not answer stays in progress until the storage does, with one of the worker's threads: the limit keeps such threads from piling up until the worker cannot make more, and dies.</p>
 <p>Before it serves, weed starts a worker as nobody, to find problems before the first request. Each worker checks that all its threads run as its account, without capabilities and with no_new_privs, and refuses to serve otherwise. Workers get none of weed's environment, and ignore SIGHUP, which is for weed.</p>
 <p>Workers log through weed: their records carry worker.user and worker.pid, and the request_id of the request they serve (see <a href="logging.html">Logging</a>). They report their metrics to weed, which serves them. <code>tpc.max_transfers</code> bounds the third-party copies of all accounts together.</p>
 <h2 id="same-build">Workers run weed's build</h2>
@@ -142,7 +143,8 @@ Unit weed.service (/system.slice/weed.service):
   └─1702 weed worker cms001</code></pre>
 <p><code>unix_users.cgroup_limits</code> writes limits into the cgroup of every worker (and implies cgroups):</p>
 <pre><code>[unix_users]
-cgroup_limits = [&quot;memory.max=8G&quot;, &quot;pids.max=1000&quot;, &quot;cpu.weight=100&quot;]</code></pre>
+cgroup_limits = [&quot;memory.max=8G&quot;, &quot;pids.max=5000&quot;, &quot;cpu.weight=100&quot;]</code></pre>
+<p>pids.max counts the worker's threads, and a worker that cannot make a thread dies, with all its requests. Each request waiting for its files has a thread, so keep pids.max above <code>unix_users.max_requests</code>, with room for the few tens that Go uses besides.</p>
 <p>weed checks that each limit has the form file=value when it reads the configuration; the kernel checks the values when weed writes them. <em>weed check</em> does not set cgroups up, since that would move the process it runs in, so it does not try the values.</p>
 <h2 id="performance">Performance</h2>
 <p>Downloads relayed from workers run at about 95% of the speed of serving files directly, and uploads at the same speed (1 GiB files over loopback without TLS: about 5800 MB/s against 6100 MB/s). That needs 4 MiB socket buffers, which root gets. If weed runs as another account, also raise net.core.wmem_max and net.core.rmem_max to 4194304, or downloads lose a third:</p>

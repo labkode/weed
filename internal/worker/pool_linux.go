@@ -37,6 +37,12 @@ const (
 	maxMessage = 64 << 10
 )
 
+// killWait bounds how long a killed worker is waited for (a variable for tests). A
+// process exits once each of its threads has returned from the kernel, and a thread
+// that waits for storage that does not answer, uninterruptibly (state D, e.g. in
+// fsync), does not return until the storage does.
+var killWait = 10 * time.Second
+
 // Options configure a Pool
 type Options struct {
 	// Config is what workers serve with; it must not hold credentials
@@ -93,6 +99,7 @@ type worker struct {
 	retired  bool      // takes no new requests
 	closing  bool      // told to exit once its requests are done
 	killed   bool      // see Kill
+	blocked  bool      // idle, but threads of its requests wait in the kernel (see reap)
 }
 
 func (wk *worker) String() string {
@@ -132,7 +139,6 @@ func New(opts Options) (*Pool, error) {
 // Workers describes the worker processes that have started and not exited, by account
 func (p *Pool) Workers() []Info {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	var infos []Info
 	for wk := range p.all {
 		select {
@@ -145,6 +151,10 @@ func (p *Pool) Workers() []Info {
 			}
 		default: // starting
 		}
+	}
+	p.mu.Unlock()
+	for i := range infos {
+		infos[i].BlockedThreads = blockedThreads(infos[i].PID)
 	}
 	slices.SortFunc(infos, func(a, b Info) int { return cmp.Or(cmp.Compare(a.Account, b.Account), cmp.Compare(a.PID, b.PID)) })
 	return infos
@@ -256,11 +266,12 @@ func (p *Pool) retireLocked(wk *worker) {
 	}
 }
 
-// retireIdlestLocked retires the worker that has been idle the longest, if any is
+// retireIdlestLocked retires the worker that has been idle the longest, if any is,
+// but not one whose threads wait in the kernel (see reap)
 func (p *Pool) retireIdlestLocked() bool {
 	var idlest *worker
 	for _, wk := range p.workers {
-		if wk.active == 0 && (idlest == nil || wk.lastUsed.Before(idlest.lastUsed)) {
+		if wk.active == 0 && (idlest == nil || wk.lastUsed.Before(idlest.lastUsed)) && blockedThreads(wk.pid) == 0 {
 			idlest = wk
 		}
 	}
@@ -288,7 +299,10 @@ func (p *Pool) closeLocked(wk *worker) {
 	}()
 }
 
-// reap retires the workers that have been idle for IdleTimeout
+// reap retires the workers that have been idle for IdleTimeout. A worker whose
+// threads wait in the kernel would not exit, and the account's next requests would
+// go to a new worker, whose threads could get stuck as well: it is kept, and its
+// requests beyond unix_users.max_requests get 503.
 func (p *Pool) reap() {
 	interval := min(max(p.opts.IdleTimeout/4, 10*time.Millisecond), 30*time.Second)
 	t := time.NewTicker(interval)
@@ -302,8 +316,15 @@ func (p *Pool) reap() {
 		p.mu.Lock()
 		for _, wk := range p.workers {
 			if wk.active == 0 && time.Since(wk.lastUsed) >= p.opts.IdleTimeout {
-				slog.Info("stopping an idle worker", "worker", wk)
-				p.retireLocked(wk)
+				n := blockedThreads(wk.pid)
+				if n > 0 && !wk.blocked {
+					slog.Warn("an idle worker keeps running: threads of its requests wait in the kernel, for storage that does not answer?",
+						"worker", wk, "blocked_threads", n)
+				}
+				if wk.blocked = n > 0; !wk.blocked {
+					slog.Info("stopping an idle worker", "worker", wk)
+					p.retireLocked(wk)
+				}
 			}
 		}
 		p.mu.Unlock()
@@ -331,33 +352,25 @@ func (p *Pool) Reload() {
 }
 
 // Kill stops the workers of an account at once, aborting the requests they serve (an
-// upload in progress never replaces a file), and returns how many it stopped. Once
+// upload in progress never replaces a file). It returns how many it killed, and an
+// error naming those that have not exited after killWait (see kill). Once
 // Options.Refused refuses the account, call Kill: no worker starts for it after.
-func (p *Pool) Kill(account string) int {
+func (p *Pool) Kill(account string) (int, error) {
 	p.mu.Lock()
-	var kill []*worker
+	var wks []*worker
 	for wk := range p.all {
 		if wk.user.Name == account {
 			wk.killed = true
 			p.retireLocked(wk)
-			kill = append(kill, wk)
+			wks = append(wks, wk)
 		}
 	}
 	p.mu.Unlock()
-	n := 0
-	for _, wk := range kill {
-		<-wk.ready
-		if wk.err == nil { // else it did not start
-			wk.cmd.Process.Kill()
-			n++
-		}
-		<-wk.exited
-	}
-	return n
+	return kill(wks)
 }
 
 // Close stops every worker: they get until ctx is done to finish their requests,
-// and are killed then
+// and are killed then. It does not wait for those that do not exit (see kill).
 func (p *Pool) Close(ctx context.Context) {
 	p.mu.Lock()
 	if !p.closed {
@@ -371,18 +384,77 @@ func (p *Pool) Close(ctx context.Context) {
 		all = append(all, wk)
 	}
 	p.mu.Unlock()
+	var left []*worker
 	for _, wk := range all {
 		select {
 		case <-wk.exited:
 		case <-ctx.Done():
-			<-wk.ready
-			if wk.err == nil {
-				slog.Warn("killing a worker that did not stop in time", "worker", wk)
-				wk.cmd.Process.Kill()
-			}
-			<-wk.exited
+			left = append(left, wk)
 		}
 	}
+	for _, wk := range left {
+		slog.Warn("killing a worker that did not stop in time", "worker", wk)
+	}
+	if _, err := kill(left); err != nil {
+		slog.Error("stopping without waiting for the workers that do not exit", "error", err)
+	}
+}
+
+// kill kills the workers that have started, and waits for them to exit, for at most
+// killWait. It returns how many it killed, and an error naming those that have not
+// exited: their threads wait in the kernel, for storage that does not answer. Such
+// a worker exits once the storage answers, which watch logs.
+func kill(wks []*worker) (int, error) {
+	var killed []*worker
+	for _, wk := range wks {
+		<-wk.ready
+		if wk.err == nil { // else it did not start
+			wk.cmd.Process.Kill()
+			killed = append(killed, wk)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), killWait)
+	defer cancel()
+	var stuck []string
+	for _, wk := range killed {
+		select {
+		case <-wk.exited:
+		case <-ctx.Done():
+			stuck = append(stuck, fmt.Sprintf("the %s has not exited %v after being killed: %d of its threads wait in the kernel",
+				wk, killWait, blockedThreads(wk.pid)))
+		}
+	}
+	if len(stuck) > 0 {
+		return len(killed), fmt.Errorf("%s, for storage that does not answer? A worker exits once they return", strings.Join(stuck, "; "))
+	}
+	return len(killed), nil
+}
+
+// blockedThreads counts the threads of a process that wait in the kernel,
+// uninterruptibly (state D): for a moment while they read or write files, or for as
+// long as the storage they wait for does not answer. Signals do not end the wait,
+// not even SIGKILL.
+func blockedThreads(pid int) int {
+	tasks, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, t := range tasks {
+		if stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%s/stat", pid, t.Name())); err == nil && threadState(stat) == 'D' {
+			n++
+		}
+	}
+	return n
+}
+
+// threadState is the state in /proc/<pid>/task/<tid>/stat: "tid (comm) state ...",
+// where comm may hold spaces and parentheses
+func threadState(stat []byte) byte {
+	if i := bytes.LastIndexByte(stat, ')'); i >= 0 && i+2 < len(stat) {
+		return stat[i+2]
+	}
+	return 0
 }
 
 // start starts the process of a worker, and closes wk.ready

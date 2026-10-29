@@ -152,7 +152,8 @@ ok</code></pre>
       &quot;pid&quot;: 127,
       &quot;started&quot;: &quot;2026-10-29T09:06:57.546247626Z&quot;,
       &quot;requests&quot;: 1,
-      &quot;retired&quot;: false
+      &quot;retired&quot;: false,
+      &quot;blocked_threads&quot;: 0
     },
     {
       &quot;account&quot;: &quot;cms001&quot;,
@@ -160,7 +161,8 @@ ok</code></pre>
       &quot;pid&quot;: 166,
       &quot;started&quot;: &quot;2026-10-29T09:06:57.874668126Z&quot;,
       &quot;requests&quot;: 3,
-      &quot;retired&quot;: false
+      &quot;retired&quot;: false,
+      &quot;blocked_threads&quot;: 0
     }
   ],
   &quot;banned_users&quot;: 0,
@@ -194,7 +196,7 @@ why a restart would change what runs, by reason: config, binary. Empty when noth
 </dd>
 <dt>workers</dt>
 <dd>
-each worker: its account, its pid, since when it runs, and how many requests it is serving. A retired worker finishes its requests and takes no new ones, e.g. after its account's groups changed.
+each worker: its account, its pid, since when it runs, and how many requests weed waits for it to answer. A retired worker finishes its requests and takes no new ones, e.g. after its account's groups changed. blocked_threads are the worker's threads that wait in the kernel, uninterruptibly: for a moment while they read or write files, and for long when its storage does not answer, also once their clients have gone (see <a href="troubleshooting.html#hung-storage">Troubleshooting</a>).
 </dd>
 </dl>
 <h2 id="in-progress">Transfers in progress</h2>

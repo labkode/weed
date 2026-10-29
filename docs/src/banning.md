@@ -24,6 +24,14 @@ From then on, the user's requests get 403, and so does their OIDC login. Their m
 
 Banning a user who is banned already keeps the first ban, and stops any worker that a request started since.
 
+A worker whose threads wait for storage that does not answer cannot exit, even killed, until the storage answers. The ban holds all the same, since the worker takes no more requests. weed waits 10 seconds for the worker, then says so, and *weed utils ban* exits with 1:
+
+    # weed utils ban -reason 'compromised credentials' alice
+    banned alice; stopped its 1 worker process(es)
+    weed utils: the worker of alice (pid 1630) has not exited 10s after being killed: 2 of its threads wait in the kernel, for storage that does not answer? A worker exits once they return
+
+See [Troubleshooting](troubleshooting.html#hung-storage).
+
 ## Across restarts {#persistence}
 
 Bans are kept in `admin.bans` (/var/lib/weed/bans.json), which weed writes at every change, and reads at startup. They are weed's own state, not configuration: weed does not re-read the file on reload, and you should not edit it while weed runs. `admin.bans = ""` keeps bans in memory only, until weed stops.

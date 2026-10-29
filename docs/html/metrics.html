@@ -213,6 +213,12 @@
 <td>reason</td>
 <td>Worker processes that exited, by reason: stopped when asked to (e.g. when idle), killed when their account was banned, failed otherwise.</td>
 </tr>
+<tr>
+<td><span id="weed_worker_blocked_threads"><code>weed_worker_blocked_threads</code></span></td>
+<td>gauge</td>
+<td></td>
+<td>Threads of the worker processes that wait in the kernel, uninterruptibly: for a moment while they read or write files; for long while the storage does not answer, and then their requests do not end, nor do their workers exit, even when killed (see <a href="troubleshooting.html#hung-storage">Troubleshooting</a>).</td>
+</tr>
 </tbody>
 </table>
 <h2 id="credentials">Credentials</h2>
@@ -333,7 +339,8 @@ weed_restart_pending{reason=&quot;config&quot;} 0
 weed_restart_pending{reason=&quot;binary&quot;} 0
 weed_reload_last_success_timestamp_seconds 1.793264817406e+09
 weed_reload_last_successful 1
-weed_banned_users 0</code></pre>
+weed_banned_users 0
+weed_worker_blocked_threads 0</code></pre>
 <p>Series of a counter appear once something has been counted; weed_requests_in_progress and weed_restart_pending have every series from the start.</p>
 </div>
 <!-- end content -->

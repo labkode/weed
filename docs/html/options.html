@@ -431,6 +431,11 @@
 <td>At most this many worker processes take requests; once they are all busy, requests of other accounts get 503.</td>
 </tr>
 <tr>
+<td><span id="unix_users.max_requests"><code>max_requests</code></span></td>
+<td><code>4000</code></td>
+<td>At most this many requests in progress in each worker process, counted until the worker has finished them, also once their clients have gone; beyond, requests of its account get 503. A request whose storage does not answer blocks a thread of the worker until it does.</td>
+</tr>
+<tr>
 <td><span id="unix_users.cgroups"><code>cgroups</code></span></td>
 <td><code>false</code></td>
 <td>Run each worker process in a cgroup of its own, below weed's, which must be delegated to weed (systemd: Delegate=yes); cgroup v2.</td>
@@ -438,7 +443,7 @@
 <tr>
 <td><span id="unix_users.cgroup_limits"><code>cgroup_limits</code></span></td>
 <td><code>[]</code></td>
-<td>Write these file=value settings to the cgroup of every worker process, e.g. ["memory.max=8G", "pids.max=1000"] (implies cgroups).</td>
+<td>Write these file=value settings to the cgroup of every worker process, e.g. ["memory.max=8G", "pids.max=5000"] (implies cgroups); pids.max counts threads, and a worker that cannot make one dies: keep it above max_requests.</td>
 </tr>
 </tbody>
 </table>

@@ -344,7 +344,9 @@ is handed on.
 A worker starts with the first request of its account and stops after
 unix_users.idle_timeout (default 10m) without one; a worker that dies is replaced on
 the next request. At most unix_users.max_workers (default 256) take requests; when
-they are all busy, requests of other accounts get 503. Workers log through weed,
+they are all busy, requests of other accounts get 503. Each worker serves at most
+unix_users.max_requests (default 4000) requests at once; beyond, its account's
+requests get 503 (see "Storage that does not answer" below). Workers log through weed,
 their records marked worker.user=alice worker.pid=1630 (see Logging). Each worker
 checks that all its threads run as the account, with no capabilities and
 no_new_privs, and refuses to serve otherwise; weed starts one as nobody (65534) at
@@ -404,7 +406,24 @@ available. systemd-cgtop and systemd-cgls then show what each account uses, and
 unix_users.cgroup_limits writes limits into the cgroup of every worker:
 
     [unix_users]
-    cgroup_limits = ["memory.max=8G", "pids.max=1000", "cpu.weight=100"]
+    cgroup_limits = ["memory.max=8G", "pids.max=5000", "cpu.weight=100"]
+
+pids.max counts threads, and a worker that cannot make one dies: keep it above
+unix_users.max_requests.
+
+Storage that does not answer. A request whose file system does not answer (a hung
+NFS server, a failing disk) waits in the kernel with one of its worker's threads,
+which nothing interrupts, not even SIGKILL, and which the request keeps after its
+client has gone. The worker's other requests go on, and so do other accounts'
+workers; weed itself never touches the files, but /healthz, which makes one stat of
+the exported directory at a time. So that stuck threads cannot pile up until the Go
+runtime stops the worker (at 10000), a worker counts its requests until it has
+finished them, and refuses those beyond unix_users.max_requests with 503; an idle
+worker with stuck threads is kept rather than replaced by a new one, which could get
+stuck too. /status (blocked_threads of each worker) and weed_worker_blocked_threads
+count the threads waiting in the kernel. A worker killed meanwhile, by a ban or as
+weed stops, exits only once its threads return: weed waits 10 seconds for it, then
+says so (weed utils ban exits with 1) and goes on.
 
 
 Reloading credentials
@@ -496,7 +515,7 @@ Monitoring
 
 /healthz, on the main port without authentication, answers 200 "ok", or 503 when
 the exported directory cannot be stat'ed within 5 seconds (e.g. a hung network
-filesystem).
+filesystem). It makes one stat at a time: while one hangs, calls wait for it.
 
 server.metrics_address = "localhost:9100" serves, without authentication, /healthz,
 /status (see What runs) and Prometheus metrics on /metrics. Without a configuration
@@ -511,6 +530,9 @@ write every file. The metrics:
   weed_workers                                weed_worker_starts_total{result}
   weed_worker_exits_total{reason}             (stopped when asked to, killed by a
                                               ban, or failed)
+  weed_worker_blocked_threads                 threads of the workers waiting in the
+                                              kernel (for long: storage that does
+                                              not answer)
   weed_banned_users
   weed_crl_expiry_timestamp_seconds           when the first CA runs out of current
                                               CRLs (alert before it is reached)

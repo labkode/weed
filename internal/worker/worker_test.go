@@ -1,9 +1,11 @@
 package worker
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/labkode/weed/internal/auth"
@@ -116,5 +118,35 @@ func TestHeaders(t *testing.T) {
 	h.ServeHTTP(w, httptest.NewRequest("GET", "http://worker/webdav/f", nil))
 	if got != nil || w.Code != http.StatusInternalServerError {
 		t.Errorf("request without an identity: %d", w.Code)
+	}
+}
+
+// Requests count until their handler returns, also once their client has gone, as
+// those waiting for storage that does not answer
+func TestLimitRequests(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+	h := limitRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release // whatever the request's context says
+	}), 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() { h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil).WithContext(ctx)) })
+		<-started
+	}
+	cancel() // their clients have gone
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != 503 || w.Header().Get("Retry-After") == "" {
+		t.Errorf("beyond the limit: %d, Retry-After %q", w.Code, w.Header().Get("Retry-After"))
+	}
+	close(release)
+	wg.Wait()
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != 200 {
+		t.Errorf("once they have returned: %d", w.Code)
 	}
 }

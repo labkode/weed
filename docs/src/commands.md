@@ -119,7 +119,7 @@ ban, unban and bans exit with:
 | Exit status | When |
 |----|----|
 | 0 | done |
-| 1 | weed cannot be reached or refused, or the change applies but could not be saved; `weed utils: <why>` on standard error |
+| 1 | weed cannot be reached, did not answer within a minute, or refused; or the change applies with a warning: it could not be saved, or a banned user's worker does not exit (see [Banning users](banning.html)). `weed utils: <why>` on standard error |
 | 2 | wrong options or arguments (the usage is printed) |
 
 ### weed utils password {#password}

@@ -30,6 +30,8 @@ type Config struct {
 	WorkerIdleTimeout time.Duration
 	// MaxWorkers bounds the number of workers taking requests
 	MaxWorkers int
+	// WorkerMaxRequests bounds the requests in progress in each worker
+	WorkerMaxRequests int
 	// WorkerCgroups runs each worker in a cgroup of its own
 	WorkerCgroups bool
 	// WorkerCgroupLimits are written to the cgroup of every worker (file=value)
@@ -156,6 +158,9 @@ func (c *Config) Validate() error {
 		if c.MacaroonMaxValidity <= 0 {
 			return errors.New("macaroons.max_validity must be positive")
 		}
+	}
+	if c.WorkerMaxRequests < 1 {
+		return errors.New("unix_users.max_requests must be at least 1")
 	}
 	if c.TPC {
 		if c.TPCMaxTransfers < 1 {

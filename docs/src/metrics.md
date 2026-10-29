@@ -31,6 +31,7 @@ weed serves these metrics at /metrics on `server.metrics_address`, in the Promet
 | [`weed_workers`]{#weed_workers} | gauge |  | Worker processes, including those finishing requests after being replaced. |
 | [`weed_worker_starts_total`]{#weed_worker_starts_total} | counter | result | Worker processes started, by result (success, failure). |
 | [`weed_worker_exits_total`]{#weed_worker_exits_total} | counter | reason | Worker processes that exited, by reason: stopped when asked to (e.g. when idle), killed when their account was banned, failed otherwise. |
+| [`weed_worker_blocked_threads`]{#weed_worker_blocked_threads} | gauge |  | Threads of the worker processes that wait in the kernel, uninterruptibly: for a moment while they read or write files; for long while the storage does not answer, and then their requests do not end, nor do their workers exit, even when killed (see [Troubleshooting](troubleshooting.html#hung-storage)). |
 
 ## Credentials
 
@@ -86,5 +87,6 @@ weed serves these metrics at /metrics on `server.metrics_address`, in the Promet
     weed_reload_last_success_timestamp_seconds 1.793264817406e+09
     weed_reload_last_successful 1
     weed_banned_users 0
+    weed_worker_blocked_threads 0
 
 Series of a counter appear once something has been counted; weed_requests_in_progress and weed_restart_pending have every series from the start.

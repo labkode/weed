@@ -53,7 +53,7 @@ func (s *Server) startWorkers() error {
 	}
 	s.Workers = pool
 	slog.Info("files are accessed by a worker process per Unix account",
-		"idle_timeout", s.Config.WorkerIdleTimeout, "max_workers", s.Config.MaxWorkers, "cgroups", s.Config.WorkerCgroups || len(s.Config.WorkerCgroupLimits) > 0)
+		"idle_timeout", s.Config.WorkerIdleTimeout, "max_workers", s.Config.MaxWorkers, "max_requests", s.Config.WorkerMaxRequests, "cgroups", s.Config.WorkerCgroups || len(s.Config.WorkerCgroupLimits) > 0)
 	return nil
 }
 
@@ -63,6 +63,7 @@ func workerConfig(c *config.Config, dir string) config.Config {
 	return config.Config{
 		Directory:         dir,
 		LogLevel:          c.LogLevel,
+		WorkerMaxRequests: c.WorkerMaxRequests,
 		TPC:               c.TPC,
 		TPCCAPath:         c.TPCCAPath,
 		TPCAllowHTTP:      c.TPCAllowHTTP,

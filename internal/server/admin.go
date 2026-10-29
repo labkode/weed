@@ -105,7 +105,12 @@ func (s *Server) adminBan(w http.ResponseWriter, r *http.Request) {
 	// Also when banned already: a request may have started a worker since (see
 	// worker.Options.Refused)
 	if s.Workers != nil {
-		res.WorkersKilled = s.Workers.Kill(user)
+		killed, err := s.Workers.Kill(user)
+		res.WorkersKilled = killed
+		if err != nil {
+			slog.Warn("the banned user's workers do not exit", "user", user, "error", err)
+			res.Warning = strings.TrimPrefix(res.Warning+"; "+err.Error(), "; ")
+		}
 	}
 	if added {
 		slog.Warn("user banned", "user", user, "reason", req.Reason, "by", peer, "workers_killed", res.WorkersKilled)

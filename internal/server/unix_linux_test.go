@@ -506,6 +506,46 @@ func TestMaxWorkers(t *testing.T) {
 	eventually(t, "alice's worker to stop", func() bool { return len(workers(t)["alice"]) == 0 })
 }
 
+// A worker takes unix_users.max_requests at once; other accounts are not affected
+func TestMaxRequests(t *testing.T) {
+	n := newUnixNode(t, func(cfg *config.Config) { cfg.WorkerMaxRequests = 1 })
+	n.setup("/alice/", 0755, 6001, 6001)
+	n.setup("/bob/", 0755, 6002, 6002)
+
+	body, send := io.Pipe()
+	req, _ := http.NewRequest("PUT", n.url("/alice/slow"), body)
+	req.SetBasicAuth(basicUser, basicPass)
+	req.ContentLength = 10
+	done := make(chan int, 1)
+	go func() {
+		resp, err := n.ts.Client().Do(req)
+		if err != nil {
+			done <- 0
+			return
+		}
+		resp.Body.Close()
+		done <- resp.StatusCode
+	}()
+	send.Write([]byte("12345"))
+	eventually(t, "alice's worker", func() bool { return len(workers(t)["alice"]) == 1 })
+
+	resp, _ := n.do("PROPFIND", "/alice/", "", "Depth", "0")
+	if resp.StatusCode != 503 || resp.Header.Get("Retry-After") == "" {
+		t.Errorf("alice beyond max_requests: %d, Retry-After %q", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+	if code := n.status("PROPFIND", "/bob/", "", append(n.as("bob"), "Depth", "0")...); code != 207 {
+		t.Errorf("bob meanwhile: %d", code)
+	}
+	send.Write([]byte("67890"))
+	send.Close()
+	if code := <-done; code != 201 {
+		t.Errorf("alice's upload: %d", code)
+	}
+	if code := n.status("PROPFIND", "/alice/", "", "Depth", "0"); code != 207 {
+		t.Errorf("alice once her upload is done: %d", code)
+	}
+}
+
 // A worker that is replaced finishes its requests in progress, then stops
 func TestWorkerReplacedDuringRequest(t *testing.T) {
 	n := newUnixNode(t, nil)

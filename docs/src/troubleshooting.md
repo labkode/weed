@@ -65,8 +65,43 @@ The account needs search permission on every directory above, and write permissi
 |----|----|
 | `no worker for the request ... the 256 workers allowed (unix_users.max_workers) are all busy` | More accounts are active at once than workers are allowed: raise `unix_users.max_workers`. |
 | `cannot start a worker ...` | The worker could not start: weed logs why, e.g. a failed cgroup limit, or a binary that changed in place (see [Upgrading](upgrading.html#old-binary)). |
+| `too many requests in progress for the account (unix_users.max_requests)` | The account's worker has `unix_users.max_requests` requests in progress. If `blocked_threads` in /status is high too, its storage does not answer (see [below](#hung-storage)); otherwise the account is busy: raise the limit. |
 | Too many concurrent third-party copies | `tpc.max_transfers` copies are running; clients retry after the Retry-After. Raise it if the network and disks allow. |
-| /healthz: storage unavailable, storage not responding | The exported directory cannot be read, or does not answer within 5 seconds: check the filesystem (a hung NFS or a lost mount). |
+| /healthz: storage unavailable, storage not responding | The exported directory cannot be read, or does not answer within 5 seconds: check the filesystem (a hung NFS or a lost mount, see [below](#hung-storage)). |
+
+## Storage that does not answer {#hung-storage}
+
+When the filesystem of the exported directory stops answering, a hung NFS server or a failing disk, the requests that need it wait in the kernel. Each waits with a thread of its worker, which nothing interrupts, not even SIGKILL, until the storage answers, also once its client has given up. Meanwhile:
+
+- The worker's other requests go on, as long as they need nothing from the storage (e.g. files the kernel has cached), and so do the workers of other accounts, on other storage. weed itself never touches the files, and keeps answering.
+- /healthz answers 503 "storage not responding" after 5 seconds. It looks at the directory once at a time, however often it is called.
+- /status shows each worker's stuck threads as `blocked_threads`, also once their clients have gone and `requests` has dropped to 0; `weed_worker_blocked_threads` counts them all. Under load, threads are in that state for moments: alert on a count that stays.
+- Stuck requests count towards `unix_users.max_requests` until they end: once they reach it, the account gets 503, and its worker has no more stuck threads than that.
+- An idle worker with stuck threads keeps running, rather than being replaced by a new worker, which could get stuck too. weed logs it once:
+
+      level=WARN msg="an idle worker keeps running: threads of its requests wait in the kernel, for storage that does not answer?" worker.user=alice worker.pid=1630 blocked_threads=40
+
+- A killed worker, by a ban or as weed stops, exits only once its threads return. Reads waiting for data end when killed; writes waiting for the disk (the fsync that ends an upload) do not. weed waits 10 seconds for the worker, then says so and goes on:
+
+      level=ERROR msg="stopping without waiting for the workers that do not exit" error="the worker of alice (pid 1630) has not exited 10s after being killed: 2 of its threads wait in the kernel, for storage that does not answer? A worker exits once they return"
+
+To see where the threads of a worker wait:
+
+    # ps -L -o tid,stat,wchan:32,args -p 1630 | awk 'NR == 1 || $2 ~ /D/'
+        TID STAT WCHAN                            COMMAND
+       1642 Dl   folio_wait_bit_common            weed worker alice
+       1651 Dl   folio_wait_bit_common            weed worker alice
+    # cat /proc/1630/task/1651/stack
+    [<0>] folio_wait_bit_common+0x174/0x3d8
+    [<0>] folio_wait_bit+0x20/0x40
+    [<0>] folio_wait_writeback+0x60/0x170
+    [<0>] __filemap_fdatawait_range+0x8c/0xf0
+    [<0>] file_write_and_wait_range+0xa4/0xd0
+    [<0>] ext4_sync_file+0x94/0x4e0
+    [<0>] do_fsync+0x54/0xe0
+    ...
+
+Then find out why the storage does not answer: the kernel log says it, e.g. "nfs: server ... not responding, still trying", or I/O errors of a disk (`dmesg`, `journalctl -k`). Once the storage answers, the threads return, their requests end, and the workers exit or go idle. Restarting weed does not end them: the stuck workers stay until the storage answers, and the new weed's workers get stuck as well.
 
 ## Third-party copies fail {#tpc}
 

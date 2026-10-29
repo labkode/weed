@@ -112,6 +112,11 @@ lifted the ban of alice</code></pre>
 level=INFO msg=request method=GET path=/webdav/alice/hosts proto=HTTP/1.1 status=403 bytes=10 duration=153.458µs user=alice remote=192.0.2.7:43898 user_agent=curl/7.76.1 request_id=595f7658
 level=WARN msg=&quot;ban lifted&quot; user=alice by=&quot;uid 0, pid 220&quot;</code></pre>
 <p>Banning a user who is banned already keeps the first ban, and stops any worker that a request started since.</p>
+<p>A worker whose threads wait for storage that does not answer cannot exit, even killed, until the storage answers. The ban holds all the same, since the worker takes no more requests. weed waits 10 seconds for the worker, then says so, and <em>weed utils ban</em> exits with 1:</p>
+<pre><code># weed utils ban -reason &#39;compromised credentials&#39; alice
+banned alice; stopped its 1 worker process(es)
+weed utils: the worker of alice (pid 1630) has not exited 10s after being killed: 2 of its threads wait in the kernel, for storage that does not answer? A worker exits once they return</code></pre>
+<p>See <a href="troubleshooting.html#hung-storage">Troubleshooting</a>.</p>
 <h2 id="persistence">Across restarts</h2>
 <p>Bans are kept in <code>admin.bans</code> (/var/lib/weed/bans.json), which weed writes at every change, and reads at startup. They are weed's own state, not configuration: weed does not re-read the file on reload, and you should not edit it while weed runs. <code>admin.bans = ""</code> keeps bans in memory only, until weed stops.</p>
 <p>If weed cannot save the file, the ban still applies until weed stops, and weed utils says so and exits with 1:</p>

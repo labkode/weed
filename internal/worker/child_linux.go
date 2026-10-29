@@ -108,7 +108,7 @@ func (c *Child) Serve(h http.Handler, reload func()) error {
 	defer stop()
 
 	srv := &http.Server{
-		Handler:     Handler(h, &c.Settings.User),
+		Handler:     Handler(limitRequests(h, c.Settings.Config.WorkerMaxRequests), &c.Settings.User),
 		IdleTimeout: 5 * time.Minute,
 		ErrorLog:    logger.ErrorLog(),
 	}
