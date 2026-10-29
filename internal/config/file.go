@@ -300,11 +300,13 @@ const usage = `usage: weed [-config weed.toml]
                       check that weed would start with a configuration, without serving
        weed version   print the version, commit and build of weed
        weed config    print a configuration file with every option and its default
-       weed utils     helpers for passwords, app tokens and certificates
+       weed utils     helpers for passwords, app tokens and certificates, and
+                      ban, unban and bans for the running weed
 
 Options are set in the configuration file. Without one, weed serves the current
 directory at http://127.0.0.1:9000/webdav/ to local clients, without authentication,
-and its metrics and status at http://127.0.0.1:9000/metrics and /status.
+as the Unix account nobody, and its metrics and status at
+http://127.0.0.1:9000/metrics and /status. weed serves on Linux, as root.
 `
 
 // ErrUsage is returned for a command line that the usage has been printed for

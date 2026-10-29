@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -213,5 +215,29 @@ func TestErrorLog(t *testing.T) {
 		if recs[i]["level"] != want || recs[i]["component"] != "http" {
 			t.Errorf("record %d: %v, want level %s", i, recs[i], want)
 		}
+	}
+}
+
+// A failure that stops weed reaches whoever started it, also when records go to a file
+func TestFatalToStderr(t *testing.T) {
+	if file := os.Getenv("WEED_TEST_FATAL_LOG"); file != "" {
+		if _, err := Setup(Options{File: file, Format: FormatText}); err != nil {
+			panic(err)
+		}
+		Fatal("cannot start", errors.New("the grid-mapfile is missing"))
+	}
+	file := filepath.Join(t.TempDir(), "weed.log")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestFatalToStderr$")
+	cmd.Env = append(os.Environ(), "WEED_TEST_FATAL_LOG="+file)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err == nil {
+		t.Fatal("Fatal did not exit with an error")
+	}
+	if got := stderr.String(); got != "weed: cannot start: the grid-mapfile is missing\n" {
+		t.Errorf("standard error: %q", got)
+	}
+	if b, _ := os.ReadFile(file); !strings.Contains(string(b), `level=ERROR msg="cannot start" error="the grid-mapfile is missing"`) {
+		t.Errorf("log file: %s", b)
 	}
 }

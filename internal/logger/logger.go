@@ -50,6 +50,7 @@ func Setup(opts Options) (reopen func() error, err error) {
 			return nil, err
 		}
 		out, reopen = f, f.Reopen
+		logsToFile = true
 	}
 	slog.SetDefault(slog.New(NewHandler(out, opts.Format, opts.Level)))
 	return reopen, nil
@@ -208,9 +209,17 @@ func fromJSON(v any) any {
 	return v
 }
 
-// Fatal logs err and exits
+// logsToFile is set by Setup when records go to a file
+var logsToFile bool
+
+// Fatal logs err and exits. When records go to a file, err is also written to
+// standard error: whoever started weed sees why it stopped (the journal, under
+// systemd).
 func Fatal(msg string, err error) {
 	slog.Error(msg, "error", err)
+	if logsToFile {
+		fmt.Fprintf(os.Stderr, "weed: %s: %v\n", msg, err)
+	}
 	os.Exit(1)
 }
 

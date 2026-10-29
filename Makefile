@@ -24,7 +24,7 @@ build: ## Build ./weed
 test: ## Unit and end-to-end tests (those that need root are skipped)
 	$(GO) test -race -count=1 ./...
 
-test-root: ## All tests as root, including those of -unix-users workers (Linux, sudo)
+test-root: ## All tests as root, including those of worker processes and Unix accounts (Linux, sudo)
 	$(GO) test -exec sudo -race -count=1 ./...
 
 test-linux: ## All tests as root in a Linux container (Docker), e.g. from macOS
@@ -60,7 +60,7 @@ bench: ## Throughput benchmarks (WEED_BENCH_MIB sets the file size)
 	$(GO) test ./internal/server -run '^$$' -bench . -benchtime 3x
 	$(GO) test ./internal/digest -run '^$$' -bench Hasher
 
-bench-workers: ## Throughput with and without -unix-users workers, in a Linux container (Docker)
+bench-workers: ## Throughput served by worker processes and directly, in a Linux container (Docker)
 	$(GO) mod download
 	docker run -e WEED_BENCH_MIB $(DOCKER_GO) $(GO_IMAGE) \
 		go test ./internal/server -run '^$$' -bench Workers -benchtime 3x -count 3
