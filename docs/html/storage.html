@@ -109,10 +109,18 @@
 <p>A temporary file can stay behind if weed or the machine dies during an upload. Remove the old ones now and then:</p>
 <pre><code># find /data -name &#39;.weed-upload-*&#39; -mmin +1440 -delete</code></pre>
 <h2 id="checksums">Checksums</h2>
-<p>weed supports the digests of RFC 9530 (Repr-Digest) and, for older clients, RFC 3230 (Digest), with the algorithms adler (or adler32), crc32c, md5, sha, sha-256 and sha-512. Digests computed during an upload are cached in an extended attribute of the file, user.weed.digest.&lt;alg&gt;, and are recomputed if the file's size or mtime changes. The filesystem must support user extended attributes for the cache to work.</p>
+<p>weed supports the digests of RFC 9530 (Repr-Digest) and, for older clients, RFC 3230 (Digest), with the algorithms adler (or adler32), crc32c, md5, sha, sha-256 and sha-512.</p>
+<p>weed computes checksums only while it writes a file, on uploads (PUT) and third-party copy pulls: adler32 always, since WLCG clients ask for it afterwards, and the algorithms of the client's Repr-Digest. It stores them in extended attributes of the file, user.weed.digest.&lt;alg&gt;, each with the size and mtime (in nanoseconds) of the file it describes:</p>
 <pre><code># getfattr -d /data/alice/services
 # file: data/alice/services
-user.weed.digest.adler=...</code></pre>
+user.weed.digest.adler=&quot;692252:1793264797412873605:3c5e9d34&quot;</code></pre>
+<p>Reads never compute a checksum, which would mean reading the whole file before answering. So a file has no checksum when:</p>
+<ul>
+<li>weed did not write it: other programs wrote it, or it is the copy of a local COPY (a MOVE keeps the checksums);</li>
+<li>its size or mtime has changed since weed wrote it;</li>
+<li>the filesystem has no user extended attributes: then no file has one.</li>
+</ul>
+<p>A program that changes a file in place but keeps its size and restores its mtime leaves the old checksums, which weed cannot tell from current ones.</p>
 <p>A PUT with a Repr-Digest header, e.g. <code>adler=:AAAAAQ==:, md5=:1B2M2Y8AsgTpgAmY7PhCfg==:</code>, is verified:</p>
 <table>
 <thead>
@@ -144,7 +152,7 @@ user.weed.digest.adler=...</code></pre>
 </tr>
 </tbody>
 </table>
-<p>GET and HEAD return Repr-Digest when asked with Want-Repr-Digest (e.g. <code>adler=9</code>), and Digest when asked with Want-Digest (e.g. <code>adler32</code>). gfal-sum asks for it:</p>
+<p>GET and HEAD return Repr-Digest when asked with Want-Repr-Digest (e.g. <code>adler=9</code>), and Digest when asked with Want-Digest (e.g. <code>adler32</code>): of the stored checksums, the one the client prefers. With none of those it asks for stored, the answer has no checksum, and weed logs "no stored digest of the algorithms asked for". gfal-sum asks for it:</p>
 <pre><code>$ gfal-sum davs://weed.example.org/webdav/alice/services ADLER32
 davs://weed.example.org/webdav/alice/services 3c5e9d34</code></pre>
 <p>The digests are base64, as RFC 9530 says. To compute one:</p>

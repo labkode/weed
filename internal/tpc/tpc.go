@@ -437,7 +437,7 @@ func (e *Engine) pull(ctx context.Context, job *Job, p *progress) error {
 		return fmt.Errorf("file not saved: %w: received data has %s %x, client expects %x", ErrChecksumMismatch,
 			alg, sums[alg], job.Expected[alg])
 	}
-	digest.StoreCache(af.File, sums)
+	digest.Store(af.File, sums)
 	commit := af.Commit
 	if job.NoReplace {
 		commit = af.CommitNoReplace

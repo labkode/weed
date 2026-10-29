@@ -88,8 +88,10 @@ Storage guarantees
 Checksums (RFC 9530 Repr-Digest, and legacy RFC 3230 Digest)
 
 Supported algorithms: adler (alias adler32), crc32c, md5, sha, sha-256, sha-512.
-Checksums computed during an upload are cached in an extended attribute
-(user.weed.digest.<alg>), invalidated when the file's size or mtime changes.
+Checksums are computed only while weed writes a file (PUT, TPC pull): adler32
+always, and those the client sent. They are stored in extended attributes
+(user.weed.digest.<alg>), and are no longer valid once the file's size or mtime
+changes. Reads never compute one: a file that weed did not write has none.
 
 PUT with a Repr-Digest header, e.g. "adler=:AAAAAQ==:, md5=:1B2M2Y8AsgTpgAmY7PhCfg==:"
 
@@ -102,7 +104,8 @@ CONDITION                                                  HTTP CODE
 * all supported digests match                           => 201 / 204, with Repr-Digest
 
 GET and HEAD return Repr-Digest when asked with Want-Repr-Digest (e.g. "adler=9"),
-and Digest when asked with the legacy Want-Digest (e.g. "adler32").
+and Digest when asked with the legacy Want-Digest (e.g. "adler32"): the most
+preferred of the stored checksums, or none.
 
 How to compute a digest in the expected encoding:
     openssl dgst -md5 -binary myfile | base64

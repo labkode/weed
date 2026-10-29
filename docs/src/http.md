@@ -31,7 +31,7 @@ None of these require authentication: serve them on localhost or a management ne
 
 | Method | Notes |
 |----|----|
-| GET, HEAD | Range requests; Repr-Digest or Digest when asked for (Want-Repr-Digest, Want-Digest). |
+| GET, HEAD | Range requests; Repr-Digest or Digest when asked for (Want-Repr-Digest, Want-Digest), if weed stored one when it wrote the file. |
 | PUT | Written to a temporary file, renamed into place when complete; verified against Repr-Digest; If-Match and If-None-Match. |
 | PROPFIND | Depth 0 and 1; Depth: infinity is refused (403). |
 | PROPPATCH | Stores nothing: every property is refused (403) in the 207 answer. |

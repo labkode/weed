@@ -18,11 +18,21 @@ A temporary file can stay behind if weed or the machine dies during an upload. R
 
 ## Checksums
 
-weed supports the digests of RFC 9530 (Repr-Digest) and, for older clients, RFC 3230 (Digest), with the algorithms adler (or adler32), crc32c, md5, sha, sha-256 and sha-512. Digests computed during an upload are cached in an extended attribute of the file, user.weed.digest.\<alg\>, and are recomputed if the file's size or mtime changes. The filesystem must support user extended attributes for the cache to work.
+weed supports the digests of RFC 9530 (Repr-Digest) and, for older clients, RFC 3230 (Digest), with the algorithms adler (or adler32), crc32c, md5, sha, sha-256 and sha-512.
+
+weed computes checksums only while it writes a file, on uploads (PUT) and third-party copy pulls: adler32 always, since WLCG clients ask for it afterwards, and the algorithms of the client's Repr-Digest. It stores them in extended attributes of the file, user.weed.digest.\<alg\>, each with the size and mtime (in nanoseconds) of the file it describes:
 
     # getfattr -d /data/alice/services
     # file: data/alice/services
-    user.weed.digest.adler=...
+    user.weed.digest.adler="692252:1793264797412873605:3c5e9d34"
+
+Reads never compute a checksum, which would mean reading the whole file before answering. So a file has no checksum when:
+
+- weed did not write it: other programs wrote it, or it is the copy of a local COPY (a MOVE keeps the checksums);
+- its size or mtime has changed since weed wrote it;
+- the filesystem has no user extended attributes: then no file has one.
+
+A program that changes a file in place but keeps its size and restores its mtime leaves the old checksums, which weed cannot tell from current ones.
 
 A PUT with a Repr-Digest header, e.g. `adler=:AAAAAQ==:, md5=:1B2M2Y8AsgTpgAmY7PhCfg==:`, is verified:
 
@@ -34,7 +44,7 @@ A PUT with a Repr-Digest header, e.g. `adler=:AAAAAQ==:, md5=:1B2M2Y8AsgTpgAmY7P
 | a supported digest differs from the data received | 412, and the file is not stored |
 | every supported digest matches | 201 or 204, with Repr-Digest |
 
-GET and HEAD return Repr-Digest when asked with Want-Repr-Digest (e.g. `adler=9`), and Digest when asked with Want-Digest (e.g. `adler32`). gfal-sum asks for it:
+GET and HEAD return Repr-Digest when asked with Want-Repr-Digest (e.g. `adler=9`), and Digest when asked with Want-Digest (e.g. `adler32`): of the stored checksums, the one the client prefers. With none of those it asks for stored, the answer has no checksum, and weed logs "no stored digest of the algorithms asked for". gfal-sum asks for it:
 
     $ gfal-sum davs://weed.example.org/webdav/alice/services ADLER32
     davs://weed.example.org/webdav/alice/services 3c5e9d34

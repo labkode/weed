@@ -100,31 +100,43 @@ func TestHasher(t *testing.T) {
 	}
 }
 
-func TestFileUsesCacheOnlyWhileFileIsUnchanged(t *testing.T) {
+func TestStored(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "f")
 	if err := os.WriteFile(p, data, 0644); err != nil {
 		t.Fatal(err)
 	}
-	sums, err := File(p, []string{Adler})
-	if err != nil || !bytes.Equal(sums[Adler], adlerOf(data)) {
-		t.Fatalf("File = %x, %v", sums[Adler], err)
+	// Digests are not computed on reads
+	if sums, err := Stored(p, []string{Adler}); err != nil || len(sums) != 0 {
+		t.Fatalf("Stored before Store = %x, %v", sums, err)
 	}
 
-	// Rewrite the content behind the cache's back, keeping size and mtime
+	f, _ := os.OpenFile(p, os.O_WRONLY, 0)
+	Store(f, Set{Adler: adlerOf(data), MD5: md5Of(data)})
+	f.Close()
+	sums, err := Stored(p, []string{MD5, SHA256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sums) == 0 && (runtime.GOOS == "linux" || runtime.GOOS == "darwin") {
+		t.Skip("extended attributes not supported on this filesystem")
+	}
+	if !reflect.DeepEqual(sums, Set{MD5: md5Of(data)}) {
+		t.Fatalf("Stored = %x, want only md5", sums)
+	}
+
+	// Rewritten behind weed's back, keeping size and mtime, the file keeps its digests
 	fi, _ := os.Stat(p)
-	other := bytes.ToUpper(data)
-	os.WriteFile(p, other, 0644)
+	os.WriteFile(p, bytes.ToUpper(data), 0644)
 	os.Chtimes(p, fi.ModTime(), fi.ModTime())
-	sums, _ = File(p, []string{Adler})
-	cached := bytes.Equal(sums[Adler], adlerOf(data))
-	if (runtime.GOOS == "linux" || runtime.GOOS == "darwin") && !cached {
-		t.Log("extended attributes not supported on this filesystem; cache not exercised")
+	if sums, _ := Stored(p, []string{Adler}); !bytes.Equal(sums[Adler], adlerOf(data)) {
+		t.Errorf("Stored with the same size and mtime = %x", sums)
 	}
-
-	// Any change to the modification time invalidates the cache
+	// Any change to them makes them stale
 	os.Chtimes(p, fi.ModTime().Add(time.Second), fi.ModTime().Add(time.Second))
-	sums, _ = File(p, []string{Adler})
-	if !bytes.Equal(sums[Adler], adlerOf(other)) {
-		t.Fatalf("stale cached digest returned after the file changed")
+	if sums, _ := Stored(p, []string{Adler, MD5}); len(sums) != 0 {
+		t.Errorf("stale digests returned after the file changed: %x", sums)
+	}
+	if _, err := Stored(filepath.Dir(p), []string{Adler}); err == nil {
+		t.Error("digests of a directory")
 	}
 }

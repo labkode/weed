@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -376,7 +377,7 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("File not saved: client/server checksum mismatch (%s)", alg), http.StatusPreconditionFailed)
 		return
 	}
-	digest.StoreCache(af.File, sums)
+	digest.Store(af.File, sums)
 	newFi, err := af.Stat()
 	if err == nil && noOverwrite {
 		err = af.CommitNoReplace()
@@ -424,24 +425,36 @@ func (h *WebDAVHandler) addDigestHeaders(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	var algs []string
-	if len(want) > 0 {
-		algs = append(algs, want[0])
-	}
-	if len(legacy) > 0 {
-		algs = append(algs, legacy[0])
-	}
-	sums, err := digest.File(localPath, algs)
+	// Digests are computed while files are written (PUT, TPC pull), never to answer a
+	// read: the answer is the most preferred of those stored, if any is
+	sums, err := digest.Stored(localPath, slices.Concat(want, legacy))
 	if err != nil {
-		slog.ErrorContext(r.Context(), "cannot compute a digest", "path", r.URL.Path, "error", err)
+		slog.ErrorContext(r.Context(), "cannot read the stored digests", "path", r.URL.Path, "error", err)
 		return
 	}
-	if len(want) > 0 {
-		w.Header().Set("Repr-Digest", digest.FormatReprDigest(digest.Set{want[0]: sums[want[0]]}))
+	found := false
+	if alg, ok := firstStored(want, sums); ok {
+		w.Header().Set("Repr-Digest", digest.FormatReprDigest(digest.Set{alg: sums[alg]}))
+		found = true
 	}
-	if len(legacy) > 0 {
-		w.Header().Set("Digest", digest.FormatLegacy(legacy[0], sums[legacy[0]]))
+	if alg, ok := firstStored(legacy, sums); ok {
+		w.Header().Set("Digest", digest.FormatLegacy(alg, sums[alg]))
+		found = true
 	}
+	if !found {
+		slog.InfoContext(r.Context(), "no stored digest of the algorithms asked for: weed did not write the file, or it has changed since",
+			"path", r.URL.Path, "algorithms", slices.Concat(want, legacy))
+	}
+}
+
+// firstStored returns the first of algs that sums has
+func firstStored(algs []string, sums digest.Set) (string, bool) {
+	for _, alg := range algs {
+		if _, ok := sums[alg]; ok {
+			return alg, true
+		}
+	}
+	return "", false
 }
 
 // handleCopyMove serves third-party copies itself and hands local COPY/MOVE to the

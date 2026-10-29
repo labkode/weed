@@ -106,14 +106,36 @@ func TestPutReprDigest(t *testing.T) {
 
 func TestGetDigests(t *testing.T) {
 	n := newNode(t, nil)
-	n.write("/f", "digest me")
-	for _, method := range []string{"GET", "HEAD"} {
-		resp, _ := n.do(method, "/f", "", "Want-Repr-Digest", "sha-256=1, md5=9", "Want-Digest", "adler32")
-		if got, want := resp.Header.Get("Repr-Digest"), "md5=:"+b64(md5sum("digest me"))+":"; got != want {
-			t.Errorf("%s Repr-Digest = %q, want %q", method, got, want)
-		}
-		if got, want := resp.Header.Get("Digest"), fmt.Sprintf("adler32=%x", adler("digest me")); got != want {
-			t.Errorf("%s Digest = %q, want %q", method, got, want)
+	// Digests are computed while weed writes a file, never to answer a read
+	n.write("/outside", "written without weed")
+	if resp, _ := n.do("HEAD", "/outside", "", "Want-Repr-Digest", "adler=9", "Want-Digest", "adler32"); resp.StatusCode != 200 ||
+		resp.Header.Get("Repr-Digest") != "" || resp.Header.Get("Digest") != "" {
+		t.Errorf("a file weed did not write: %d, Repr-Digest %q, Digest %q", resp.StatusCode, resp.Header.Get("Repr-Digest"), resp.Header.Get("Digest"))
+	}
+
+	// An upload stores adler32, and the digests its client sent
+	if code := n.status("PUT", "/f", "digest me", "Repr-Digest", "md5=:"+b64(md5sum("digest me"))+":"); code != 201 {
+		t.Fatalf("PUT: %d", code)
+	}
+	if resp, _ := n.do("HEAD", "/f", "", "Want-Digest", "adler32"); resp.Header.Get("Digest") == "" {
+		t.Skip("extended attributes not supported on this filesystem")
+	}
+	md5Field := "md5=:" + b64(md5sum("digest me")) + ":"
+	adlerField := "adler=:" + b64(adler("digest me")) + ":"
+	for _, c := range []struct{ want, legacy, repr, digest string }{
+		{"sha-256=1, md5=9", "adler32", md5Field, fmt.Sprintf("adler32=%x", adler("digest me"))},
+		// The most preferred of those stored
+		{"sha-256=9, adler=1", "sha-256, md5;q=0.5", adlerField, "md5=" + b64(md5sum("digest me"))},
+		{"sha-512", "sha-256", "", ""},
+	} {
+		for _, method := range []string{"GET", "HEAD"} {
+			resp, _ := n.do(method, "/f", "", "Want-Repr-Digest", c.want, "Want-Digest", c.legacy)
+			if got := resp.Header.Get("Repr-Digest"); got != c.repr {
+				t.Errorf("%s with Want-Repr-Digest %q: Repr-Digest %q, want %q", method, c.want, got, c.repr)
+			}
+			if got := resp.Header.Get("Digest"); got != c.digest {
+				t.Errorf("%s with Want-Digest %q: Digest %q, want %q", method, c.legacy, got, c.digest)
+			}
 		}
 	}
 	if resp, _ := n.do("GET", "/f", ""); resp.Header.Get("Repr-Digest") != "" {

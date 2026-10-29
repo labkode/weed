@@ -15,7 +15,6 @@ import (
 	"hash"
 	"hash/adler32"
 	"hash/crc32"
-	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -269,9 +268,11 @@ func (h *Hasher) Sums() Set {
 	return s
 }
 
-// File returns the digests of the file at path, reusing values cached in extended
-// attributes when the file has not changed since they were computed
-func File(path string, algs []string) (Set, error) {
+// Stored returns those of the digests algs that are stored with the file at path
+// (see Store) and still describe it: they were computed for its current size and
+// modification time. Digests are computed only while weed writes a file, never to
+// answer a read: a file written otherwise has none.
+func Stored(path string, algs []string) (Set, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -284,50 +285,30 @@ func File(path string, algs []string) (Set, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-
 	out := Set{}
-	var missing []string
 	for _, alg := range algs {
-		if sum, ok := readCache(f, alg, fi); ok {
+		if sum, ok := readStored(f, alg, fi); ok {
 			out[alg] = sum
-		} else {
-			missing = append(missing, alg)
 		}
-	}
-	if len(missing) == 0 {
-		return out, nil
-	}
-
-	h := NewHasher(missing...)
-	// Hide os.File's WriteTo so CopyBuffer uses our (larger) buffer
-	if _, err := io.CopyBuffer(h, struct{ io.Reader }{f}, make([]byte, 1<<20)); err != nil {
-		return nil, err
-	}
-	sums := h.Sums()
-	// Only cache digests if the file did not change while it was being read
-	if after, err := f.Stat(); err == nil && after.Size() == fi.Size() && after.ModTime().Equal(fi.ModTime()) {
-		writeCache(f, sums, fi)
-	}
-	for alg, sum := range sums {
-		out[alg] = sum
 	}
 	return out, nil
 }
 
-// StoreCache records digests computed while writing f so later reads are free.
-// Call it after the last write; failures are ignored (the cache is best effort).
-func StoreCache(f *os.File, sums Set) {
+// Store records the digests computed while writing f, in extended attributes of f,
+// for Stored. Call it after the last write; failures are ignored (on a filesystem
+// without user extended attributes, files have no stored digests).
+func Store(f *os.File, sums Set) {
 	if fi, err := f.Stat(); err == nil {
-		writeCache(f, sums, fi)
+		writeStored(f, sums, fi)
 	}
 }
 
-// cacheValue binds a cached digest to the file size and modification time it was computed for
-func cacheValue(sum []byte, fi os.FileInfo) string {
+// storedValue binds a stored digest to the file size and modification time it was computed for
+func storedValue(sum []byte, fi os.FileInfo) string {
 	return fmt.Sprintf("%d:%d:%s", fi.Size(), fi.ModTime().UnixNano(), hex.EncodeToString(sum))
 }
 
-func parseCacheValue(v string, fi os.FileInfo) ([]byte, bool) {
+func parseStoredValue(v string, fi os.FileInfo) ([]byte, bool) {
 	parts := strings.Split(v, ":")
 	if len(parts) != 3 || parts[0] != strconv.FormatInt(fi.Size(), 10) || parts[1] != strconv.FormatInt(fi.ModTime().UnixNano(), 10) {
 		return nil, false

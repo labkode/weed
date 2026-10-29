@@ -199,7 +199,12 @@ check "davix-rm" sh -c "davix-rm $DAVIX $A/dir/davix.bin && ! test -e /srv/a/dir
 echo "== gfal2 against weed"
 check "gfal-copy upload with adler32 check" gfal-copy -f -K ADLER32 file://$W/f.bin $A/g.bin
 check "gfal-sum adler32" sh -c "gfal-sum $A/g.bin ADLER32 | grep -q ' $SUM\$'"
-check "gfal-sum md5" sh -c "gfal-sum $A/g.bin MD5 | grep -q \" \$(md5sum f.bin | cut -c1-32)\$\""
+# weed computes checksums while it writes a file, never on reads: md5 only if the
+# upload sent it
+MD5=$(md5sum f.bin | cut -c1-32)
+MD5REPR="md5=:$(python3 -c "import base64; print(base64.b64encode(bytes.fromhex('$MD5')).decode())"):"
+check "gfal-sum md5 of an upload that sent it" sh -c "$CURL -T f.bin -H 'Repr-Digest: $MD5REPR' $(https $A)/m.bin >/dev/null && gfal-sum $A/m.bin MD5 | grep -q ' $MD5\$'"
+check "no md5 of an upload that did not send it" sh -c "! gfal-sum $A/g.bin MD5"
 check "gfal-stat size" sh -c "gfal-stat $A/g.bin | grep -q 'Size: 5000000'"
 check "gfal-ls" sh -c "gfal-ls $A/ | grep -qx g.bin"
 check "gfal-mkdir -p" sh -c "gfal-mkdir -p $A/d1/d2 && test -d /srv/a/d1/d2"

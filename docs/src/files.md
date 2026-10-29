@@ -19,6 +19,6 @@ The files that weed reads and writes, with the paths of the examples in this gui
 | /var/lib/weed/bans.json (default) | `admin.bans` | weed, 0600 in a 0700 directory | The banned users, written by weed, read at startup. |
 | /data/ | `server.dir` | the accounts | The exported directory, accessed as the users' accounts. |
 | .weed-upload-\* |  | the accounts | Uploads in progress, in the target directory, renamed into place when complete (see [Storage](storage.html)). |
-| user.weed.digest.\<alg\> |  | the accounts | Extended attributes of uploaded files: their checksums. |
+| user.weed.digest.\<alg\> |  | the accounts | Extended attributes of the files that weed wrote: their checksums (see [Storage](storage.html#checksums)). |
 
 weed writes nothing else. It needs no database, and keeps no sessions: OIDC logins in progress are in a browser cookie, and WebDAV locks are in the memory of the workers.
