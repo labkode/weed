@@ -379,11 +379,14 @@ capabilities, or it does not start ("weed must run as root, ..."):
     RuntimeDirectory=weed  # for admin.socket (see Banning users)
     StateDirectory=weed    # for admin.bans
 
-Downloads relayed from workers run at ~95% of the speed of serving files directly,
+Downloads relayed from workers run at ~92% of the speed of serving files directly,
 and uploads at the same speed (Linux, 1 GiB files over loopback without TLS:
-~5800 against ~6100 MB/s; WEED_BENCH_MIB=1024 make bench-workers measures it). That
-needs 4 MiB socket buffers, which root gets; as another user, also raise
-net.core.wmem_max and net.core.rmem_max to 4194304, or downloads lose a third.
+~5200 against ~5600 MB/s; WEED_BENCH_MIB=1024 make bench-workers measures it). That
+needs 1 MiB socket buffers, which root gets; as another user, also raise
+net.core.wmem_max and net.core.rmem_max to 1048576, or downloads lose a third.
+Larger buffers would gain a few percent of one stream, but a client that reads
+slower than its worker keeps them full: 4 MiB took 7 MB of memory per slow client,
+1 MiB takes 2.7 MB (make find-limits, slow-download).
 
 The users need search permission on the exported directory and its parents (and
 weed, for /healthz). Accounts are looked up again after a minute, and on reload; an

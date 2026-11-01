@@ -713,8 +713,11 @@ func (wk *worker) dial() (net.Conn, error) {
 }
 
 // socketBuffer is the size of the send and receive buffers of connections to workers:
-// with the default (about 200 KiB), relaying a download costs a third of its throughput
-const socketBuffer = 4 << 20
+// with the default (about 200 KiB), relaying a download costs a third of its
+// throughput. No more, as a client that reads slower than the worker keeps the
+// buffer full, in the kernel (twice this): with 4 MiB, a thousand slow downloads
+// held 7 GB, for no more throughput than with 1 MiB (test/stress slow-download)
+const socketBuffer = 1 << 20
 
 // enlargeBuffers gives a socket buffers of socketBuffer bytes. Beyond
 // net.core.wmem_max and rmem_max, that needs CAP_NET_ADMIN, which root has.

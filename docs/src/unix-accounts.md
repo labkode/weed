@@ -80,6 +80,6 @@ weed checks that each limit has the form file=value when it reads the configurat
 
 ## Performance
 
-Downloads relayed from workers run at about 95% of the speed of serving files directly, and uploads at the same speed (1 GiB files over loopback without TLS: about 5800 MB/s against 6100 MB/s). That needs 4 MiB socket buffers, which root gets. If weed runs as another account, also raise net.core.wmem_max and net.core.rmem_max to 4194304, or downloads lose a third:
+Downloads relayed from workers run at about 92% of the speed of serving files directly, and uploads at the same speed (1 GiB files over loopback without TLS: about 5200 MB/s against 5600 MB/s). That needs 1 MiB socket buffers, which root gets. If weed runs as another account, also raise net.core.wmem_max and net.core.rmem_max to 1048576, or downloads lose a third:
 
-    # sysctl -w net.core.wmem_max=4194304 net.core.rmem_max=4194304
+    # sysctl -w net.core.wmem_max=1048576 net.core.rmem_max=1048576
