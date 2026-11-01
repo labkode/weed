@@ -101,19 +101,27 @@ func TestHasher(t *testing.T) {
 }
 
 func TestStored(t *testing.T) {
+	stored := func(p string, algs ...string) (Set, error) {
+		f, err := os.Open(p)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		return Stored(f, algs)
+	}
 	p := filepath.Join(t.TempDir(), "f")
 	if err := os.WriteFile(p, data, 0644); err != nil {
 		t.Fatal(err)
 	}
 	// Digests are not computed on reads
-	if sums, err := Stored(p, []string{Adler}); err != nil || len(sums) != 0 {
+	if sums, err := stored(p, Adler); err != nil || len(sums) != 0 {
 		t.Fatalf("Stored before Store = %x, %v", sums, err)
 	}
 
 	f, _ := os.OpenFile(p, os.O_WRONLY, 0)
 	Store(f, Set{Adler: adlerOf(data), MD5: md5Of(data)})
 	f.Close()
-	sums, err := Stored(p, []string{MD5, SHA256})
+	sums, err := stored(p, MD5, SHA256)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,15 +136,15 @@ func TestStored(t *testing.T) {
 	fi, _ := os.Stat(p)
 	os.WriteFile(p, bytes.ToUpper(data), 0644)
 	os.Chtimes(p, fi.ModTime(), fi.ModTime())
-	if sums, _ := Stored(p, []string{Adler}); !bytes.Equal(sums[Adler], adlerOf(data)) {
+	if sums, _ := stored(p, Adler); !bytes.Equal(sums[Adler], adlerOf(data)) {
 		t.Errorf("Stored with the same size and mtime = %x", sums)
 	}
 	// Any change to them makes them stale
 	os.Chtimes(p, fi.ModTime().Add(time.Second), fi.ModTime().Add(time.Second))
-	if sums, _ := Stored(p, []string{Adler, MD5}); len(sums) != 0 {
+	if sums, _ := stored(p, Adler, MD5); len(sums) != 0 {
 		t.Errorf("stale digests returned after the file changed: %x", sums)
 	}
-	if _, err := Stored(filepath.Dir(p), []string{Adler}); err == nil {
+	if _, err := stored(filepath.Dir(p), Adler); err == nil {
 		t.Error("digests of a directory")
 	}
 }

@@ -2,7 +2,10 @@
 
 package fsuser
 
-import "errors"
+import (
+	"errors"
+	"os"
+)
 
-// Writable is only supported on Linux
-func Writable(p string) error { return errors.New("only supported on Linux") }
+// WritableDir is only supported on Linux
+func WritableDir(d *os.File) error { return errors.New("only supported on Linux") }

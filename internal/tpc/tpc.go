@@ -90,8 +90,10 @@ type Job struct {
 	Mode Mode
 	// Remote is the other endpoint
 	Remote *url.URL
-	// LocalPath is the local file (destination for Pull, source for Push)
-	LocalPath string
+	// Local is the exported directory, opened for the request, and Name the file in
+	// it (destination for Pull, source for Push)
+	Local *davfs.Tree
+	Name  string
 	// Header is sent to the remote endpoint
 	Header http.Header
 	// Expected holds the digests the client asserted in Repr-Digest (may be empty)
@@ -305,7 +307,7 @@ func (e *Engine) Serve(w http.ResponseWriter, r *http.Request, job *Job) {
 	done := make(chan error, 1)
 	go func() { done <- e.run(ctx, job, p) }()
 
-	slog.InfoContext(r.Context(), "third-party copy started", "mode", job.Mode, "local", job.LocalPath, "remote", redact(job.Remote))
+	slog.InfoContext(r.Context(), "third-party copy started", "mode", job.Mode, "local", job.Name, "remote", redact(job.Remote))
 	w.Header().Set("Content-Type", "text/perf-marker-stream")
 	w.WriteHeader(http.StatusAccepted)
 	rc := http.NewResponseController(w)
@@ -415,7 +417,7 @@ func (e *Engine) pull(ctx context.Context, job *Job, p *progress) error {
 		}
 	}
 
-	af, err := davfs.CreateAtomic(job.LocalPath, 0666)
+	af, err := job.Local.CreateAtomic(ctx, job.Name, 0666)
 	if err != nil {
 		return fmt.Errorf("cannot create local file: %w", err)
 	}
@@ -456,7 +458,7 @@ func (e *Engine) pull(ctx context.Context, job *Job, p *progress) error {
 }
 
 func (e *Engine) push(ctx context.Context, job *Job, p *progress) error {
-	f, err := os.Open(job.LocalPath)
+	f, err := job.Local.Open(ctx, job.Name)
 	if err != nil {
 		return err
 	}
@@ -477,7 +479,7 @@ func (e *Engine) push(ctx context.Context, job *Job, p *progress) error {
 	}
 	var last *attempt
 	newBody := func() (io.ReadCloser, error) {
-		f, err := os.Open(job.LocalPath)
+		f, err := job.Local.Open(ctx, job.Name)
 		if err != nil {
 			return nil, err
 		}

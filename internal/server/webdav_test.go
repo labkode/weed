@@ -157,6 +157,49 @@ func TestPropfindDepth(t *testing.T) {
 	}
 }
 
+// A symbolic link that leads out of the exported directory leads nowhere: what is
+// outside is neither read nor written through it (403), nor listed, nor its digest
+// told; a relative link that stays inside is followed
+func TestSymlinkOutsideRefused(t *testing.T) {
+	n := newNode(t, nil)
+	outside := t.TempDir()
+	os.WriteFile(filepath.Join(outside, "secret"), []byte("secret"), 0o644)
+	n.write("/d/f", "x")
+	os.Symlink(outside, filepath.Join(n.dir, "d", "out"))
+	os.Symlink("f", filepath.Join(n.dir, "d", "in"))
+
+	for _, c := range []struct{ method, path, body string }{
+		{"GET", "/d/out/secret", ""},
+		{"HEAD", "/d/out/secret", ""},
+		{"PUT", "/d/out/new", "stolen"},
+		{"MKCOL", "/d/out/dir", ""},
+		{"DELETE", "/d/out/secret", ""},
+		{"PROPFIND", "/d/out/", ""},
+	} {
+		if code := n.status(c.method, c.path, c.body, "Depth", "0", "Want-Repr-Digest", "adler=1"); code != 403 {
+			t.Errorf("%s %s: %d, want 403", c.method, c.path, code)
+		}
+	}
+	if code := n.status("COPY", "/d/out/secret", "", "Destination", n.url("/d/copy")); code != 403 {
+		t.Errorf("COPY from outside: %d, want 403", code)
+	}
+	if code := n.status("COPY", "/d/f", "", "Destination", n.url("/d/out/copy")); code != 403 {
+		t.Errorf("COPY to outside: %d, want 403", code)
+	}
+	entries, _ := os.ReadDir(outside)
+	if len(entries) != 1 {
+		t.Errorf("outside: %v, want only secret", entries)
+	}
+
+	if resp, body := n.do("GET", "/d/in", ""); resp.StatusCode != 200 || body != "x" {
+		t.Errorf("GET through a link inside: %d %q", resp.StatusCode, body)
+	}
+	resp, body := n.do("PROPFIND", "/d/", "", "Depth", "1")
+	if resp.StatusCode != 207 || !strings.Contains(body, "/webdav/d/in") || strings.Contains(body, "/webdav/d/out") {
+		t.Errorf("listing: %d %s, want d/in and not d/out", resp.StatusCode, body)
+	}
+}
+
 // TestInterruptedUploadLeavesNothing sends half a body and drops the connection
 func TestInterruptedUploadLeavesNothing(t *testing.T) {
 	n := newNode(t, nil)

@@ -268,22 +268,17 @@ func (h *Hasher) Sums() Set {
 	return s
 }
 
-// Stored returns those of the digests algs that are stored with the file at path
+// Stored returns those of the digests algs that are stored with the open file f
 // (see Store) and still describe it: they were computed for its current size and
 // modification time. Digests are computed only while weed writes a file, never to
 // answer a read: a file written otherwise has none.
-func Stored(path string, algs []string) (Set, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
+func Stored(f *os.File, algs []string) (Set, error) {
 	fi, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
+		return nil, fmt.Errorf("%s is not a regular file", f.Name())
 	}
 	out := Set{}
 	for _, alg := range algs {

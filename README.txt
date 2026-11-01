@@ -401,6 +401,13 @@ Operations the filesystem refuses get 403. As with local tools:
 * WebDAV locks are kept by each worker: they only hold against requests of the same
   account, and are lost when its worker stops.
 
+Symbolic links. Workers open every name beneath the exported directory (Go's
+os.Root), and follow a link only when it is relative and stays inside. A link that
+leads outside, and every absolute link (even one to a file inside), gets 403, is left
+out of listings, and is logged ("refused a name that leads outside the exported
+directory"). Otherwise, a user who can make links there (over ssh, NFS) could have
+weed read whatever the account can, such as /etc.
+
 cgroups. With unix_users.cgroups, the workers of each account run in a cgroup of
 their own below weed's, which must be delegated to weed (systemd's Delegate=yes;
 cgroup v2): weed moves into <its cgroup>/main and starts the workers of alice in <its

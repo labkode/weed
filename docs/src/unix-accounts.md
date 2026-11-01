@@ -39,6 +39,10 @@ Workers log through weed: their records carry worker.user and worker.pid, and th
 
 Workers are started from /proc/self/exe: the binary that weed itself runs, even after an upgrade has replaced it on disk. A new version only runs once weed restarts, for weed and its workers alike. Each worker also reports its Go build ID, and weed refuses workers whose build is not its own, which happens if the binary is overwritten in place. See [Upgrading](upgrading.html).
 
+## Symbolic links {#symlinks}
+
+Workers open every name beneath the exported directory, and follow a link only when it is relative and stays inside. A link that leads outside, and every absolute link (even one to a file inside), gets 403, is left out of listings, and is logged as *refused a name that leads outside the exported directory*. Otherwise, a user who can make links there, over ssh or NFS, could have weed read whatever the account can, such as /etc.
+
 ## Permissions
 
 Operations that the filesystem refuses get 403. As with local tools:

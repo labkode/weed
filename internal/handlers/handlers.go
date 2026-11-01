@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -25,7 +24,6 @@ import (
 	"github.com/labkode/weed/internal/davfs"
 	"github.com/labkode/weed/internal/davreq"
 	"github.com/labkode/weed/internal/digest"
-	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/tpc"
@@ -55,8 +53,8 @@ func NewWebDAVHandler(directory string, cfg *config.Config, authStore *auth.Auth
 	fs := davfs.FS{Root: directory}
 	webdavHandler := &webdav.Handler{
 		Prefix:     davreq.Prefix, // Set prefix to /webdav so hrefs are generated correctly
-		FileSystem: fs,
 		LockSystem: webdav.NewMemLS(),
+		// FileSystem: each request's own (serveDAV)
 		Logger: func(r *http.Request, err error) {
 			if err == nil {
 				return
@@ -88,7 +86,19 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Non-canonical path", http.StatusBadRequest)
 		return
 	}
-	if !h.usesAsDirectories(w, r) {
+	// The exported directory, opened for this request: no name leads out of it
+	tree, err := h.FS.Open()
+	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			http.Error(w, "Permission denied", http.StatusForbidden)
+			return
+		}
+		slog.ErrorContext(r.Context(), "cannot open the exported directory", "dir", h.FS.Root, "error", err)
+		http.Error(w, "The exported directory is not available", http.StatusServiceUnavailable)
+		return
+	}
+	defer tree.Close()
+	if !h.usesAsDirectories(w, r, tree) {
 		return
 	}
 
@@ -112,29 +122,29 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case http.MethodPut:
-		h.handlePut(w, r)
+		h.handlePut(w, r, tree)
 		return
 	case http.MethodGet, http.MethodHead:
-		h.addDigestHeaders(w, r)
+		h.addDigestHeaders(w, r, tree)
 	case "COPY", "MOVE":
-		h.handleCopyMove(w, r)
+		h.handleCopyMove(w, r, tree)
 		return
 	case "UNLOCK", "LOCK":
 		if !h.lockTokenInScope(w, r) {
 			return
 		}
-		if r.Method == "LOCK" && !h.mayLock(w, r) {
+		if r.Method == "LOCK" && !h.mayLock(w, r, tree) {
 			return
 		}
 	}
 
-	h.serveDAV(w, r)
+	h.serveDAV(w, r, tree)
 }
 
 // mayLock refuses to lock an existing resource that the user cannot write: the lock
 // would keep those who can from writing it. A LOCK that creates the resource needs
 // permission to create it.
-func (h *WebDAVHandler) mayLock(w http.ResponseWriter, r *http.Request) bool {
+func (h *WebDAVHandler) mayLock(w http.ResponseWriter, r *http.Request, tree *davfs.Tree) bool {
 	if info, ok := auth.GetAuthInfoFromContext(r.Context()); !ok || info.Unix == nil {
 		return true // tests that serve files as this process's user
 	}
@@ -142,12 +152,8 @@ func (h *WebDAVHandler) mayLock(w http.ResponseWriter, r *http.Request) bool {
 	if !ok {
 		return true
 	}
-	p, err := h.FS.Resolve(name)
-	if err != nil {
-		return true
-	}
-	if _, err := os.Stat(p); err == nil {
-		if err := fsuser.Writable(p); err != nil {
+	if _, err := tree.Stat(r.Context(), name); err == nil {
+		if err := tree.Writable(r.Context(), name); err != nil {
 			http.Error(w, "Permission denied", http.StatusForbidden)
 			return false
 		}
@@ -155,11 +161,13 @@ func (h *WebDAVHandler) mayLock(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// serveDAV hands the request to x/net/webdav, turning the 404, 405, 409 and 500 it
-// answers when the filesystem refuses an operation into 403
-func (h *WebDAVHandler) serveDAV(w http.ResponseWriter, r *http.Request) {
+// serveDAV hands the request to x/net/webdav, on tree, turning the 404, 405, 409 and
+// 500 it answers when the filesystem refuses an operation into 403
+func (h *WebDAVHandler) serveDAV(w http.ResponseWriter, r *http.Request, tree *davfs.Tree) {
 	dw := &deniedWriter{ResponseWriter: w}
-	h.Handler.ServeHTTP(dw, r.WithContext(davfs.TrackDenied(r.Context(), &dw.denied)))
+	dav := *h.Handler
+	dav.FileSystem = tree
+	dav.ServeHTTP(dw, r.WithContext(davfs.TrackDenied(r.Context(), &dw.denied)))
 }
 
 type deniedWriter struct {
@@ -200,18 +208,14 @@ const errOnlyDirectory = "The token allows this path as a directory only (its sc
 // the request may only create a directory there (MKCOL, or COPY/MOVE of a directory).
 // A concurrent request could still swap a directory for a file in between, but only
 // with credentials that cover the file.
-func (h *WebDAVHandler) usesAsDirectories(w http.ResponseWriter, r *http.Request) bool {
+func (h *WebDAVHandler) usesAsDirectories(w http.ResponseWriter, r *http.Request, tree *davfs.Tree) bool {
 	info, ok := auth.GetAuthInfoFromContext(r.Context())
 	if !ok || len(info.Directories) == 0 {
 		return true
 	}
 	stat := func(urlPath string) (os.FileInfo, error) {
 		name, _ := davreq.Strip(urlPath)
-		p, err := h.FS.Resolve(name)
-		if err != nil {
-			return nil, err
-		}
-		return os.Stat(p)
+		return tree.Stat(r.Context(), name)
 	}
 	for _, d := range info.Directories {
 		// A path that cannot be stat'ed cannot be used either: the request fails by itself
@@ -295,7 +299,7 @@ func expectedDigests(w http.ResponseWriter, r *http.Request) (digest.Set, string
 
 // handlePut stores uploads atomically: the data goes to a temporary file that is
 // verified against any Repr-Digest and only then renamed into place
-func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
+func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request, tree *davfs.Tree) {
 	ctx := r.Context()
 	name, ok := davreq.Strip(r.URL.Path)
 	if !ok {
@@ -310,8 +314,7 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	localPath, err := h.FS.Resolve(name)
-	if err != nil {
+	if !davfs.Valid(name) {
 		http.NotFound(w, r)
 		return
 	}
@@ -323,7 +326,7 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	fi, statErr := os.Stat(localPath)
+	fi, statErr := tree.Stat(ctx, name)
 	exists := statErr == nil
 	if exists && fi.IsDir() {
 		http.Error(w, "Cannot PUT to a collection", http.StatusMethodNotAllowed)
@@ -343,13 +346,13 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	af, err := davfs.CreateAtomic(localPath, 0666)
+	af, err := tree.CreateAtomic(ctx, name, 0666)
 	if err != nil {
 		if os.IsNotExist(err) {
 			http.Error(w, "Parent collection does not exist", http.StatusConflict)
 			return
 		}
-		slog.ErrorContext(ctx, "cannot create the upload's temporary file", "path", r.URL.Path, "file", localPath, "error", err)
+		slog.ErrorContext(ctx, "cannot create the upload's temporary file", "path", r.URL.Path, "error", err)
 		http.Error(w, "Cannot create file", http.StatusForbidden)
 		return
 	}
@@ -407,7 +410,7 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 
 // addDigestHeaders answers Want-Repr-Digest (RFC 9530) and Want-Digest (RFC 3230)
 // on GET and HEAD; the body is then served by the WebDAV handler
-func (h *WebDAVHandler) addDigestHeaders(w http.ResponseWriter, r *http.Request) {
+func (h *WebDAVHandler) addDigestHeaders(w http.ResponseWriter, r *http.Request, tree *davfs.Tree) {
 	want := digest.ParseWant(r.Header.Get("Want-Repr-Digest"))
 	legacy := digest.ParseWantLegacy(r.Header.Get("Want-Digest"))
 	if len(want) == 0 && len(legacy) == 0 {
@@ -417,17 +420,19 @@ func (h *WebDAVHandler) addDigestHeaders(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	localPath, err := h.FS.Resolve(name)
+	// Not opened unless a file: opening a FIFO waits for a writer
+	if fi, err := tree.Stat(r.Context(), name); err != nil || !fi.Mode().IsRegular() {
+		return
+	}
+	f, err := tree.Open(r.Context(), name)
 	if err != nil {
 		return
 	}
-	if fi, err := os.Stat(localPath); err != nil || !fi.Mode().IsRegular() {
-		return
-	}
+	defer f.Close()
 
 	// Digests are computed while files are written (PUT, TPC pull), never to answer a
 	// read: the answer is the most preferred of those stored, if any is
-	sums, err := digest.Stored(localPath, slices.Concat(want, legacy))
+	sums, err := digest.Stored(f, slices.Concat(want, legacy))
 	if err != nil {
 		slog.ErrorContext(r.Context(), "cannot read the stored digests", "path", r.URL.Path, "error", err)
 		return
@@ -459,14 +464,14 @@ func firstStored(algs []string, sums digest.Set) (string, bool) {
 
 // handleCopyMove serves third-party copies itself and hands local COPY/MOVE to the
 // WebDAV handler after normalizing the request
-func (h *WebDAVHandler) handleCopyMove(w http.ResponseWriter, r *http.Request) {
+func (h *WebDAVHandler) handleCopyMove(w http.ResponseWriter, r *http.Request, tree *davfs.Tree) {
 	target, err := davreq.ParseTarget(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if target.Kind != davreq.CopyLocal {
-		h.handleTPC(w, r, target)
+		h.handleTPC(w, r, target, tree)
 		return
 	}
 
@@ -490,20 +495,18 @@ func (h *WebDAVHandler) handleCopyMove(w http.ResponseWriter, r *http.Request) {
 	}
 	if mayNotOverwrite(r) {
 		if name, ok := davreq.Strip(target.Local); ok {
-			if p, err := h.FS.Resolve(name); err == nil {
-				if _, err := os.Lstat(p); err == nil {
-					http.Error(w, errNoOverwrite, http.StatusForbidden)
-					return
-				}
+			if _, err := tree.Lstat(r.Context(), name); err == nil {
+				http.Error(w, errNoOverwrite, http.StatusForbidden)
+				return
 			}
 		}
 		r.Header.Set("Overwrite", "F") // x/net/webdav checks again just before writing
 	}
-	h.serveDAV(w, r)
+	h.serveDAV(w, r, tree)
 }
 
 // handleTPC validates a third-party copy request and hands it to the TPC engine
-func (h *WebDAVHandler) handleTPC(w http.ResponseWriter, r *http.Request, target davreq.Target) {
+func (h *WebDAVHandler) handleTPC(w http.ResponseWriter, r *http.Request, target davreq.Target, tree *davfs.Tree) {
 	if h.TPC == nil {
 		http.Error(w, "Third-party copy is not enabled on this server", http.StatusNotImplemented)
 		return
@@ -526,20 +529,20 @@ func (h *WebDAVHandler) handleTPC(w http.ResponseWriter, r *http.Request, target
 		http.NotFound(w, r)
 		return
 	}
-	localPath, err := h.FS.Resolve(name)
-	if err != nil {
+	if !davfs.Valid(name) {
 		http.NotFound(w, r)
 		return
 	}
 
 	job := &tpc.Job{
 		Remote:     target.Remote,
-		LocalPath:  localPath,
+		Local:      tree,
+		Name:       name,
 		Header:     tpc.TransferHeaders(r.Header),
 		Expected:   expected,
 		ReprDigest: reprDigest,
 	}
-	fi, statErr := os.Stat(localPath)
+	fi, statErr := tree.Stat(r.Context(), name)
 	if errors.Is(statErr, fs.ErrPermission) {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
@@ -560,7 +563,7 @@ func (h *WebDAVHandler) handleTPC(w http.ResponseWriter, r *http.Request, target
 			http.Error(w, errNoOverwrite, http.StatusForbidden)
 			return
 		}
-		if _, err := os.Stat(filepath.Dir(localPath)); err != nil {
+		if _, err := tree.Stat(r.Context(), path.Dir(path.Clean("/"+name))); err != nil {
 			http.Error(w, "Parent collection does not exist", http.StatusConflict)
 			return
 		}
