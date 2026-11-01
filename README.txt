@@ -735,6 +735,9 @@ Testing
                        a container, to watch its dashboard, /status, /metrics and the
                        logs, with Prometheus and Grafana (test/lab/lab.sh, Docker);
                        make lab-ssh opens a shell in it, make lab-stop stops it
+    make find-limits   the limits of weed on this machine: the lab without its load,
+                       rates or limits, under a load that grows until weed or the
+                       machine gives (test/stress, Docker); ARGS="..." go to stress
     make check         gofmt and go vet; make fuzz, make cross, make vulncheck and
                        make bench run the rest; make help lists every target
 
@@ -746,6 +749,31 @@ third-party copies in both directions between two weed servers and between weed 
 XRootD. Each parser also has a fuzz test (go test -fuzz). CI (.github/workflows/ci.yml)
 runs the tests with -race on Linux and macOS and as root on Linux, go vet, gofmt,
 govulncheck, cross-builds, the fuzz tests and the interoperability tests.
+
+test/stress finds what a weed server sustains. For each scenario (small files read,
+written and listed, new TLS connections, downloads and uploads of large files, each
+authentication method, many accounts), it doubles the number of concurrent clients
+until throughput stops growing, more than 1% of requests fail, or the p99 latency
+passes 2 seconds, and reports each step: requests per second, MB/s, latency, errors,
+and the CPU it used. On weed's machine, -cgroup adds the CPU and memory weed used, and
+what seems to limit it: the CPUs, or something else (the disk, the network, waiting).
+Two scenarios grow a crowd instead, of up to 8192 clients (-clients) that each hold
+a connection and stay from one step to the next: clients make a small GET every
+second, slow-download read the large file at 1 MiB/s each, as jobs across a WAN do.
+They report what each client adds to weed's memory and to the machine's, and stop
+when clients fall behind, or the machine has used 90% of its memory. It works in a
+directory of its own below the URL it is given, and removes it.
+
+make find-limits runs it in the lab's container, with weed's files on a Docker volume:
+the load shares the CPUs with weed, and downloads read one file, from memory. To
+measure the machine that will serve, run weed there as it will serve, and stress from
+another machine:
+
+    go build -o stress ./test/stress
+    ./stress -url https://weed.example.org/webdav/home/alice \
+        -cert usercert.pem -key userkey.pem -ca /etc/grid-security/certificates
+
+stress -h lists the scenarios and options; -json writes the results as JSON.
 
 
 Not implemented

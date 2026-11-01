@@ -7,8 +7,14 @@
 # lab-ssh opens a shell in weed's container. Ports are published on this host's
 # loopback only. Needs Go and Docker.
 #
-#     test/lab/lab.sh         starts it, again if it runs
-#     test/lab/lab.sh stop    stops it
+# find-limits starts the lab without its load, without rates or limits but weed's
+# own, and with weed's files on a Docker volume rather than in memory; then it runs
+# test/stress in weed's container (find-limits.sh), a load that grows until weed or
+# the machine gives. The lab stays, idle, for Grafana to show the run.
+#
+#     test/lab/lab.sh                        starts it, again if it runs
+#     test/lab/lab.sh find-limits [ARGS...]  starts it to find limits; ARGS go to stress
+#     test/lab/lab.sh stop                   stops it
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -31,6 +37,11 @@ if [ "${1:-}" = stop ]; then
 	echo "the lab does not run"
 	exit 0
 fi
+mode=load
+if [ "${1:-}" = find-limits ]; then
+	mode=stress
+	shift
+fi
 
 case $(docker info --format '{{.Architecture}}') in
 	x86_64 | amd64) goarch=amd64 ;;
@@ -40,8 +51,9 @@ esac
 build=$(mktemp -d)
 trap 'rm -rf "$build"' EXIT
 (cd "$root" && GOOS=linux GOARCH=$goarch CGO_ENABLED=0 go build -o "$build/weed" . &&
-	GOOS=linux GOARCH=$goarch CGO_ENABLED=0 go build -o "$build/issuer" ./test/interop/issuer)
-mkdir "$build/lab" && cp "$here/run.sh" "$here/load.sh" "$here/creds.sh" "$build/lab/"
+	GOOS=linux GOARCH=$goarch CGO_ENABLED=0 go build -o "$build/issuer" ./test/interop/issuer &&
+	GOOS=linux GOARCH=$goarch CGO_ENABLED=0 go build -o "$build/stress" ./test/stress)
+mkdir "$build/lab" && cp "$here/run.sh" "$here/load.sh" "$here/creds.sh" "$here/find-limits.sh" "$build/lab/"
 mkdir -p "$build/grafana/provisioning/datasources" "$build/grafana/provisioning/dashboards" "$build/grafana/dashboards"
 cp "$here/grafana/datasource.yml" "$build/grafana/provisioning/datasources/weed.yml"
 cp "$here/grafana/dashboards.yml" "$build/grafana/provisioning/dashboards/weed.yml"
@@ -54,10 +66,13 @@ docker pull -q $GRAFANA >/dev/null
 stop
 docker network create weed-lab >/dev/null
 
-docker create --name weed-lab --hostname weed-lab --network weed-lab --privileged --tmpfs /data:size=3g \
+# The load fits in memory; finding limits needs a disk, and the space of files of
+# GBs, which docker rm -v removes with the container
+data="--tmpfs /data:size=3g"
+[ $mode = stress ] && data="--mount type=volume,dst=/data"
+docker create --name weed-lab --hostname weed-lab --network weed-lab --privileged $data -e LAB_MODE=$mode \
 	-p 127.0.0.1:9443:9443 -p 127.0.0.1:9100:9100 weed-interop bash /lab/run.sh >/dev/null
-docker cp -q "$build/weed" weed-lab:/usr/local/bin/weed
-docker cp -q "$build/issuer" weed-lab:/usr/local/bin/issuer
+for b in weed issuer stress; do docker cp -q "$build/$b" weed-lab:/usr/local/bin/$b; done
 docker cp -q "$build/lab" weed-lab:/lab
 
 docker create --name weed-lab-prometheus --network weed-lab -p 127.0.0.1:9090:9090 $PROMETHEUS \
@@ -94,6 +109,30 @@ up http://localhost:3000/api/health Grafana weed-lab-grafana
 mkdir -p "$here/out"
 for f in ca.pem alice.pem alice.key; do docker cp -q weed-lab:/lab/pki/$f "$here/out/$f"; done
 out=${here#"$root"/}/out
+
+if [ $mode = stress ]; then
+	cat <<EOF
+The lab runs without its load, and without rates or limits but weed's own; weed's
+files are on a Docker volume ($(docker exec weed-lab df -h --output=size /data | tail -1 | tr -d ' ')).
+Grafana shows what follows: http://localhost:3000/. Ctrl-C stops it, and cleans up.
+EOF
+	# A Mac that sleeps pauses the lab, and its tokens expire
+	command -v caffeinate >/dev/null && caffeinate -i -w $$ &
+	# A terminal, for Ctrl-C to reach stress in the container
+	tty=
+	if [ -t 0 ] && [ -t 1 ]; then tty=-it; fi
+	status=0
+	docker exec $tty weed-lab bash /lab/find-limits.sh "$@" || status=$?
+	for f in limits.txt limits.json; do docker cp -q weed-lab:/lab/$f "$here/out/$f" 2>/dev/null || true; done
+	cat <<EOF
+
+The results: $out/limits.txt, and $out/limits.json.
+The lab stays, idle, for Grafana to show the run (http://localhost:3000/): make
+lab-ssh opens a shell in it, make lab-stop stops it, make lab restarts it with its
+load.
+EOF
+	exit $status
+fi
 cat <<EOF
 The lab runs: weed serves 22 accounts under a load that does not stop.
 

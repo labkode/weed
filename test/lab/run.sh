@@ -1,8 +1,11 @@
 #!/bin/bash
 # Runs inside the weed-lab container (see lab.sh): one weed whose 22 Unix accounts
 # authenticate with certificates, WLCG tokens and passwords, with limits per account
-# and group, and a load that does not stop (load.sh)
+# and group, and a load that does not stop (load.sh). With LAB_MODE=stress (make
+# find-limits), without the load, nor rates or limits but weed's own: find-limits.sh
+# runs the load that finds them
 set -u
+MODE=${LAB_MODE:-load}
 L=/lab
 mkdir -p $L/pki $L/tokens $L/files /etc/weed /run/weed /var/lib/weed /var/log/weed
 cd $L/pki
@@ -66,7 +69,8 @@ mint_tokens() { # every hour, tokens of an hour and a half
 		-sub atlas001 -lifetime -1h >$L/tokens/expired
 }
 mint_tokens
-(while sleep 3600; do mint_tokens; done) &
+# By the clock, which moves on while a laptop sleeps and sleep(1) does not
+(while sleep 60; do [ -n "$(find $L/tokens/atlas001 -mmin +60)" ] && mint_tokens; done) &
 
 # --- Passwords: lab-<account>
 cd /etc/weed
@@ -74,7 +78,7 @@ for u in $(awk '$2 == "basic" {print $1}' $L/accounts); do weed utils password $
 chmod 600 .htpasswd
 
 # --- Limits: totals of 120 MB/s out and 60 MB/s in, shared by weight
-cat >limits.json <<'J'
+[ $MODE = load ] && cat >limits.json <<'J'
 [
   {"user": "cmsprod", "weight": 1000, "egress_rate": "max", "ingress_rate": "max"},
   {"user": "alice", "ingress_rate": "5MB/s"},
@@ -121,6 +125,9 @@ enabled = true
 ca_path = "$L/pki/ca.pem"
 allow_http = true
 allow_local = true
+T
+if [ $MODE = load ]; then
+	cat >>weed.toml <<'T'
 
 [unix_users]
 idle_timeout = "90s"
@@ -134,6 +141,10 @@ ingress_rate = "60MB/s"
 account_egress_rate = "40MB/s"
 account_ingress_rate = "20MB/s"
 T
+else
+	# weed's own limits, which the machine's should come before
+	printf '\n[unix_users]\ncgroups = true\n' >>weed.toml
+fi
 
 # --- Files that clients upload, and that third-party copies pull over plain HTTP
 for s in 4k:4 64k:64 256k:256 1m:1024 4m:4096 16m:16384 32m:32768; do
@@ -151,7 +162,7 @@ weed check -config /etc/weed/weed.toml || exit 1
 (echo $BASHPID >$cg/weed/cgroup.procs && exec weed -config /etc/weed/weed.toml) &
 weed=$!
 for i in $(seq 50); do curl -sf -o /dev/null localhost:9100/healthz && break; sleep 0.2; done
-echo "weed is up (pid $weed): the load starts"
+if [ $MODE = load ]; then echo "weed is up (pid $weed): the load starts"; else echo "weed is up (pid $weed)"; fi
 
 # weed reopens its log on SIGHUP, which also reloads it
 (while sleep 60; do
@@ -161,17 +172,23 @@ echo "weed is up (pid $weed): the load starts"
 done) &
 
 # The shell of make lab-ssh
-cat >/lab/motd <<'M'
-weed lab: weed serves /data at $W to 22 accounts (/lab/accounts) under the load of
-/lab/load.sh, whose scenes /var/log/lab.log tells. weed logs to /var/log/weed/weed.log.
+if [ $MODE = load ]; then
+	echo 'weed lab: weed serves /data at $W to 22 accounts (/lab/accounts) under the load of
+/lab/load.sh, whose scenes /var/log/lab.log tells. weed logs to /var/log/weed/weed.log.'
+else
+	echo 'weed lab, to find limits: weed serves /data at $W to 22 accounts (/lab/accounts),
+without rates or limits per account. /lab/find-limits.sh runs stress (stress -h) as make
+find-limits does. weed logs to /var/log/weed/weed.log.'
+fi >/lab/motd
+cat >>/lab/motd <<'M'
 
   as alice $W/alice/ -X PROPFIND -H 'Depth: 1'   curl with an account's credentials
   curl -s localhost:9100/status | jq .network     also /metrics and /healthz
   ps -o user,pid,rss,args -C weed                 weed and its workers
   cat /sys/fs/cgroup/weed/worker-cms001/memory.max
   weed utils ban -reason test frank               then weed utils bans, unban frank
-  vi /etc/weed/limits.json; pkill -HUP -o -x weed reload, with the new limits
 M
+[ $MODE = load ] && echo '  vi /etc/weed/limits.json; pkill -HUP -o -x weed reload, with the new limits' >>/lab/motd
 cat >>/root/.bashrc <<'B'
 W=https://localhost:9443/webdav CA=/lab/pki/ca.pem
 . /lab/creds.sh
@@ -180,6 +197,6 @@ as() { auth_of "$1" || return; shift; curl -s --cacert $CA "${A[@]}" "$@"; }
 cat /lab/motd
 B
 
-bash /lab/load.sh 2>&1 | tee /var/log/lab.log &
+[ $MODE = load ] && { bash /lab/load.sh 2>&1 | tee /var/log/lab.log & }
 wait $weed
 echo "weed exited ($?)"

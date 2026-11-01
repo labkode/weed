@@ -14,7 +14,7 @@ DOCKER_GO  = --rm -v "$(CURDIR):/src" -v "$$($(GO) env GOMODCACHE):/go/pkg/mod" 
              -v weed-gocache:/root/.cache/go-build -w /src --cap-add SYS_PTRACE \
              -e GOPROXY=off -e GOFLAGS=-buildvcs=false
 
-.PHONY: all build test test-root test-linux test-cgroups bench-workers interop lab lab-ssh lab-stop check fmt vulncheck fuzz bench cross ci docs clean help
+.PHONY: all build test test-root test-linux test-cgroups bench-workers interop lab lab-ssh lab-stop find-limits check fmt vulncheck fuzz bench cross ci docs clean help
 
 all: build
 
@@ -49,6 +49,9 @@ lab-ssh: ## A shell in the running lab
 
 lab-stop: ## Stop the lab
 	@test/lab/lab.sh stop
+
+find-limits: ## The limits of weed on this machine: the lab under a load that grows until weed or the machine gives (Docker); ARGS="..." go to test/stress
+	@test/lab/lab.sh find-limits $(ARGS)
 
 check: ## gofmt and go vet
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "needs gofmt:"; echo "$$out"; exit 1; fi
