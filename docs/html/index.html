@@ -118,7 +118,7 @@ cms001      1702     812 weed worker cms001</code></pre>
 <p>weed is made so that nothing changes by surprise while it runs. It says which build runs, since when and with which configuration, and whether a restart would change any of it (<a href="what-runs.html">What runs</a>). Credential files are re-read without a restart, and a file that cannot be read keeps its previous contents (<a href="reloading.html">Reloading</a>). Every request is logged once, with the account it ran as (<a href="logging.html">Logging</a>).</p>
 <h2 id="what-you-need">What you need</h2>
 <ul>
-<li>A Linux server. weed serves on Linux only. On other systems, only its helpers work (<em>weed utils</em>, <em>config</em>, <em>check</em> and <em>version</em>).</li>
+<li>A Linux server. macOS is only for developing weed (see <a href="getting-started.html#macos">Getting started</a>); on other systems, only its helpers work (<em>weed utils</em>, <em>config</em>, <em>check</em> and <em>version</em>).</li>
 <li>root, or the CAP_SETUID and CAP_SETGID capabilities, to start workers as other accounts.</li>
 <li>A local account for every user, in /etc/passwd or in a directory (LDAP, SSSD) that the system's user database reaches.</li>
 <li>For a grid storage node: a host certificate, the IGTF CA certificates in /etc/grid-security/certificates kept current by fetch-crl, a grid-mapfile, and the token issuers of your communities.</li>

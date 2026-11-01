@@ -29,7 +29,7 @@ weed is made so that nothing changes by surprise while it runs. It says which bu
 
 ## What you need
 
-- A Linux server. weed serves on Linux only. On other systems, only its helpers work (*weed utils*, *config*, *check* and *version*).
+- A Linux server. macOS is only for developing weed (see [Getting started](getting-started.html#macos)); on other systems, only its helpers work (*weed utils*, *config*, *check* and *version*).
 - root, or the CAP_SETUID and CAP_SETGID capabilities, to start workers as other accounts.
 - A local account for every user, in /etc/passwd or in a directory (LDAP, SSSD) that the system's user database reaches.
 - For a grid storage node: a host certificate, the IGTF CA certificates in /etc/grid-security/certificates kept current by fetch-crl, a grid-mapfile, and the token issuers of your communities.

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -11,7 +12,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/user"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,9 +66,36 @@ type Server struct {
 	run      running // what runs, compared to what a restart would run (see status.go)
 	checking bool    // weed check: only find out whether weed would start
 	// inProcess serves files in this process, as its user, without Unix accounts or
-	// workers: only for tests of request handling, which is what workers run. weed
-	// always accesses files as the Unix account of each request.
+	// workers: for tests of request handling, which is what workers run, and for
+	// development on macOS (see develop). On Linux, weed always accesses files as
+	// the Unix account of each request.
 	inProcess bool
+	// development is the account that files are accessed as, in development mode
+	development string
+}
+
+// workersSupported says whether weed has worker processes per Unix account here, and
+// developing whether it serves for development instead (variables for tests)
+var (
+	workersSupported = runtime.GOOS == "linux"
+	developing       = runtime.GOOS == "darwin"
+)
+
+// develop serves files in this process on macOS, which is only for developing weed,
+// and has no worker processes: as the account that runs weed, for every identity. Not
+// as root, which would give every identity every file.
+func (s *Server) develop() error {
+	if os.Geteuid() == 0 {
+		return errors.New("on macOS, weed serves files as the account that runs it, for development, and not as root: Unix accounts and their worker processes are only on Linux")
+	}
+	s.inProcess = true
+	s.development = strconv.Itoa(os.Geteuid())
+	if u, err := user.Current(); err == nil {
+		s.development = u.Username
+	}
+	slog.Warn("development mode, as on macOS: weed serves files in its own process, as the account that runs it, for every identity; worker processes per Unix account, Landlock, cgroups, network rates and unix_users.limits are only on Linux",
+		"account", s.development)
+	return nil
 }
 
 // New creates a new server instance
@@ -80,6 +111,14 @@ func New(cfg *config.Config) *Server {
 
 // Initialize sets up authentication and other server components
 func (s *Server) Initialize() error {
+	if !s.inProcess && !workersSupported {
+		if !developing {
+			return fmt.Errorf("weed serves on Linux, and on macOS for development, not on %s", runtime.GOOS)
+		}
+		if err := s.develop(); err != nil {
+			return err
+		}
+	}
 	// Initialize authentication systems if enabled
 	if s.Config.BasicAuth {
 		s.AuthStore.BasicEnabled = true
@@ -698,7 +737,7 @@ func (s *Server) LogStartupInfo() {
 			"allow_local", c.TPCAllowLocal, "allow_private", c.TPCAllowPrivate)
 	}
 	if c.Anonymous {
-		slog.Warn("requests without credentials are served, read-write, as nobody (server.anonymous)", "address", c.Address)
+		slog.Warn("requests without credentials are served, read-write, as "+cmp.Or(s.development, "nobody")+" (server.anonymous)", "address", c.Address)
 	}
 	if !c.TLS && (c.BasicAuth || c.MacaroonAuth || c.OIDCAuth || c.TokenIssuers != "") {
 		slog.Warn("TLS is disabled: passwords and tokens are sent in clear text")

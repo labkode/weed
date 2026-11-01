@@ -23,7 +23,7 @@ import (
 func adminFlags(name, operands string, argc int, define func(*flag.FlagSet)) (*admin.Client, []string, error) {
 	fs := flag.NewFlagSet("weed utils "+name, flag.ContinueOnError)
 	configFile := fs.String("config", "", "the configuration file that weed runs with, which names the socket (admin.socket)")
-	socket := fs.String("socket", "", "the control plane's socket (default "+config.Default().AdminSocket+")")
+	socket := fs.String("socket", "", "the control plane's socket (default "+config.QuickStart().AdminSocket+")")
 	if define != nil {
 		define(fs)
 	}
@@ -58,7 +58,7 @@ func adminFlags(name, operands string, argc int, define func(*flag.FlagSet)) (*a
 		}
 		path = cfg.AdminSocket
 	case path == "":
-		path = config.Default().AdminSocket
+		path = config.QuickStart().AdminSocket // that of weed without a configuration file
 	}
 	return admin.NewClient(path), fs.Args(), nil
 }

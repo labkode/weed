@@ -22,6 +22,16 @@ In another terminal:
 
 The file belongs to nobody, the account of anonymous requests. Without a configuration file, the same port also serves /metrics and /status (see [Monitoring](monitoring.html)). Stop weed with Ctrl-C.
 
+### On macOS, for development {#macos}
+
+macOS is only for developing weed, not for serving: there, weed accesses files in its own process, as the account that runs it, whatever identity a request has. It does not run as root, which would give every identity every file:
+
+    $ mkdir /tmp/demo && cd /tmp/demo
+    $ weed
+    level=WARN msg="development mode, as on macOS: weed serves files in its own process, as the account that runs it, for every identity; ..." account=alice
+
+Authentication, checksums, locks, third-party copies, bans, metrics, /status and the dashboard work as on Linux. Worker processes, Unix accounts, Landlock, cgroups, network rates and `unix_users.limits` do not, and /status shows `"development": "alice"`. The control plane's socket and the bans file, by default in /run/weed and /var/lib/weed, are in the user's cache directory (~/Library/Caches/weed on macOS), also when a configuration file sets them to those defaults. To try weed as on a server from a Mac, use the lab (`make lab`, Docker), and `make test-linux` for the tests of worker processes.
+
 ## A grid storage node {#storage-node}
 
 The rest of this page sets up weed.example.org, which exports /data on port 443. Alice authenticates with her certificate, as the account alice; the CMS production jobs with WLCG tokens from https://iam.example.org/, as the account cms001.

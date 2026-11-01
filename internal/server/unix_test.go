@@ -89,13 +89,3 @@ func TestTokenUserRules(t *testing.T) {
 		t.Errorf("GET with no matching rule: %d", code)
 	}
 }
-
-// weed accesses files as Unix accounts, from worker processes, which need Linux
-func TestServingNeedsLinux(t *testing.T) {
-	if runtime.GOOS == "linux" {
-		t.Skip("supported here")
-	}
-	if err := New(&config.Config{Directory: t.TempDir()}).Initialize(); err == nil || !strings.Contains(err.Error(), "Linux") {
-		t.Fatalf("on %s: %v", runtime.GOOS, err)
-	}
-}

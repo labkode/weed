@@ -112,11 +112,12 @@ Options are set in the configuration file. Without one, weed serves the current
 directory at http://127.0.0.1:9000/webdav/ to local clients, without authentication,
 as the Unix account nobody, and its metrics, status and dashboard at
 http://127.0.0.1:9000/metrics, /status and /dashboard/. weed serves on Linux,
-as root.</code></pre>
+as root. On macOS, it serves for development only: in its own process, as the
+account that runs it (not root), for every identity.</code></pre>
 <h2 id="weed">weed</h2>
 <pre><code># weed -config /etc/weed/weed.toml</code></pre>
 <p>Serves until SIGTERM or SIGINT, then stops accepting requests, gives those in progress 30 seconds to finish, and stops its workers. SIGHUP reopens the log file and reloads credentials (see <a href="reloading.html">Reloading</a>). Under systemd, weed tells systemd when it is ready, reloading and stopping, and its status line (see <a href="installation.html#systemd">Installation</a>).</p>
-<p>weed serves on Linux only, as root or with CAP_SETUID and CAP_SETGID. <em>weed worker</em> is how weed starts its worker processes: it is not for running by hand.</p>
+<p>weed serves on Linux, as root or with CAP_SETUID and CAP_SETGID. On macOS, it serves for development only (see <a href="getting-started.html#macos">Getting started</a>); on other systems, it does not serve. <em>weed worker</em> is how weed starts its worker processes: it is not for running by hand.</p>
 <table>
 <thead>
 <tr>

@@ -7,9 +7,10 @@ and proxies, WLCG/SciTokens bearer tokens (which browsers can get from an OIDC l
 page), macaroons or passwords.
 
 Every request accesses files as the Unix account that its credentials map to, from a
-worker process running as that account (see Unix accounts), so weed serves on Linux
-only, and runs as root. The other systems only get the helpers (weed utils, config,
-check, version).
+worker process running as that account (see Unix accounts), so weed serves on Linux,
+and runs as root. macOS is only for developing weed, which serves there as the
+account that runs it (see Development on macOS); other systems only get the helpers
+(weed utils, config, check, version).
 
     go build && sudo ./weed
 
@@ -786,6 +787,18 @@ Testing
                        machine gives (test/stress, Docker); ARGS="..." go to stress
     make check         gofmt and go vet; make fuzz, make cross, make vulncheck and
                        make bench run the rest; make help lists every target
+
+Development on macOS. macOS is only for developing weed, not for serving: there,
+./weed accesses files in its own process, as the account that runs it, whatever
+identity a request has, and does not run as root. Authentication, checksums, locks,
+third-party copies, bans, metrics, /status and the dashboard work as on Linux; worker
+processes, Unix accounts, Landlock, cgroups, network rates and unix_users.limits do
+not. weed says so as it starts, and /status shows "development" with the account. The
+control plane's socket and the bans file, by default in /run/weed and /var/lib/weed,
+are in the user's cache directory (~/Library/Caches/weed), also when a configuration
+sets them to those defaults, as weed config prints them. make test runs every test
+but those of worker processes and Unix accounts, which make test-linux runs in a
+container; make lab runs weed as on a server.
 
 The interoperability tests run weed in a container against real WLCG software:
 gfal2, davix and curl as clients; XRootD (with its macaroons, SciTokens and HTTP-TPC

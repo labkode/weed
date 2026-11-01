@@ -237,6 +237,9 @@ type status struct {
 	BannedUsers    int               `json:"banned_users"` // weed utils bans lists them
 	InProgress     statusInProgress  `json:"in_progress"`
 	Network        *statusNetwork    `json:"network,omitempty"` // if rates may apply
+	// Development is the account that every identity accesses files as, in the
+	// development mode of systems other than Linux
+	Development string `json:"development,omitempty"`
 }
 
 // statusNetwork is what the network rate limits allow, in bytes per second (0: no
@@ -288,6 +291,7 @@ func (s *Server) statusHandler(w http.ResponseWriter, r *http.Request) {
 		Workers:        []worker.Info{},
 		BannedUsers:    s.Bans.Len(),
 		InProgress:     s.inProgress.status(),
+		Development:    s.development,
 	}
 	for reason, p := range s.run.pending {
 		st.RestartPending[reason] = p.why

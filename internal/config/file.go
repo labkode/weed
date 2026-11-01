@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -54,7 +55,29 @@ func QuickStart() *Config {
 	c := Default()
 	c.Address = "127.0.0.1"
 	c.Anonymous = true
+	c.localize()
 	return c
+}
+
+// localize moves, on macOS, the files that are by default in /run/weed and
+// /var/lib/weed to the user's cache directory: weed runs there for development, as
+// the user, and macOS has no /run, and only root writes /var/lib. Also when they are
+// set to their defaults, as by weed config. Default stays Linux's, as weed config
+// prints it.
+func (c *Config) localize() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	d := Default()
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	for _, p := range []*string{&c.AdminSocket, &c.BansFile} {
+		if *p == d.AdminSocket || *p == d.BansFile {
+			*p = filepath.Join(dir, "weed", filepath.Base(*p))
+		}
+	}
 }
 
 // option is a key of the configuration file
@@ -220,6 +243,7 @@ func parse(path string, b []byte) (*Config, error) {
 			return nil, fmt.Errorf("%s holds secrets but every user can read it (chmod o-r %s)", path, path)
 		}
 	}
+	c.localize()
 	return c, nil
 }
 
@@ -318,7 +342,8 @@ Options are set in the configuration file. Without one, weed serves the current
 directory at http://127.0.0.1:9000/webdav/ to local clients, without authentication,
 as the Unix account nobody, and its metrics, status and dashboard at
 http://127.0.0.1:9000/metrics, /status and /dashboard/. weed serves on Linux,
-as root.
+as root. On macOS, it serves for development only: in its own process, as the
+account that runs it (not root), for every identity.
 `
 
 // ErrUsage is returned for a command line that the usage has been printed for
