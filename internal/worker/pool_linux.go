@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"debug/elf"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"net/http/httputil"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -24,6 +26,7 @@ import (
 
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/fsuser"
+	"github.com/labkode/weed/internal/landlock"
 	"github.com/labkode/weed/internal/limits"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
@@ -64,6 +67,9 @@ type Options struct {
 	// Refused, if set, says which accounts get no worker: their requests get 403
 	// (banned users, see Kill)
 	Refused func(account string) bool
+	// Landlock confines the workers to the exported directory, and to reading the
+	// system's files, with Landlock (see landlockRules), when the kernel has it
+	Landlock bool
 }
 
 // errRefused is the error of accounts that Options.Refused refuses
@@ -71,15 +77,25 @@ var errRefused = errors.New("the account is refused")
 
 // Pool runs the workers of the front process: one per account that is in use
 type Pool struct {
-	opts    Options
-	cgroups *cgroups // nil: workers stay in weed's cgroup
-	build   string   // of this executable, which workers must run (see version.Build)
+	opts     Options
+	cgroups  *cgroups        // nil: workers stay in weed's cgroup
+	build    string          // of this executable, which workers must run (see version.Build)
+	landlock []landlock.Rule // nil: workers are not confined with Landlock
 
-	mu      sync.Mutex
-	workers map[string]*worker // by account name: the workers taking new requests
-	all     map[*worker]bool   // every worker until it has exited, retired ones included
-	closed  bool
-	done    chan struct{} // closed by Close
+	mu           sync.Mutex
+	workers      map[string]*worker // by account name: the workers taking new requests
+	all          map[*worker]bool   // every worker until it has exited, retired ones included
+	confined     *confinement       // with landlock, once the exported directory has answered
+	unconfinable error              // why workers cannot be confined with landlock, if they cannot
+	closed       bool
+	done         chan struct{} // closed by Close
+}
+
+// confinement is the ruleset of Landlock that workers start with, of the exported
+// directory as it was when it was made
+type confinement struct {
+	dir   fileID
+	rules *landlock.Ruleset
 }
 
 // worker is one worker process, as seen from the front process
@@ -91,6 +107,7 @@ type worker struct {
 
 	pid       int
 	started   time.Time
+	dir       fileID // the exported directory when it started, with Landlock
 	cmd       *exec.Cmd
 	ctl       *net.UnixConn
 	transport *http.Transport
@@ -136,8 +153,256 @@ func New(opts Options) (*Pool, error) {
 		}
 		p.cgroups = cg
 	}
+	if opts.Landlock {
+		if abi := landlock.ABI(); abi < landlock.MinABI {
+			slog.Warn("Landlock is not available (Linux 5.19 or later, with landlock in lsm=): workers are confined by Unix permissions only",
+				"landlock_abi", abi)
+		} else {
+			p.landlock = landlockRules(&opts.Config)
+			var desc []string
+			for _, r := range p.landlock {
+				desc = append(desc, [...]string{landlock.Read: "read ", landlock.Exec: "execute ", landlock.Write: "write "}[r.Access]+r.Path)
+			}
+			slog.Info("workers are confined with Landlock", "landlock_abi", abi, "rules", desc)
+			first := make(chan struct{})
+			go p.watchDir(first)
+			select {
+			case <-first:
+			case <-time.After(10 * time.Second):
+				slog.Warn("the exported directory does not answer: workers, confined to it with Landlock, start once it does",
+					"dir", opts.Config.Directory)
+			}
+		}
+	}
 	go p.reap()
 	return p, nil
+}
+
+// landlockRules is what workers may reach with Landlock: the exported directory
+// (first, see confine), to
+// do all that WebDAV does (not to execute, nor to make links or special files); to
+// read, the system's files: /etc (CA certificates, DNS, time zones), /proc (each
+// worker checks its threads), /sys/fs/cgroup (where the Go runtime reads its
+// limits), and where the files that /etc links to, tpc.ca_path, SSL_CERT_FILE and
+// SSL_CERT_DIR are, and /usr and /lib (time zones, libraries of builds with cgo); to
+// execute, what the worker execs as it starts: weed itself, and its dynamic loader if
+// it is built with cgo; and /dev/null.
+func landlockRules(cfg *config.Config) []landlock.Rule {
+	rules := []landlock.Rule{
+		{Path: cfg.Directory, Access: landlock.Write},
+		{Path: "/etc", Access: landlock.Read},
+		{Path: "/proc", Access: landlock.Read},
+		{Path: "/sys/fs/cgroup", Access: landlock.Read},
+		{Path: "/usr", Access: landlock.Read},
+		{Path: "/lib", Access: landlock.Read},
+		{Path: "/lib64", Access: landlock.Read},
+		{Path: "/proc/self/exe", Access: landlock.Exec},
+		{Path: "/dev/null", Access: landlock.Write},
+	}
+	if interp := interpreter(); interp != "" {
+		rules = append(rules, landlock.Rule{Path: interp, Access: landlock.Exec})
+	}
+	// Directories rather than files, which are replaced when they are updated
+	paths := []string{"/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/localtime", cfg.TPCCAPath, os.Getenv("SSL_CERT_FILE")}
+	paths = append(paths, filepath.SplitList(os.Getenv("SSL_CERT_DIR"))...)
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			p = real
+		}
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			p = filepath.Dir(p)
+		}
+		if !slices.ContainsFunc(rules, func(r landlock.Rule) bool { return inside(p, r.Path) }) {
+			rules = append(rules, landlock.Rule{Path: p, Access: landlock.Read})
+		}
+	}
+	return rules
+}
+
+// interpreter is the dynamic loader that weed's executable names, "" if it has none
+// (built without cgo)
+func interpreter() string {
+	f, err := elf.Open("/proc/self/exe")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	for _, prog := range f.Progs {
+		if prog.Type == elf.PT_INTERP {
+			b, err := io.ReadAll(prog.Open())
+			if err != nil {
+				return ""
+			}
+			return strings.TrimRight(string(b), "\x00")
+		}
+	}
+	return ""
+}
+
+// inside says whether p is dir or below it
+func inside(p, dir string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
+}
+
+// fileID identifies a file, and the mount it is on: a storage mounted again has the
+// same device and inode numbers, but is another inode for Landlock
+type fileID struct{ dev, ino, mnt uint64 }
+
+// identify identifies the file at path, relative to the directory dirfd, or dirfd
+// itself if path is "". With what the kernel has cached: a storage that does not
+// answer is not asked.
+func identify(dirfd int, path string) (fileID, bool) {
+	flags := unix.AT_STATX_DONT_SYNC
+	if path == "" {
+		flags |= unix.AT_EMPTY_PATH
+	}
+	var st unix.Statx_t
+	// The unique ID (Linux 6.8) is never reused; before, the kernel gives the other
+	if err := unix.Statx(dirfd, path, flags, unix.STATX_INO|unix.STATX_MNT_ID|unix.STATX_MNT_ID_UNIQUE, &st); err != nil {
+		return fileID{}, false
+	}
+	return fileID{uint64(st.Dev_major)<<32 | uint64(st.Dev_minor), st.Ino, st.Mnt_id}, true
+}
+
+// dirCheckInterval is how often watchDir looks at the exported directory (a variable
+// for tests)
+var dirCheckInterval = 5 * time.Second
+
+// watchDir makes the ruleset that workers start with, and makes it again whenever the
+// exported directory is another than it was, then replacing the workers that started
+// before: the rules of Landlock name the directories themselves, and a storage
+// mounted again over the exported directory is one that they cannot reach. It alone
+// touches the exported directory, so that only it waits if the storage does not
+// answer, not the requests that start workers. first is closed after the first look.
+func (p *Pool) watchDir(first chan<- struct{}) {
+	t := time.NewTicker(dirCheckInterval)
+	defer t.Stop()
+	for {
+		p.checkDir()
+		if first != nil {
+			close(first)
+			first = nil
+		}
+		select {
+		case <-t.C:
+		case <-p.done:
+			p.mu.Lock()
+			if p.confined != nil {
+				p.confined.rules.Close()
+				p.confined = nil
+			}
+			p.mu.Unlock()
+			return
+		}
+	}
+}
+
+func (p *Pool) checkDir() {
+	dir := p.opts.Config.Directory
+	id, ok := identify(unix.AT_FDCWD, dir)
+	p.mu.Lock()
+	c := p.confined
+	p.mu.Unlock()
+	if c == nil || ok && id != c.dir {
+		next, err := p.confine()
+		p.mu.Lock()
+		prev := p.unconfinable
+		p.unconfinable = err
+		p.mu.Unlock()
+		if err != nil {
+			if prev == nil || prev.Error() != err.Error() {
+				slog.Error("cannot confine workers with Landlock: they do not start", "error", err)
+			}
+			return
+		}
+		p.mu.Lock()
+		p.confined = next
+		p.mu.Unlock()
+		if c != nil {
+			c.rules.Close() // workers that start with it have a copy
+		}
+	}
+	// Also those that started with the previous ruleset as this one was being made
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, wk := range p.workers {
+		select {
+		case <-wk.ready:
+		default:
+			continue // starting
+		}
+		if wk.err == nil && wk.dir != p.confined.dir {
+			slog.Info("the exported directory has changed since the worker started (mounted again?): replacing the worker",
+				"worker", wk, "dir", dir)
+			p.retireLocked(wk)
+		}
+	}
+}
+
+// confine makes the ruleset of workers, with the exported directory as it now is (or
+// without it, if it cannot be opened)
+func (p *Pool) confine() (*confinement, error) {
+	c := &confinement{}
+	rules := slices.Clone(p.landlock)
+	fd, err := unix.Open(rules[0].Path, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		rules = rules[1:]
+	} else {
+		f := os.NewFile(uintptr(fd), rules[0].Path)
+		defer f.Close()
+		c.dir, _ = identify(fd, "")
+		rules[0].File = f
+	}
+	if c.rules, err = landlock.New(rules); err != nil {
+		return nil, err
+	}
+	if err := reachable(c.rules, rules[0].Path, "/proc/self/exe"); err != nil {
+		c.rules.Close()
+		return nil, err
+	}
+	return c, nil
+}
+
+// reachable checks that what this process can open, of paths, a thread confined with
+// rs can open too. Landlock cannot follow every file system: on some, such as Docker
+// Desktop's mounts of the host, it refuses every access, whatever the rules.
+func reachable(rs *landlock.Ruleset, paths ...string) error {
+	var open []string
+	for _, p := range paths {
+		if f, err := os.Open(p); err == nil {
+			f.Close()
+			open = append(open, p)
+		}
+	}
+	errc := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread() // never unlocked: the thread ends with this goroutine
+		if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+			errc <- fmt.Errorf("cannot set no_new_privs: %w", err)
+			return
+		}
+		if err := rs.Restrict(); err != nil {
+			errc <- err
+			return
+		}
+		for _, p := range open {
+			f, err := os.Open(p)
+			if err != nil {
+				if exe, err := os.Readlink(p); err == nil && p == "/proc/self/exe" {
+					p = "weed's executable, " + exe + ","
+				}
+				errc <- fmt.Errorf("confined with Landlock, workers could not open %s which weed opens without: it is on a file system that Landlock cannot follow (such as Docker Desktop's mounts of the host): move it, or set unix_users.landlock = false", p)
+				return
+			}
+			f.Close()
+		}
+		errc <- nil
+	}()
+	return <-errc
 }
 
 // Workers describes the worker processes that have started and not exited, by account
@@ -510,7 +775,8 @@ func (p *Pool) start(wk *worker) {
 
 // spawn starts the process of a worker and waits until it reports that it is ready
 func (p *Pool) spawn(wk *worker) (err error) {
-	settings, err := json.Marshal(Settings{User: wk.user, Config: p.opts.Config, Cgroup: p.cgroups != nil, Pay: p.opts.Shaper != nil})
+	settings, err := json.Marshal(Settings{User: wk.user, Config: p.opts.Config, Cgroup: p.cgroups != nil, Pay: p.opts.Shaper != nil,
+		Landlock: p.landlock != nil})
 	if err != nil {
 		return err
 	}
@@ -538,6 +804,26 @@ func (p *Pool) spawn(wk *worker) (err error) {
 			}
 		}()
 		extra = append(extra, payChild) // file descriptor 4
+	}
+	var rules *landlock.Ruleset
+	if p.landlock != nil {
+		p.mu.Lock()
+		c, why := p.confined, p.unconfinable
+		if c != nil {
+			wk.dir = c.dir
+			rules, err = c.rules.Dup()
+		}
+		p.mu.Unlock()
+		if c == nil && why != nil {
+			return fmt.Errorf("cannot confine the worker with Landlock: %w", why)
+		}
+		if c == nil {
+			return errors.New("the exported directory has not answered yet, and workers are confined to it with Landlock")
+		}
+		if err != nil {
+			return fmt.Errorf("cannot confine the worker with Landlock: %w", err)
+		}
+		defer rules.Close()
 	}
 	logs, logw, err := os.Pipe()
 	if err != nil {
@@ -576,7 +862,7 @@ func (p *Pool) spawn(wk *worker) (err error) {
 		cmd.SysProcAttr.UseCgroupFD = true
 		cmd.SysProcAttr.CgroupFD = fd
 	}
-	if err := startConfined(cmd); err != nil {
+	if err := startConfined(cmd, rules); err != nil {
 		logs.Close()
 		if errors.Is(err, unix.EPERM) {
 			err = fmt.Errorf("%w (weed must run as root, or with CAP_SETUID and CAP_SETGID)", err)
@@ -750,9 +1036,10 @@ func socketPair(typ int) (*net.UnixConn, *os.File, error) {
 // inherit: capabilities other than those needed to switch to the account (which the
 // kernel drops at execve), ambient and inheritable capabilities, and the ability to
 // gain privileges by executing files (no_new_privs, which also covers file
-// capabilities on the weed binary). These are attributes of threads, so the thread is
-// discarded afterwards rather than returned to the Go scheduler.
-func startConfined(cmd *exec.Cmd) error {
+// capabilities on the weed binary); and, with rules, confines itself with Landlock.
+// These are attributes of threads, so the thread is discarded afterwards rather than
+// returned to the Go scheduler.
+func startConfined(cmd *exec.Cmd, rules *landlock.Ruleset) error {
 	errc := make(chan error, 1)
 	go func() {
 		runtime.LockOSThread() // never unlocked: the thread ends with this goroutine
@@ -773,6 +1060,11 @@ func startConfined(cmd *exec.Cmd) error {
 			}
 			if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 				return fmt.Errorf("cannot set no_new_privs: %w", err)
+			}
+			if rules != nil {
+				if err := rules.Restrict(); err != nil {
+					return fmt.Errorf("cannot confine the worker with Landlock: %w", err)
+				}
 			}
 			return cmd.Start()
 		}()

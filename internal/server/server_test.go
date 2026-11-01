@@ -98,6 +98,7 @@ func startNode(t testing.TB, inProcess bool, mod func(cfg *config.Config, baseUR
 		TPCMaxTransfers:     4,
 		TPCMarkerInterval:   20 * time.Millisecond,
 		WorkerMaxRequests:   100,
+		WorkerLandlock:      true, // as weed's default: every test of workers runs them confined
 	}
 	ts := httptest.NewUnstartedServer(nil)
 	scheme := "http"

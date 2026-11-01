@@ -78,6 +78,23 @@ On stop, weed stops taking connections, and gives the requests in progress 30 se
 
 Add `Delegate=yes` to \[Service\] if you run each worker in a cgroup of its own (`unix_users.cgroups`, see [Unix accounts](unix-accounts.html#cgroups)).
 
+### Sandboxing {#sandboxing}
+
+systemd can confine weed and its workers together, beyond what weed does for workers (see [Unix accounts](unix-accounts.html#confinement)), so also the process that terminates TLS and authenticates requests, as root. For instance, in \[Service\]:
+
+    # All read-only, but /dev, /proc, /sys, and RuntimeDirectory= and StateDirectory=
+    ProtectSystem=strict
+    # /run/weed for admin.socket, /var/lib/weed for admin.bans
+    RuntimeDirectory=weed
+    StateDirectory=weed
+    # The exported directory, and that of server.log_file
+    ReadWritePaths=/data
+    # Unless the exported directory is below /home
+    ProtectHome=yes
+    PrivateTmp=yes
+
+weed's tests do not cover these: try them with *weed check* and a few requests of each kind, uploads and third-party copies included.
+
 ## Running without root {#without-root}
 
 weed needs root only to start workers as other accounts. It can run as an account of its own with the CAP_SETUID and CAP_SETGID capabilities, and CAP_NET_BIND_SERVICE for port 443. Its workers get none of them. Add to \[Service\]:

@@ -21,6 +21,7 @@ type Options struct {
 	CgroupLimits func(u *fsuser.User) []string
 	Shaper       *limits.Shaper
 	Refused      func(account string) bool
+	Landlock     bool
 }
 
 // Pool is only supported on Linux

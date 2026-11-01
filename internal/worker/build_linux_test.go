@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"log"
-	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -14,7 +13,7 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "worker" {
 		c, err := Attach()
 		if err == nil {
-			err = c.Serve(http.NotFoundHandler(), func() {})
+			err = c.Serve(anyFile, func() {})
 		}
 		if err != nil {
 			log.Fatal(err)

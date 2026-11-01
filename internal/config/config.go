@@ -35,6 +35,8 @@ type Config struct {
 	WorkerMaxRequests int
 	// WorkerCgroups runs the workers of each account in a cgroup of their own
 	WorkerCgroups bool
+	// WorkerLandlock confines the workers to the exported directory with Landlock
+	WorkerLandlock bool
 	// WorkerCgroupLimits are written to the cgroup of every account (file=value),
 	// unless LimitsFile says otherwise
 	WorkerCgroupLimits []string

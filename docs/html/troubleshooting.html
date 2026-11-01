@@ -130,6 +130,10 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <td>Run weed as root, or give it the capabilities (see <a href="installation.html#without-root">Installation</a>).</td>
 </tr>
 <tr>
+<td><code>cannot confine the worker with Landlock: confined with Landlock, workers could not open /data which weed opens without: it is on a file system that Landlock cannot follow</code></td>
+<td>Landlock refuses every access on some file systems, whatever its rules, such as Docker Desktop's mounts of the host: put the exported directory and weed's binary on another, or set <code>unix_users.landlock = false</code> (see <a href="unix-accounts.html#confinement">Unix accounts</a>).</td>
+</tr>
+<tr>
 <td><code>cannot read the banned users (admin.bans): open /var/lib/weed/bans.json: permission denied</code></td>
 <td>weed's user must be able to read and write <code>admin.bans</code> and its directory.</td>
 </tr>
@@ -270,7 +274,7 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <h2 id="hung-storage">Storage that does not answer</h2>
 <p>When the filesystem of the exported directory stops answering, a hung NFS server or a failing disk, the requests that need it wait in the kernel. Each waits with a thread of its worker, which nothing interrupts, not even SIGKILL, until the storage answers, also once its client has given up. Meanwhile:</p>
 <ul>
-<li><p>The worker's other requests go on, as long as they need nothing from the storage (e.g. files the kernel has cached), and so do the workers of other accounts, on other storage. weed itself never touches the files, and keeps answering.</p></li>
+<li><p>The worker's other requests go on, as long as they need nothing from the storage (e.g. files the kernel has cached), and so do the workers of other accounts, on other storage. weed itself never touches the files, and keeps answering: it looks at the exported directory for Landlock (see <a href="unix-accounts.html#confinement">Unix accounts</a>) from one goroutine, with what the kernel has cached, and if it does not answer as weed starts, the requests that would start a worker get 503 until it does.</p></li>
 <li><p>/healthz answers 503 "storage not responding" after 5 seconds. It looks at the directory once at a time, however often it is called.</p></li>
 <li><p>/status shows each worker's stuck threads as <code>blocked_threads</code>, also once their clients have gone and <code>requests</code> has dropped to 0; <code>weed_worker_blocked_threads</code> counts them all. Under load, threads are in that state for moments: alert on a count that stays.</p></li>
 <li><p>Stuck requests count towards <code>unix_users.max_requests</code> until they end: once they reach it, the account gets 503, and its worker has no more stuck threads than that.</p></li>

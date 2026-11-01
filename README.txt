@@ -401,12 +401,46 @@ Operations the filesystem refuses get 403. As with local tools:
 * WebDAV locks are kept by each worker: they only hold against requests of the same
   account, and are lost when its worker stops.
 
-Symbolic links. Workers open every name beneath the exported directory (Go's
-os.Root), and follow a link only when it is relative and stays inside. A link that
-leads outside, and every absolute link (even one to a file inside), gets 403, is left
-out of listings, and is logged ("refused a name that leads outside the exported
-directory"). Otherwise, a user who can make links there (over ssh, NFS) could have
-weed read whatever the account can, such as /etc.
+What workers reach. Beyond the permissions of its account, two things keep a worker
+to the exported directory:
+* Symbolic links: workers open every name beneath the exported directory (Go's
+  os.Root), and follow a link only when it is relative and stays inside. A link
+  that leads outside, and every absolute link (even one to a file inside), gets 403,
+  is left out of listings, and is logged ("refused a name that leads outside the
+  exported directory"). Otherwise, a user who can make links there (over ssh, NFS)
+  could have weed read whatever the account can, such as /etc.
+* Landlock (unix_users.landlock, default true; Linux 5.19 or later, with landlock
+  among the security modules, lsm=): weed confines each worker as it starts it.
+  Whatever a bug in the worker tries, it may write beneath the exported directory
+  alone, and read only beneath it and /etc, /usr, /lib, /proc and /sys/fs/cgroup (and
+  tpc.ca_path, SSL_CERT_FILE and SSL_CERT_DIR), whatever the permissions: not /home,
+  /tmp, nor files of other services. It may execute weed alone (and, for a build with
+  cgo, its dynamic loader, which can run other programs, confined the same); it
+  cannot make symbolic links, devices, sockets or FIFOs; from Linux 6.12, nor signal
+  processes or connect to abstract Unix sockets outside its confinement. weed logs
+  the rules as it starts ("workers are confined with Landlock"), or warns that
+  Landlock is not there, and workers are then confined by permissions only. Each
+  worker checks that it is confined, and refuses to serve otherwise. On some file
+  systems, such as Docker Desktop's mounts of the host, Landlock refuses every access
+  whatever its rules: weed then does not start, and says so, if the exported
+  directory or weed's binary is on one. Landlock does not cover stat, chmod, chown,
+  utime and extended attributes: on files outside the exported directory, permissions
+  alone keep those. Its rules name the exported directory as it was when the worker
+  started: weed looks at it every 5 seconds, and replaces the workers that started
+  before it changed (a storage mounted again over it).
+Two more are not part of weed:
+* A mount namespace per worker, holding only the exported directory and the system
+  files a worker needs (pivot_root, as containers do): what is outside does not
+  exist for it, not even for stat. weed would need CAP_SYS_ADMIN, and storage
+  mounted after a worker started (autofs, NFS remounts) to propagate into it.
+* systemd's sandboxing confines weed and its workers together, so also the process
+  that terminates TLS and authenticates requests, as root: for instance
+  ProtectSystem=strict (all read-only, but /dev, /proc, /sys and the directories of
+  RuntimeDirectory=weed and StateDirectory=weed, which admin.socket and admin.bans
+  need), ReadWritePaths=/data (the exported directory; and that of server.log_file),
+  ProtectHome=yes (unless the exported directory is below /home), PrivateTmp=yes.
+  It does not separate the accounts from each other. weed's tests do not cover it:
+  try it with weed check and a few requests of each kind.
 
 cgroups. With unix_users.cgroups, the workers of each account run in a cgroup of
 their own below weed's, which must be delegated to weed (systemd's Delegate=yes;
@@ -459,13 +493,15 @@ all exited (weed says so: set it to its unlimited value, e.g. memory.max=max). /
 shows the rates and weight of each account with workers, and how many of its
 transfers a rate holds back now.
 
-Storage that does not answer. A request whose file system does not answer (a hung
-NFS server, a failing disk) waits in the kernel with one of its worker's threads,
-which nothing interrupts, not even SIGKILL, and which the request keeps after its
-client has gone. The worker's other requests go on, and so do other accounts'
-workers; weed itself never touches the files, but /healthz, which makes one stat of
-the exported directory at a time. So that stuck threads cannot pile up until the Go
-runtime stops the worker (at 10000), a worker counts its requests until it has
+Storage that does not answer. A request whose file system does not answer (a hung NFS
+server, a failing disk) waits in the kernel with one of its worker's threads, which
+nothing interrupts, not even SIGKILL, and which the request keeps after its client
+has gone. The worker's other requests go on, and so do other accounts' workers; weed
+itself never touches the files, but /healthz, which makes one stat of the exported
+directory at a time, and the look of Landlock at it every 5 seconds (from one
+goroutine, with what the kernel has cached): until it has first answered, requests
+that would start a worker get 503. So that stuck threads cannot pile up until the
+Go runtime stops the worker (at 10000), a worker counts its requests until it has
 finished them, and refuses those beyond unix_users.max_requests with 503; an idle
 worker with stuck threads is kept rather than replaced by a new one, which could get
 stuck too. /status (blocked_threads of each worker) and weed_worker_blocked_threads

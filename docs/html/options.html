@@ -437,6 +437,11 @@
 <td>At most this many requests in progress in each worker process, counted until the worker has finished them, also once their clients have gone; beyond, requests of its account get 503. A request whose storage does not answer blocks a thread of the worker until it does.</td>
 </tr>
 <tr>
+<td><span id="unix_users.landlock"><code>landlock</code></span></td>
+<td><code>true</code></td>
+<td>Confine the worker processes with Landlock (Linux 5.19 or later, with landlock in lsm=): they may write below dir alone, and read only below it and the system's files (/etc, /usr, /proc, /sys/fs/cgroup) and tpc.ca_path, whatever the permissions. Without Landlock in the kernel, weed says so as it starts, and workers are confined by Unix permissions only.</td>
+</tr>
+<tr>
 <td><span id="unix_users.cgroups"><code>cgroups</code></span></td>
 <td><code>false</code></td>
 <td>Run the worker processes of each account in a cgroup of their own, below weed's, which must be delegated to weed (systemd: Delegate=yes); cgroup v2.</td>

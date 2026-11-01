@@ -19,8 +19,10 @@ trap 'rm -rf "$build"' EXIT
 	GOOS=linux GOARCH=$goarch CGO_ENABLED=0 go build -o "$build/issuer" ./test/interop/issuer)
 
 docker build -q -t weed-interop "$here" >/dev/null
+# Copied into the container: Landlock, which confines weed's workers, cannot follow
+# the mounts of the host of Docker Desktop (macOS), which would keep them from
+# executing weed
 docker run --rm \
-	-v "$build/weed:/usr/local/bin/weed:ro" \
-	-v "$build/issuer:/usr/local/bin/issuer:ro" \
+	-v "$build:/build:ro" \
 	-v "$here/run.sh:/run.sh:ro" \
-	weed-interop bash /run.sh
+	weed-interop bash -c 'install /build/weed /build/issuer /usr/local/bin/ && exec bash /run.sh'

@@ -42,6 +42,7 @@ func (s *Server) startWorkers() error {
 		Cgroups:      s.cgroups,
 		CgroupLimits: s.cgroupLimits,
 		Shaper:       s.shaper,
+		Landlock:     s.Config.WorkerLandlock,
 		Refused: func(account string) bool {
 			_, banned := s.Bans.Get(account)
 			return banned

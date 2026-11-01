@@ -19,6 +19,7 @@ Ask weed first:
 | `/etc/weed/weed.toml holds secrets but every user can read it (chmod o-r /etc/weed/weed.toml)` | `chmod 600 /etc/weed/weed.toml`. |
 | `failed to load the grid-mapfile: open /etc/grid-security/grid-mapfile: no such file or directory` | X.509 needs a grid-mapfile: create it, or set `x509.gridmap`. |
 | `cannot start a worker for nobody: fork/exec /proc/self/exe: operation not permitted (weed must run as root, or with CAP_SETUID and CAP_SETGID)` | Run weed as root, or give it the capabilities (see [Installation](installation.html#without-root)). |
+| `cannot confine the worker with Landlock: confined with Landlock, workers could not open /data which weed opens without: it is on a file system that Landlock cannot follow` | Landlock refuses every access on some file systems, whatever its rules, such as Docker Desktop's mounts of the host: put the exported directory and weed's binary on another, or set `unix_users.landlock = false` (see [Unix accounts](unix-accounts.html#confinement)). |
 | `cannot read the banned users (admin.bans): open /var/lib/weed/bans.json: permission denied` | weed's user must be able to read and write `admin.bans` and its directory. |
 | `control plane: /run/weed/admin.sock is in use, by another weed?` | Another weed runs with the same `admin.socket`. Stop it, or give each weed its own. |
 | `listen tcp :443: bind: address already in use` | Something else listens on the port: `ss -ltnp 'sport = :443'`. |
@@ -79,7 +80,7 @@ A network rate may hold them back: the account's own, or the total, which accoun
 
 When the filesystem of the exported directory stops answering, a hung NFS server or a failing disk, the requests that need it wait in the kernel. Each waits with a thread of its worker, which nothing interrupts, not even SIGKILL, until the storage answers, also once its client has given up. Meanwhile:
 
-- The worker's other requests go on, as long as they need nothing from the storage (e.g. files the kernel has cached), and so do the workers of other accounts, on other storage. weed itself never touches the files, and keeps answering.
+- The worker's other requests go on, as long as they need nothing from the storage (e.g. files the kernel has cached), and so do the workers of other accounts, on other storage. weed itself never touches the files, and keeps answering: it looks at the exported directory for Landlock (see [Unix accounts](unix-accounts.html#confinement)) from one goroutine, with what the kernel has cached, and if it does not answer as weed starts, the requests that would start a worker get 503 until it does.
 - /healthz answers 503 "storage not responding" after 5 seconds. It looks at the directory once at a time, however often it is called.
 - /status shows each worker's stuck threads as `blocked_threads`, also once their clients have gone and `requests` has dropped to 0; `weed_worker_blocked_threads` counts them all. Under load, threads are in that state for moments: alert on a count that stays.
 - Stuck requests count towards `unix_users.max_requests` until they end: once they reach it, the account gets 503, and its worker has no more stuck threads than that.

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/limits"
@@ -29,6 +30,17 @@ import (
 
 // shutdownGrace is how long requests in progress get when a worker is terminated
 const shutdownGrace = 30 * time.Second
+
+// Workers are started as /proc/self/exe, which would make their name "exe". It is
+// that of the main thread, on which init functions run (and Landlock may keep them
+// from writing /proc/self/comm).
+func init() {
+	if len(os.Args) > 1 && os.Args[1] == "worker" {
+		if name, err := unix.BytePtrFromString("weed"); err == nil {
+			unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(name)), 0, 0, 0)
+		}
+	}
+}
 
 // Child is a worker process, as seen from itself
 type Child struct {
@@ -42,9 +54,6 @@ type Child struct {
 // descriptor 3, reads the settings and checks that every thread of the process runs
 // as the account and with no privileges
 func Attach() (*Child, error) {
-	// Workers are started as /proc/self/exe, which would make their name "exe"
-	os.WriteFile("/proc/self/comm", []byte("weed"), 0)
-
 	f := os.NewFile(3, "control")
 	c, err := net.FileConn(f)
 	f.Close()
@@ -67,6 +76,13 @@ func Attach() (*Child, error) {
 	}
 	if err := checkConfinement(&child.Settings.User); err != nil {
 		return nil, child.Fail(fmt.Errorf("refusing to serve: %w", err))
+	}
+	// Confined with Landlock, it cannot list / (unless that is what it exports)
+	if child.Settings.Landlock && child.Settings.Config.Directory != "/" {
+		if f, err := os.Open("/"); err == nil {
+			f.Close()
+			return nil, child.Fail(errors.New("refusing to serve: started to be confined with Landlock, and is not"))
+		}
 	}
 	// Workers are started from /proc/self/exe: the front process's binary, unless it
 	// was overwritten in place, which the front process detects from the build

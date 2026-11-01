@@ -39,9 +39,23 @@ Workers log through weed: their records carry worker.user and worker.pid, and th
 
 Workers are started from /proc/self/exe: the binary that weed itself runs, even after an upgrade has replaced it on disk. A new version only runs once weed restarts, for weed and its workers alike. Each worker also reports its Go build ID, and weed refuses workers whose build is not its own, which happens if the binary is overwritten in place. See [Upgrading](upgrading.html).
 
-## Symbolic links {#symlinks}
+## What workers reach {#confinement}
 
-Workers open every name beneath the exported directory, and follow a link only when it is relative and stays inside. A link that leads outside, and every absolute link (even one to a file inside), gets 403, is left out of listings, and is logged as *refused a name that leads outside the exported directory*. Otherwise, a user who can make links there, over ssh or NFS, could have weed read whatever the account can, such as /etc.
+Beyond the permissions of its account, two things keep a worker to the exported directory.
+
+Symbolic links
+:   Workers open every name beneath the exported directory, and follow a link only when it is relative and stays inside. A link that leads outside, and every absolute link (even one to a file inside), gets 403, is left out of listings, and is logged as *refused a name that leads outside the exported directory*. Otherwise, a user who can make links there, over ssh or NFS, could have weed read whatever the account can, such as /etc.
+
+Landlock
+:   With `unix_users.landlock` (the default) and Linux 5.19 or later, with landlock among the security modules (lsm=), weed confines each worker with Landlock as it starts it. Whatever a bug in the worker tries, it may write beneath the exported directory alone, and read only beneath it and /etc, /usr, /lib, /proc and /sys/fs/cgroup (and `tpc.ca_path`, SSL_CERT_FILE and SSL_CERT_DIR), whatever the permissions. It may execute weed alone (and, for a build with cgo, its dynamic loader, which can run other programs, confined the same); it cannot make symbolic links, devices, sockets or FIFOs; from Linux 6.12, nor signal processes or connect to abstract Unix sockets outside its confinement. Each worker checks that it is confined, and refuses to serve otherwise. Landlock does not cover stat, chmod, chown, utime and extended attributes: on files outside the exported directory, permissions alone keep those.
+
+weed logs the rules as it starts, or warns that the kernel has no Landlock, and workers are then confined by permissions only:
+
+    INFO workers are confined with Landlock landlock_abi=6 rules="[write /data read /etc read /proc read /sys/fs/cgroup read /usr read /lib read /lib64 execute /proc/self/exe write /dev/null]"
+
+The rules name the exported directory as it was when the worker started. weed looks at it every 5 seconds, and replaces the workers that started before it changed, such as when a storage is mounted again over it.
+
+Two more would confine workers further, and are not part of weed. A mount namespace per worker, holding only the exported directory and the system files a worker needs (pivot_root, as containers do), would hide what is outside even from stat; weed would need CAP_SYS_ADMIN, and storage mounted after a worker started (autofs, NFS remounts) to propagate into it. systemd's sandboxing confines weed and its workers together, so also the process that terminates TLS and authenticates requests (see [Installation](installation.html#sandboxing)); it does not separate the accounts from each other.
 
 ## Permissions
 
