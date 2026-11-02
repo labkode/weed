@@ -8,9 +8,12 @@ page), macaroons or passwords.
 
 Every request accesses files as the Unix account that its credentials map to, from a
 worker process running as that account (see Unix accounts), so weed serves on Linux,
-and runs as root. macOS is only for developing weed, which serves there as the
-account that runs it (see Development on macOS); other systems only get the helpers
-(weed utils, config, check, version).
+and runs as root. It targets AlmaLinux 10 (EL10), which its tests run on. macOS is
+only for developing weed, which serves there as the account that runs it (see
+Development on macOS); other systems only get the helpers (weed utils, config,
+check, version). weed does not need systemd: any supervisor runs it, SIGHUP reloads
+it, SIGTERM stops it, and it exits with status 75 to be started again (see the
+guide's Installation, Without systemd).
 
     go build && sudo ./weed
 
@@ -60,8 +63,8 @@ A TOML file, in which every option is optional, for example:
     enabled = true
     ca_path = "/etc/grid-security/certificates"
 
-The sections are server, tls, x509, basic, oidc, macaroons, tokens, tpc, unix_users,
-network and admin; below, section.key names an option (e.g. tpc.max_transfers). Unknown
+The sections are server, tls, x509, basic, oidc, macaroons, tokens, tpc, unix_users
+and admin; below, section.key names an option (e.g. tpc.max_transfers). Unknown
 sections and keys are errors, so a misspelt option stops weed instead of being
 ignored. Durations are strings such as "90s", "10m" or "24h". weed refuses to read a
 file that holds secrets (macaroons.secret_key, oidc.client_secret) if every user can
@@ -410,38 +413,61 @@ to the exported directory:
   is left out of listings, and is logged ("refused a name that leads outside the
   exported directory"). Otherwise, a user who can make links there (over ssh, NFS)
   could have weed read whatever the account can, such as /etc.
-* Landlock (unix_users.landlock, default true; Linux 5.19 or later, with landlock
-  among the security modules, lsm=): weed confines each worker as it starts it.
-  Whatever a bug in the worker tries, it may write beneath the exported directory
+* Landlock (Linux 5.19 or later, with landlock among the security modules, lsm=):
+  weed confines itself and each worker as it starts it, and does not start without
+  it. Whatever a bug in a worker tries, it may write beneath the exported directory
   alone, and read only beneath it and /etc, /usr, /lib, /proc and /sys/fs/cgroup (and
   tpc.ca_path, SSL_CERT_FILE and SSL_CERT_DIR), whatever the permissions: not /home,
   /tmp, nor files of other services. It may execute weed alone (and, for a build with
-  cgo, its dynamic loader, which can run other programs, confined the same); it
-  cannot make symbolic links, devices, sockets or FIFOs; from Linux 6.12, nor signal
-  processes or connect to abstract Unix sockets outside its confinement. weed logs
-  the rules as it starts ("workers are confined with Landlock"), or warns that
-  Landlock is not there, and workers are then confined by permissions only. Each
-  worker checks that it is confined, and refuses to serve otherwise. On some file
-  systems, such as Docker Desktop's mounts of the host, Landlock refuses every access
-  whatever its rules: weed then does not start, and says so, if the exported
-  directory or weed's binary is on one. Landlock does not cover stat, chmod, chown,
-  utime and extended attributes: on files outside the exported directory, permissions
-  alone keep those. Its rules name the exported directory as it was when the worker
-  started: weed looks at it every 5 seconds, and replaces the workers that started
-  before it changed (a storage mounted again over it).
+  cgo, its dynamic loader, which can run other programs, confined the same); it cannot
+  make symbolic links, devices, sockets or FIFOs; from Linux 6.7, it binds no TCP port,
+  and connects to none unless tpc.enabled, for third-party copies (Landlock does not
+  confine UDP); from Linux 6.12, it signals no process (but on RHEL 9's kernels, which
+  lack that) and connects to no abstract Unix socket outside its confinement. weed
+  logs the rules as it starts ("workers are confined with Landlock"). Each worker
+  checks that it is confined, and refuses to serve otherwise. On some file systems,
+  such as Docker Desktop's mounts of the host, Landlock refuses every access whatever
+  its rules: weed then does not start, and says so, if the exported directory or
+  weed's binary is on one. Landlock does not cover stat, chmod, chown, utime and
+  extended attributes: on files outside the exported directory, permissions alone
+  keep those.
+And weed's own process, which terminates TLS and authenticates requests, as root: it
+may write the exported directory, the directories of server.log_file, admin.socket
+and admin.bans, and its cgroup, and read only those, the system's files (as workers)
+and the files that its configuration names; from Linux 6.7, it binds only its ports,
+and connects only to token issuers and for third-party copies. Landlock confines a
+thread and what it executes, so weed executes itself again, from a thread that it
+confines; it logs the rules as it does ("weed confines itself with Landlock"), and
+refuses to start if it then is not confined. Confined to /, weed would reach
+everything: it does not export /. Landlock confines to plain directories and to mount
+points alike: a rule names the directory that its path leads to as weed starts (the
+root of the storage mounted at /data, or the plain directory /data), and covers what
+is beneath, storage mounted below it later included; not a storage mounted over it or
+above it later (a remount), nor the directory beneath a storage that is unmounted.
+weed looks at the directory every 5 seconds. When a storage is there in its place,
+weed lets the requests in progress finish and exits with status 75, for its
+supervisor to start it again, confined to it (systemd: Restart=on-failure);
+meanwhile, requests get 503. When the storage that weed started on is no longer
+mounted, weed does not exit: it refuses requests (503, /healthz too, the metric
+weed_storage_unmounted is 1) until the storage is back, never serving the directory
+beneath, which would take the uploads. A weed that starts while the storage is not
+mounted would serve it: with server.require_mount, weed does not start while the
+exported directory is on the file system of /.
 Two more are not part of weed:
 * A mount namespace per worker, holding only the exported directory and the system
   files a worker needs (pivot_root, as containers do): what is outside does not
   exist for it, not even for stat. weed would need CAP_SYS_ADMIN, and storage
   mounted after a worker started (autofs, NFS remounts) to propagate into it.
-* systemd's sandboxing confines weed and its workers together, so also the process
-  that terminates TLS and authenticates requests, as root: for instance
+* systemd's sandboxing confines weed and its workers together, as Landlock does weed's
+  own process, and with directives that Landlock does not have: for instance
   ProtectSystem=strict (all read-only, but /dev, /proc, /sys and the directories of
   RuntimeDirectory=weed and StateDirectory=weed, which admin.socket and admin.bans
   need), ReadWritePaths=/data (the exported directory; and that of server.log_file),
   ProtectHome=yes (unless the exported directory is below /home), PrivateTmp=yes.
-  It does not separate the accounts from each other. weed's tests do not cover it:
-  try it with weed check and a few requests of each kind.
+  ReadWritePaths= makes writable what /data is as weed starts, as Landlock does; weed
+  starts again when that changes (above). It does not separate the accounts from each
+  other. make test-systemd runs weed with these directives (see Testing); try others
+  with weed check and a few requests of each kind.
 
 cgroups. With unix_users.cgroups, the workers of each account run in a cgroup of
 their own below weed's, which must be delegated to weed (systemd's Delegate=yes;
@@ -458,41 +484,25 @@ unix_users.max_requests. The Go runtime of a worker keeps below 90% of the lower
 its cgroup's memory.max and memory.high (GOMEMLIMIT prevails), which it reads when it
 starts and when weed reloads.
 
-Network rates. [network] limits the bytes weed sends (egress: downloads, third-party
-copies it pushes) and receives (ingress: uploads, copies it pulls), bodies only:
-
-    [network]
-    egress_rate = "9Gbit/s"          # all accounts together
-    ingress_rate = "9Gbit/s"
-    account_egress_rate = "2Gbit/s"  # each account, all its transfers together
-    account_ingress_rate = "2Gbit/s"
-
-weed paces what it relays, and the workers ask it for each part of a third-party
-copy they move (over a socket of their own, fd 4), so one shaper in weed keeps all
-the rates (internal/limits). Transfers pay for bytes once they have moved them, and
-wait until their account's rate and the total allow more: a rate holds on average,
-with a lead of 256 KiB per transfer (512 KiB for a third-party copy). When a total
-holds transfers back, the accounts that want more share it in proportion to their
-weights (start-time fair queueing); an account that wants less gets what it wants,
-one alone gets all. Weights only decide where weed is the bottleneck: set the totals
-a little below what the network carries.
-
 Limits per user and group. unix_users.limits names a JSON file of rules, which weed
 reads at startup (it does not start if it cannot) and on every reload (one that
 cannot be read keeps the previous rules, and the reload is partial):
 
-    [{"group": "cms", "cgroup_limits": ["memory.max=32G"], "weight": 300},
-     {"user": "cmsprod", "weight": 1000},
-     {"user": "alice", "egress_rate": "100MB/s", "ingress_rate": "max"}]
+    [{"group": "cms", "cgroup_limits": ["memory.max=32G", "cpu.weight=300"]},
+     {"user": "alice", "cgroup_limits": ["io.max=8:16 rbps=200000000"]}]
 
-Each setting of an account comes from the first rule for the user that has it, else
-from the first for one of its groups, else from the configuration; cgroup limits
-file by file. weight (1 to 10000, default 100) is the account's share of the totals.
-A reload applies the rates to transfers in progress, and writes the cgroup limits of
-the accounts that have workers; a limit no longer configured stays until they have
-all exited (weed says so: set it to its unlimited value, e.g. memory.max=max). /status
-shows the rates and weight of each account with workers, and how many of its
-transfers a rate holds back now.
+Each cgroup limit of an account comes from the first rule for the user that sets its
+file, else from the first for one of its groups, else from unix_users.cgroup_limits.
+A reload writes them into the cgroups of the accounts that have workers; a limit no
+longer configured stays until they have all exited (weed says so: set it to its
+unlimited value, e.g. memory.max=max).
+
+Network rates. weed does not pace transfers: the kernel does. tc on the network
+interface limits what the machine sends, in total (htb, tbf) or per connection (fq's
+maxrate), and with a policer or an ifb device what it receives; io.max in the cgroup
+of each account (above) limits what its workers read and write of a block device.
+The clients' transfers flow through weed's own process: the network cannot tell their
+accounts apart.
 
 Storage that does not answer. A request whose file system does not answer (a hung NFS
 server, a failing disk) waits in the kernel with one of its worker's threads, which
@@ -606,7 +616,7 @@ filesystem). It makes one stat at a time: while one hangs, calls wait for it.
 server.metrics_address = "localhost:9100" serves, without authentication, /healthz,
 /status (see What runs), Prometheus metrics on /metrics, and a dashboard of both at
 http://localhost:9100/: the browser reads them every 2 seconds and shows throughput,
-requests, rate limits, accounts and workers, with the last 10 minutes as charts. The
+requests, accounts and workers, with the last 10 minutes as charts. The
 dashboard only reads. Without a configuration file, the main port serves them all
 (the dashboard at /dashboard/): its clients are local, and can already read and write
 every file. The metrics:
@@ -628,9 +638,6 @@ every file. The metrics:
   weed_tls_certificate_expiry_timestamp_seconds
   weed_requests_in_progress{kind}             (download, upload, tpc_pull, tpc_push,
                                               other)
-  weed_network_delay_seconds_total{direction,limit}
-                                              how long transfers waited for network
-                                              rates (egress, ingress; account, total)
 and what runs (see What runs).
 
 weed_requests_in_progress counts the authenticated WebDAV requests being served now:
@@ -701,11 +708,20 @@ listens (so systemctl start fails when weed cannot start, and units ordered afte
 weed start once it serves), when it reloads, and when it stops, and keeps a status
 line up to date:
 
+    [Unit]
+    After=network-online.target remote-fs.target
+    StartLimitIntervalSec=0          # restart for ever
+
     [Service]
     # systemd >= 253; before, Type=notify and ExecReload=kill -HUP $MAINPID
     Type=notify-reload
     ExecStartPre=/usr/local/bin/weed check -config /etc/weed/weed.toml
     ExecStart=/usr/local/bin/weed -config /etc/weed/weed.toml
+    Restart=on-failure               # also on status 75 (the exported directory moved)
+    RestartSec=2s                    # then up to a minute apart (systemd >= 254)
+    RestartSteps=5
+    RestartMaxDelaySec=1min
+    OOMPolicy=continue               # a worker killed for memory does not stop weed
 
     $ systemctl status weed
     ...
@@ -714,7 +730,14 @@ line up to date:
               changed: server.port"
 
 With Type=notify-reload, systemctl reload weed sends SIGHUP and returns once the
-reload is done. Worker processes cannot notify systemd.
+reload is done. Worker processes cannot notify systemd. With a socket unit
+(weed.socket: ListenStream=443 and that of server.metrics_address), systemd listens on
+weed's ports and passes the sockets (LISTEN_FDS): while weed restarts, clients wait in
+the queue instead of being refused, and weed binds no port; it takes each socket by
+its port, and listens itself on the others. Out of memory, the kernel kills within
+the cgroup of an account that reaches its memory.max (unix_users.cgroup_limits), not
+weed's own process. weed's oom_score_adj is that of its workers: confined with
+Landlock, neither may write /proc.
 
 Metrics, on server.metrics_address:
   process_start_time_seconds
@@ -768,6 +791,14 @@ itself hashes at ~650); GET ~3000; the disk writes ~3800. Measure on your hardwa
 
     WEED_BENCH_MIB=4096 make bench
 
+Clients that hold a connection cost little: 8192 clients each making a GET of a 4 KiB
+file every second got 8172 requests/s, p99 35 ms, from weed using 2.7 CPUs and 1.6 GB
+(196 kB per client; one account, through TLS, in a container of 8 CPUs and 8 GB). A
+download that its client reads slower than weed sends, as across a WAN, holds about
+2.7 MB in the kernel and in weed. Each connection is an open file: Go raises weed's
+soft limit to the hard one (524288 under systemd). test/stress measures a server (see
+Testing).
+
 
 Testing
 
@@ -777,37 +808,49 @@ Testing
                        Unix accounts (Linux, uses sudo)
     make test-linux    the same as root in a Linux container, e.g. from macOS (Docker)
     make test-cgroups  the cgroups of worker processes, in a privileged container
+    make test-systemd  weed as the service of the guide (Installation): its unit,
+                       with Delegate=yes and the sandboxing above, as root and as an
+                       account of its own, and storage unmounted from and mounted
+                       over the exported directory, in a privileged AlmaLinux 10
+                       container that boots systemd (test/systemd/systemd.sh, Docker)
     make interop       interoperability tests (test/interop/interop.sh, Docker)
     make lab           weed with 22 Unix accounts under a load that does not stop, in
                        a container, to watch its dashboard, /status, /metrics and the
                        logs, with Prometheus and Grafana (test/lab/lab.sh, Docker);
                        make lab-ssh opens a shell in it, make lab-stop stops it
     make find-limits   the limits of weed on this machine: the lab without its load,
-                       rates or limits, under a load that grows until weed or the
+                       or limits, under a load that grows until weed or the
                        machine gives (test/stress, Docker); ARGS="..." go to stress
     make check         gofmt and go vet; make fuzz, make cross, make vulncheck and
                        make bench run the rest; make help lists every target
+
+TestLandlockRemount (internal/worker) mounts an ext4 image again over the exported
+directory, as a storage mounted again, and TestConfinedMounts (internal/landlock)
+mounts storage beneath, over and away from directories that rules name: they need
+root in a privileged container (and mkfs.ext4), and skip otherwise, as in make
+test-linux.
 
 Development on macOS. macOS is only for developing weed, not for serving: there,
 ./weed accesses files in its own process, as the account that runs it, whatever
 identity a request has, and does not run as root. Authentication, checksums, locks,
 third-party copies, bans, metrics, /status and the dashboard work as on Linux; worker
-processes, Unix accounts, Landlock, cgroups, network rates and unix_users.limits do
-not. weed says so as it starts, and /status shows "development" with the account. The
-control plane's socket and the bans file, by default in /run/weed and /var/lib/weed,
-are in the user's cache directory (~/Library/Caches/weed), also when a configuration
-sets them to those defaults, as weed config prints them. make test runs every test
-but those of worker processes and Unix accounts, which make test-linux runs in a
+processes, Unix accounts, Landlock, cgroups and unix_users.limits do not. weed says
+so as it starts, and /status shows "development" with the account. The control
+plane's socket and the bans file, by default in /run/weed and /var/lib/weed, are in
+the user's cache directory (~/Library/Caches/weed), also when a configuration sets
+them to those defaults, as weed config prints them. make test runs every test but
+those of worker processes and Unix accounts, which make test-linux runs in a
 container; make lab runs weed as on a server.
 
-The interoperability tests run weed in a container against real WLCG software:
-gfal2, davix and curl as clients; XRootD (with its macaroons, SciTokens and HTTP-TPC
-plugins) as a second implementation; and a test token issuer. They cover X.509
-proxies, macaroons, tokens, revocation with SIGHUP, metrics, Unix accounts, bans, and
-third-party copies in both directions between two weed servers and between weed and
-XRootD. Each parser also has a fuzz test (go test -fuzz). CI (.github/workflows/ci.yml)
-runs the tests with -race on Linux and macOS and as root on Linux, go vet, gofmt,
-govulncheck, cross-builds, the fuzz tests and the interoperability tests.
+The interoperability tests run weed in an AlmaLinux 10 container against real WLCG
+software, from EPEL: gfal2, davix and curl as clients; XRootD (with its macaroons,
+SciTokens and HTTP-TPC plugins) as a second implementation; and a test token issuer.
+They cover X.509 proxies, macaroons, tokens, revocation with SIGHUP, metrics, Unix
+accounts, bans, and third-party copies in both directions between two weed servers
+and between weed and XRootD. Each parser also has a fuzz test (go test -fuzz). CI
+(.github/workflows/ci.yml) runs the tests with -race on Linux and macOS and as root
+on Linux, go vet, gofmt, govulncheck, cross-builds, the fuzz tests and the
+interoperability tests.
 
 test/stress finds what a weed server sustains. For each scenario (small files read,
 written and listed, new TLS connections, downloads and uploads of large files, each

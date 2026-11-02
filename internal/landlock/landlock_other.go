@@ -2,29 +2,9 @@
 
 package landlock
 
-import (
-	"errors"
-	"os"
-)
+import "errors"
 
-// Access is what a Rule allows
-type Access uint8
-
-const (
-	Read Access = iota + 1
-	Exec
-	Write
-)
-
-// Rule allows Access beneath Path
-type Rule struct {
-	Path   string
-	Access Access
-	File   *os.File
-}
-
-// MinABI is the version of Landlock that New needs
-const MinABI = 2
+var errUnsupported = errors.New("Landlock is only on Linux")
 
 // ABI is 0: Landlock is Linux's
 func ABI() int { return 0 }
@@ -33,10 +13,10 @@ func ABI() int { return 0 }
 type Ruleset struct{}
 
 // New is only supported on Linux
-func New([]Rule) (*Ruleset, error) { return nil, errors.New("Landlock is only on Linux") }
+func New([]Rule, Net) (*Ruleset, error) { return nil, errUnsupported }
 
-func (rs *Ruleset) Restrict() error { return errors.New("Landlock is only on Linux") }
-
-func (rs *Ruleset) Dup() (*Ruleset, error) { return nil, errors.New("Landlock is only on Linux") }
-
-func (rs *Ruleset) Close() error { return nil }
+func (rs *Ruleset) Restrict() error                       { return errUnsupported }
+func (rs *Ruleset) Exec(argv, env []string) error         { return errUnsupported }
+func (rs *Ruleset) Unreachable(...string) (string, error) { return "", errUnsupported }
+func (rs *Ruleset) Dup() (*Ruleset, error)                { return nil, errUnsupported }
+func (rs *Ruleset) Close() error                          { return nil }

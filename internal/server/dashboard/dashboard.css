@@ -180,8 +180,6 @@ main { padding: 16px 24px 32px; max-width: 1600px; margin: 0 auto; }
 .plot svg { display: block; overflow: visible; }
 .plot text { fill: var(--muted); font-size: 11px; }
 .plot .grid { stroke: var(--grid); stroke-width: 1; }
-.plot .ref { stroke: var(--muted); stroke-dasharray: 4 4; stroke-width: 1; }
-.plot text.reflabel { paint-order: stroke; stroke: var(--panel); stroke-width: 4px; stroke-linejoin: round; }
 .plot .cursor { stroke: var(--muted); stroke-width: 1; }
 .plot path { fill: none; stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; }
 

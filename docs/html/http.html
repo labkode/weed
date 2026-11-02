@@ -146,7 +146,7 @@
 <tr>
 <td>/healthz</td>
 <td>none</td>
-<td>"ok" if the exported directory responds, 503 otherwise (see <a href="monitoring.html#healthz">Monitoring</a>).</td>
+<td>"ok" if the exported directory responds and its storage is mounted, 503 otherwise (see <a href="monitoring.html#healthz">Monitoring</a>).</td>
 </tr>
 <tr>
 <td>/</td>
@@ -270,7 +270,7 @@
 </tr>
 <tr>
 <td>503</td>
-<td>no worker for the account (<code>unix_users.max_workers</code>), too many third-party copies (<code>tpc.max_transfers</code>), with Retry-After; storage not responding (/healthz)</td>
+<td>no worker for the account (<code>unix_users.max_workers</code>), too many third-party copies (<code>tpc.max_transfers</code>), with Retry-After; storage not responding (/healthz), the storage of the exported directory not mounted</td>
 </tr>
 </tbody>
 </table>

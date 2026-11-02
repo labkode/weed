@@ -41,7 +41,6 @@ The sections are:
 | [\[tokens\]](options.html#tokens) | WLCG and SciTokens bearer tokens: the issuers |
 | [\[tpc\]](options.html#tpc) | third-party copy |
 | [\[unix_users\]](options.html#unix_users) | worker processes: idle time, how many, cgroups, the limits of some users and groups |
-| [\[network\]](options.html#network) | network rates: in total, and of each account |
 | [\[admin\]](options.html#admin) | the control plane's socket, and the banned users' file |
 
 ## Rules

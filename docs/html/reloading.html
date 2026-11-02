@@ -110,7 +110,7 @@
 <li>the host certificate and key;</li>
 <li>the CAs of third-party copy endpoints, which the workers also re-read;</li>
 <li>Unix accounts, which are looked up again;</li>
-<li>the limits file, whose network rates and cgroup limits apply at once (see <a href="limits.html">Limits per account</a>).</li>
+<li>the limits file, whose cgroup limits apply at once to the accounts that have workers (see <a href="limits.html">Limits per account</a>).</li>
 </ul>
 <p>The configuration file is not: it is read only at startup, and weed says when it has changed (see <a href="what-runs.html#restart-pending">What runs</a>). Neither are the banned users, which are weed's own (see <a href="banning.html">Banning users</a>). On SIGHUP, weed also reopens its log file.</p>
 <p>A file that cannot be read keeps its previous contents, so a file in the middle of being rewritten neither locks everybody out nor lets anybody in. Such a reload is partial: it is logged as a warning, counted in <code>weed_reloads_total{result="partial"}</code>, and <code>weed_reload_last_successful</code> is 0 until a reload reads everything. New connections and requests use what was read; established ones are not affected.</p>

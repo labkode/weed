@@ -44,12 +44,6 @@ type Settings struct {
 	// Cgroup is set when the worker runs in a cgroup of its account's, whose memory
 	// limits set the Go runtime's
 	Cgroup bool `json:",omitempty"`
-	// Pay is set when file descriptor 4 is the socket over which the worker pays for
-	// what its third-party copies move (see servePayments)
-	Pay bool `json:",omitempty"`
-	// Landlock is set when the worker was started confined with Landlock, which it
-	// checks (see Pool.landlock)
-	Landlock bool `json:",omitempty"`
 }
 
 // Info describes a worker process

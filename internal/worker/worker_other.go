@@ -9,7 +9,7 @@ import (
 
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/fsuser"
-	"github.com/labkode/weed/internal/limits"
+	"github.com/labkode/weed/internal/landlock"
 )
 
 // Options configure a Pool
@@ -19,10 +19,17 @@ type Options struct {
 	MaxWorkers   int
 	Cgroups      bool
 	CgroupLimits func(u *fsuser.User) []string
-	Shaper       *limits.Shaper
 	Refused      func(account string) bool
-	Landlock     bool
+	Confined     bool
+	Moved        func(error)
+	Unmounted    func(bool)
 }
+
+// Rules are what workers may reach with Landlock, which is Linux's
+func Rules(*config.Config) []landlock.Rule { return nil }
+
+// Cgroup is the directory of this process's cgroup, which is Linux's
+func Cgroup() string { return "" }
 
 // Pool is only supported on Linux
 type Pool struct{}
@@ -44,5 +51,4 @@ type Child struct{ Settings Settings }
 func Attach() (*Child, error) { return nil, errUnsupported }
 
 func (c *Child) Fail(err error) error                      { return err }
-func (c *Child) Payer() limits.Payer                       { return nil }
 func (c *Child) Serve(h http.Handler, reload func()) error { return errUnsupported }

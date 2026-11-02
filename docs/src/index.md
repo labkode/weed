@@ -29,14 +29,15 @@ weed is made so that nothing changes by surprise while it runs. It says which bu
 
 ## What you need
 
-- A Linux server. macOS is only for developing weed (see [Getting started](getting-started.html#macos)); on other systems, only its helpers work (*weed utils*, *config*, *check* and *version*).
+- A Linux server: weed targets AlmaLinux 10 (and other EL10, such as RHEL 10 and Rocky Linux 10), which its tests run on. macOS is only for developing weed (see [Getting started](getting-started.html#macos)); on other systems, only its helpers work (*weed utils*, *config*, *check* and *version*).
 - root, or the CAP_SETUID and CAP_SETGID capabilities, to start workers as other accounts.
+- Linux 5.19 or later, with landlock among the security modules: weed confines itself and its workers with Landlock, and does not start without it (see [Unix accounts](unix-accounts.html#confinement)). AlmaLinux 10's kernel (6.12) has it by default, with its rules for TCP.
 - A local account for every user, in /etc/passwd or in a directory (LDAP, SSSD) that the system's user database reaches.
 - For a grid storage node: a host certificate, the IGTF CA certificates in /etc/grid-security/certificates kept current by fetch-crl, a grid-mapfile, and the token issuers of your communities.
 
 ## What weed is not
 
-weed serves a directory: it has no namespace database, no tape, no quotas and no replication. It relies on the filesystem for all of that, and on cgroups and its own network rates to limit what each account uses (see [Limits per account](limits.html)). Some features are not implemented:
+weed serves a directory: it has no namespace database, no tape, no quotas and no replication. It relies on the filesystem for all of that, and on the kernel to limit what each account uses: cgroups, and tc for the network (see [Limits per account](limits.html)). Some features are not implemented:
 
 - X.509 credential delegation for third-party copies (Credential: gridsite). Pass tokens or macaroons in TransferHeaderAuthorization instead.
 - Authorization by token groups alone: a token needs storage scopes, even when its groups choose its account.

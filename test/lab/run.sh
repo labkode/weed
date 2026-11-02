@@ -77,15 +77,12 @@ cd /etc/weed
 for u in $(awk '$2 == "basic" {print $1}' $L/accounts); do weed utils password $u lab-$u >/dev/null; done
 chmod 600 .htpasswd
 
-# --- Limits: totals of 120 MB/s out and 60 MB/s in, shared by weight
+# --- Limits: the cgroup limits of some accounts and groups
 [ $MODE = load ] && cat >limits.json <<'J'
 [
-  {"user": "cmsprod", "weight": 1000, "egress_rate": "max", "ingress_rate": "max"},
-  {"user": "alice", "ingress_rate": "5MB/s"},
   {"user": "frank", "cgroup_limits": ["memory.max=384M"]},
-  {"group": "cms", "cgroup_limits": ["memory.max=1G", "cpu.weight=300"], "weight": 300},
-  {"group": "atlas", "cgroup_limits": ["cpu.weight=200"], "weight": 200},
-  {"group": "lhcb", "weight": 50, "egress_rate": "10MB/s", "ingress_rate": "5MB/s"}
+  {"group": "cms", "cgroup_limits": ["memory.max=1G", "cpu.weight=300"]},
+  {"group": "atlas", "cgroup_limits": ["cpu.weight=200"]}
 ]
 J
 (umask 077 && cat >weed.toml) <<T
@@ -134,12 +131,6 @@ idle_timeout = "90s"
 max_requests = 200
 cgroup_limits = ["memory.max=512M", "pids.max=1000"]
 limits = "/etc/weed/limits.json"
-
-[network]
-egress_rate = "120MB/s"
-ingress_rate = "60MB/s"
-account_egress_rate = "40MB/s"
-account_ingress_rate = "20MB/s"
 T
 else
 	# weed's own limits, which the machine's should come before

@@ -102,13 +102,13 @@ scenes() {
 	auth_of frank
 	"${C[@]}" "${A[@]}" -T /lab/files/16m "$W/frank/mid"
 	while :; do
-		say "scene weights: cmsprod (weight 1000, no rate of its own), cms001 (300), atlas001 (200), alice (100) and lhcb001 (50, 10MB/s) download 32 MiB files, 2 at a time each, over the 120MB/s total"
+		say "scene downloads: cmsprod, cms001 and atlas001 (cpu.weight 300 and 200), alice and lhcb001 download 32 MiB files, 2 at a time each"
 		for u in cmsprod cms001 atlas001 alice lhcb001; do repeat 150 2 $u big_get; done
 		wait_scene 150
-		say "scene uploads: cms002, atlas002, dave, alice (5MB/s) and lhcb002 (5MB/s) upload 32 MiB files, 2 at a time each, over the 60MB/s total"
+		say "scene uploads: cms002, atlas002, dave, alice and lhcb002 upload 32 MiB files, 2 at a time each"
 		for u in cms002 atlas002 dave alice lhcb002; do repeat 150 2 $u big_put; done
 		wait_scene 150
-		say "scene many: frank downloads 16 MiB files 60 at a time, at his 40MB/s"
+		say "scene many: frank downloads 16 MiB files 60 at a time, his workers in 384M of memory"
 		repeat 120 60 frank mid_get
 		wait_scene 120
 		say "scene tpc: third-party copies of 32 MiB, pulled over plain HTTP by atlas003, cms003, carol and lhcb003, 3 at a time each"

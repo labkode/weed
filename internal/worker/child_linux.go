@@ -21,7 +21,6 @@ import (
 	"unsafe"
 
 	"github.com/labkode/weed/internal/fsuser"
-	"github.com/labkode/weed/internal/limits"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/version"
@@ -47,7 +46,6 @@ type Child struct {
 	Settings Settings
 	ctl      *net.UnixConn
 	build    string // of its executable (see version.Build)
-	payer    *payer // if Settings.Pay
 }
 
 // Attach takes over the control socket that the front process passed as file
@@ -77,41 +75,20 @@ func Attach() (*Child, error) {
 	if err := checkConfinement(&child.Settings.User); err != nil {
 		return nil, child.Fail(fmt.Errorf("refusing to serve: %w", err))
 	}
-	// Confined with Landlock, it cannot list / (unless that is what it exports)
-	if child.Settings.Landlock && child.Settings.Config.Directory != "/" {
-		if f, err := os.Open("/"); err == nil {
-			f.Close()
-			return nil, child.Fail(errors.New("refusing to serve: started to be confined with Landlock, and is not"))
-		}
+	// Confined with Landlock, it cannot list /
+	if f, err := os.Open("/"); err == nil {
+		f.Close()
+		return nil, child.Fail(errors.New("refusing to serve: started to be confined with Landlock, and is not"))
 	}
 	// Workers are started from /proc/self/exe: the front process's binary, unless it
 	// was overwritten in place, which the front process detects from the build
 	if child.build, err = version.ExecutableBuild(); err != nil {
 		return nil, child.Fail(fmt.Errorf("cannot identify the build of its executable: %w", err))
 	}
-	if child.Settings.Pay {
-		f := os.NewFile(4, "payments")
-		c, err := net.FileConn(f)
-		f.Close()
-		conn, ok := c.(*net.UnixConn)
-		if err != nil || !ok {
-			return nil, child.Fail(fmt.Errorf("no socket to pay for third-party copies over: %v", err))
-		}
-		child.payer = newPayer(conn)
-	}
 	if child.Settings.Cgroup {
 		limitMemory()
 	}
 	return child, nil
-}
-
-// Payer is what the worker's third-party copies pay with, nil if their bytes are
-// not paced
-func (c *Child) Payer() limits.Payer {
-	if c.payer == nil {
-		return nil
-	}
-	return c.payer
 }
 
 // limitMemory sets the Go runtime's memory limit to 90% of the lower of the cgroup's

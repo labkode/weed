@@ -8,30 +8,15 @@ import (
 	"github.com/labkode/weed/internal/limits"
 )
 
-// What each account is allowed: the limits of its workers' cgroup, its network
-// rates and its share of the total ones (see internal/limits)
+// What each account is allowed: the limits of its workers' cgroup, which the kernel
+// applies (see internal/limits)
 
-// limitsConfigured reports whether network rates may apply: without them, or a limits
-// file that could set them on reload, nothing is paced
-func (s *Server) limitsConfigured() bool {
-	c := s.Config
-	return c.LimitsFile != "" || c.EgressRate != "" || c.IngressRate != "" || c.AccountEgressRate != "" || c.AccountIngressRate != ""
-}
-
-// loadLimits reads the limits file (unix_users.limits) and applies the limits. After
-// startup, a file that cannot be read leaves the previous rules: complete is false.
+// loadLimits reads the limits file (unix_users.limits). After startup, a file that
+// cannot be read leaves the previous rules: complete is false.
 func (s *Server) loadLimits() (complete bool, err error) {
 	prev := s.limits.Load()
 	c := s.Config
-	rate := func(r string) int64 {
-		n, _ := limits.ParseRate(r) // checked by config.Validate
-		return n
-	}
-	l := &limits.Limits{
-		EgressRate: rate(c.EgressRate), IngressRate: rate(c.IngressRate),
-		Default: limits.Account{Cgroup: c.WorkerCgroupLimits, EgressRate: rate(c.AccountEgressRate),
-			IngressRate: rate(c.AccountIngressRate), Weight: limits.DefaultWeight},
-	}
+	l := &limits.Limits{Default: limits.Account{Cgroup: c.WorkerCgroupLimits}}
 	complete = true
 	if c.LimitsFile != "" {
 		rules, err := limits.Load(c.LimitsFile)
@@ -52,9 +37,6 @@ func (s *Server) loadLimits() (complete bool, err error) {
 			"file", c.LimitsFile)
 	}
 	s.limits.Store(l)
-	if s.shaper != nil {
-		s.shaper.SetLimits(l)
-	}
 	return complete, nil
 }
 

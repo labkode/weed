@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/labkode/weed/internal/config"
 )
 
 func TestMain(m *testing.M) {
@@ -28,7 +30,7 @@ func TestWorkerBuild(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("starting workers as other accounts needs root")
 	}
-	p, err := New(Options{})
+	p, err := New(Options{Config: config.Config{Directory: t.TempDir()}})
 	if err != nil {
 		t.Fatal(err)
 	}

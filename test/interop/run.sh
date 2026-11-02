@@ -185,6 +185,9 @@ tpc_curl() {
 head -c 5000000 /dev/urandom >f.bin
 SUM=$(adler f.bin)
 
+check "weed A, B and C confine themselves with Landlock" sh -c "grep -q 'weed confines itself with Landlock' $W/weed-a.log &&
+	grep -q 'weed confines itself with Landlock' $W/weed-b.log && grep -q 'weed confines itself with Landlock' $W/weed-c.log"
+
 echo "== davix against weed"
 check "davix-put" davix-put $DAVIX f.bin $A/davix.bin
 check "davix-get matches" sh -c "davix-get $DAVIX $A/davix.bin got.bin && cmp f.bin got.bin"
@@ -407,7 +410,8 @@ check "restored configuration: no restart pending" sh -c "curl -s localhost:9100
 mkdir -p /srv/q && (cd /srv/q && exec weed 2>$W/weed-q.log) &
 Q_PID=$!
 for i in $(seq 50); do curl -sf localhost:9000/healthz >/dev/null && break; sleep 0.1; done
-check "without a configuration file: /status on the main port" sh -c "curl -sf localhost:9000/status | jq -e '.config.file == \"\" and .config.settings.server.anonymous' >/dev/null"
+check "without a configuration file: weed confines itself with Landlock" grep -q 'weed confines itself with Landlock' $W/weed-q.log
+check "...and /status on the main port" sh -c "curl -sf localhost:9000/status | jq -e '.config.file == \"\" and .config.settings.server.anonymous' >/dev/null"
 check "...and /metrics" sh -c "curl -sf localhost:9000/metrics | grep -q '^weed_build_info{'"
 check "...and weed utils reaches its control plane at the default socket" sh -c "weed utils bans | grep -qx 'no user is banned'"
 check "...anonymous uploads belong to nobody" sh -c "! curl -sf -T f.bin localhost:9000/webdav/f.bin && chmod 1777 /srv/q &&

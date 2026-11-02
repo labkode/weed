@@ -13,9 +13,9 @@ These endpoints have no authentication. /status shows the configuration (secrets
 
 http://localhost:9100/ is a page that your browser fills from /status and /metrics every 2 seconds, and that changes nothing:
 
-- tiles: egress and ingress now, against the total rates; requests per second, with the 4xx and 5xx; requests in progress, by kind; transfers that rates hold back; workers and their blocked threads; third-party copies; banned users;
-- charts of the last 10 minutes, kept by the browser while the page is open: throughput, with the total rates; requests per second, by status; requests in progress, by kind; transfers held back by an account's rate or by the total, on average;
-- the accounts with workers or requests in progress: their workers, their requests in progress and of which kind, their transfers held back now, their rates and weight. Click a column to sort by it;
+- tiles: egress and ingress now; requests per second, with the 4xx and 5xx; requests in progress, by kind; workers and their blocked threads; third-party copies; banned users;
+- charts of the last 10 minutes, kept by the browser while the page is open: throughput; requests per second, by status; requests in progress, by kind;
+- the accounts with workers or requests in progress: their workers, their requests in progress and of which kind, and their blocked threads. Click a column to sort by it;
 - the workers, their requests and how long they have run; the outcomes of authentication, by method; the build and the configuration;
 - warnings: a pending restart, a partial reload, blocked threads, a TLS certificate or CRLs about to expire, and weed not answering.
 
@@ -23,14 +23,14 @@ It needs no other software, and loads nothing from elsewhere. weed counts the by
 
 ## /healthz
 
-/healthz answers "ok" (200) when the exported directory responds, and 503 when it does not, or not within 5 seconds: a hung network filesystem otherwise shows only as hanging requests. It is also on the main port, for load balancers. While the directory does not answer, weed looks at it again only once the look in progress has returned, however often /healthz is called: each look waits in the kernel with a thread of weed's, until the storage answers.
+/healthz answers "ok" (200) when the exported directory responds, and 503 when it does not, or not within 5 seconds: a hung network filesystem otherwise shows only as hanging requests. It answers 503 too while the storage of the exported directory is not mounted (see [Installation](installation.html#mounted)). It is also on the main port, for load balancers. While the directory does not answer, weed looks at it again only once the look in progress has returned, however often /healthz is called: each look waits in the kernel with a thread of weed's, until the storage answers.
 
     $ curl -s https://weed.example.org/healthz
     ok
 
 ## /status
 
-/status tells, as JSON, which build runs and since when, with which configuration, how the last reload went, whether a restart is pending, the workers, and the requests in progress; with network rates, also what they allow each account, and what they hold back (see [Limits per account](limits.html#shows)). It is what to look at first when something is odd. (See also [What runs](what-runs.html).)
+/status tells, as JSON, which build runs and since when, with which configuration, how the last reload went, whether a restart is pending, the workers, and the requests in progress. It is what to look at first when something is odd. (See also [What runs](what-runs.html).)
 
     $ curl -s localhost:9100/status | jq .
     {
@@ -117,8 +117,14 @@ reload
 restart_pending
 :   why a restart would change what runs, by reason: config, binary. Empty when nothing would change.
 
+storage_unmounted
+:   since when the storage that the exported directory was on when weed started is not mounted, absent while it is: requests get 503 (see [Installation](installation.html#mounted)).
+
 workers
 :   each worker: its account, its pid, since when it runs, and how many requests weed waits for it to answer. A retired worker finishes its requests and takes no new ones, e.g. after its account's groups changed. blocked_threads are the worker's threads that wait in the kernel, uninterruptibly: for a moment while they read or write files, and for long when its storage does not answer, also once their clients have gone (see [Troubleshooting](troubleshooting.html#hung-storage)).
+
+development
+:   only on macOS, where weed serves for development: the account that every request accesses files as (see [Getting started](getting-started.html#macos)).
 
 ## Transfers in progress {#in-progress}
 
@@ -150,6 +156,7 @@ With `metrics_address = "localhost:9100"`, scrape it from the host, e.g. through
 | Alert | Expression |
 |----|----|
 | weed is down | `up{job="weed"} == 0`, or /healthz failing from outside |
+| the storage is not mounted | `weed_storage_unmounted == 1` |
 | CRLs about to expire (fetch-crl stopped) | `weed_crl_expiry_timestamp_seconds - time() < 6 * 3600` |
 | host certificate about to expire | `weed_tls_certificate_expiry_timestamp_seconds - time() < 14 * 86400` |
 | a credential file cannot be read | `weed_reload_last_successful == 0` |

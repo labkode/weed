@@ -57,8 +57,11 @@ type Server struct {
 	storage    storageProbe // /healthz's stat of the exported directory
 
 	limits  atomic.Pointer[limits.Limits] // what accounts are allowed, replaced on reload
-	shaper  *limits.Shaper                // paces the network, if rates may apply
 	cgroups bool                          // the workers of each account have a cgroup
+	moved   chan error                    // the exported directory is out of reach (see Run)
+	// unmounted is set while the storage of the exported directory is not mounted
+	// (see worker.UnmountedError): requests get 503
+	unmounted atomic.Pointer[unmounted]
 
 	reloadMu sync.Mutex
 	cert     atomic.Pointer[tls.Certificate] // TLS server certificate, replaced on reload
@@ -93,7 +96,7 @@ func (s *Server) develop() error {
 	if u, err := user.Current(); err == nil {
 		s.development = u.Username
 	}
-	slog.Warn("development mode, as on macOS: weed serves files in its own process, as the account that runs it, for every identity; worker processes per Unix account, Landlock, cgroups, network rates and unix_users.limits are only on Linux",
+	slog.Warn("development mode, as on macOS: weed serves files in its own process, as the account that runs it, for every identity; worker processes per Unix account, Landlock, cgroups and unix_users.limits are only on Linux",
 		"account", s.development)
 	return nil
 }
@@ -116,6 +119,11 @@ func (s *Server) Initialize() error {
 			return fmt.Errorf("weed serves on Linux, and on macOS for development, not on %s", runtime.GOOS)
 		}
 		if err := s.develop(); err != nil {
+			return err
+		}
+	}
+	if s.Config.RequireMount {
+		if err := checkMounted(s.Config.Directory); err != nil {
 			return err
 		}
 	}
@@ -171,7 +179,7 @@ func (s *Server) Initialize() error {
 
 	// Initialize third-party copy if enabled
 	if s.Config.TPC {
-		if s.Handler.TPC, err = newTPCEngine(s.Config, nil); err != nil {
+		if s.Handler.TPC, err = newTPCEngine(s.Config); err != nil {
 			return err
 		}
 	}
@@ -186,9 +194,8 @@ func (s *Server) Initialize() error {
 
 // newTPCEngine creates the engine that runs third-party copies, which pay with payer
 // for the bytes they move (nil: not paced)
-func newTPCEngine(cfg *config.Config, payer limits.Payer) (*tpc.Engine, error) {
+func newTPCEngine(cfg *config.Config) (*tpc.Engine, error) {
 	tpcCfg := tpc.Config{
-		Payer:          payer,
 		MarkerInterval: cfg.TPCMarkerInterval,
 		StallTimeout:   cfg.TPCStallTimeout,
 		MaxTransfers:   cfg.TPCMaxTransfers,
@@ -386,8 +393,13 @@ func (s *Server) writeGauges(w io.Writer) {
 }
 
 // healthz reports whether the exported directory responds (a hung network
-// filesystem would otherwise only show up as hanging requests)
+// filesystem would otherwise only show up as hanging requests), and whether its
+// storage is mounted: the directory beneath it would answer
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
+	if s.unmounted.Load() != nil {
+		http.Error(w, "storage not mounted", http.StatusServiceUnavailable)
+		return
+	}
 	p := s.storage.check(func() error {
 		_, err := os.Stat(s.Config.Directory)
 		return err
@@ -544,9 +556,18 @@ func (s *Server) SetupTLS() (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
+// ErrRestart is returned by Run when weed must be started again: confined with
+// Landlock to the exported directory as it was, it no longer reaches it
+var ErrRestart = errors.New("weed exits, to be started again")
+
+// RestartStatus is weed's exit status after ErrRestart (EX_TEMPFAIL), on which
+// supervisors start it again (systemd: Restart=on-failure)
+const RestartStatus = 75
+
 // Run serves until ctx is cancelled, then shuts down gracefully: new connections are
 // refused, in-flight requests get shutdownGrace to finish, and whatever is still
-// running after that (e.g. long third-party copies) is cancelled
+// running after that (e.g. long third-party copies) is cancelled. It does so too,
+// returning ErrRestart, once the exported directory is out of its reach.
 func (s *Server) Run(ctx context.Context) error {
 	address := fmt.Sprintf("%s:%d", s.Config.Address, s.Config.Port)
 	mux := s.SetupRoutes()
@@ -565,10 +586,36 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Listen first, so that a port in use stops weed at once and systemd hears it is
-	// ready only once it is
-	ln, err := net.Listen("tcp", address)
+	// ready only once it is; on the sockets that systemd passed, if it did
+	passed, err := passedListeners()
 	if err != nil {
 		return err
+	}
+	ln, activated, err := listen(passed, address)
+	if err != nil {
+		closeAll(passed)
+		return err
+	}
+	var ml net.Listener
+	var mlActivated bool
+	if s.Config.MetricsAddress != "" {
+		if ml, mlActivated, err = listen(passed, s.Config.MetricsAddress); err != nil {
+			ln.Close()
+			closeAll(passed)
+			return fmt.Errorf("metrics server: %w", err)
+		}
+	}
+	if len(passed) > 0 {
+		ln.Close()
+		if ml != nil {
+			ml.Close()
+		}
+		var ports []string
+		for port := range passed {
+			ports = append(ports, strconv.Itoa(port))
+		}
+		closeAll(passed)
+		return fmt.Errorf("systemd passed sockets on ports %s, which are neither server.port nor that of server.metrics_address", strings.Join(ports, ", "))
 	}
 	errCh := make(chan error, 2)
 	if s.Config.TLS {
@@ -592,10 +639,10 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}
 		s.server.TLSConfig = tlsConfig
-		slog.Info("listening", "address", ln.Addr().String(), "scheme", "https")
+		slog.Info("listening", append([]any{"address", ln.Addr().String(), "scheme", "https"}, passedBy(activated)...)...)
 		go func() { errCh <- s.server.ServeTLS(ln, "", "") }()
 	} else {
-		slog.Info("listening", "address", ln.Addr().String(), "scheme", "http")
+		slog.Info("listening", append([]any{"address", ln.Addr().String(), "scheme", "http"}, passedBy(activated)...)...)
 		go func() { errCh <- s.server.Serve(ln) }()
 	}
 	if s.MonitorOnMainPort {
@@ -604,18 +651,16 @@ func (s *Server) Run(ctx context.Context) error {
 	stopAdmin, err := s.startAdmin()
 	if err != nil {
 		s.server.Close()
+		if ml != nil {
+			ml.Close()
+		}
 		return err
 	}
 	defer stopAdmin()
 
-	if s.Config.MetricsAddress != "" {
-		ml, err := net.Listen("tcp", s.Config.MetricsAddress)
-		if err != nil {
-			s.server.Close()
-			return fmt.Errorf("metrics server: %w", err)
-		}
+	if ml != nil {
 		ms := &http.Server{Handler: s.MetricsHandler(), ReadHeaderTimeout: 10 * time.Second}
-		slog.Info("serving metrics", "address", ml.Addr().String())
+		slog.Info("serving metrics", append([]any{"address", ml.Addr().String()}, passedBy(mlActivated)...)...)
 		go func() {
 			if err := ms.Serve(ml); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- fmt.Errorf("metrics server: %w", err)
@@ -640,10 +685,14 @@ func (s *Server) Run(ctx context.Context) error {
 		}()
 	}
 
+	var restart error
 	select {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
+	case restart = <-s.moved:
+		slog.Warn("weed exits, to be started again by its supervisor, confined to the exported directory as it now is",
+			"status", RestartStatus, "error", restart)
 	}
 
 	systemd.Stopping()
@@ -656,6 +705,57 @@ func (s *Server) Run(ctx context.Context) error {
 		s.server.Close()
 	}
 	s.Close()
+	if restart != nil {
+		return fmt.Errorf("%w: %w", ErrRestart, restart)
+	}
+	return nil
+}
+
+// passedListeners are the sockets that systemd passed (socket activation), by port
+func passedListeners() (map[int]net.Listener, error) {
+	ls, err := systemd.Listeners()
+	if err != nil {
+		return nil, err
+	}
+	byPort := make(map[int]net.Listener)
+	for _, l := range ls {
+		a, ok := l.Addr().(*net.TCPAddr)
+		if !ok || byPort[a.Port] != nil {
+			closeAll(byPort)
+			for _, l := range ls {
+				l.Close()
+			}
+			return nil, fmt.Errorf("systemd passed a socket on %s: weed takes one TCP socket per port (ListenStream=)", l.Addr())
+		}
+		byPort[a.Port] = l
+	}
+	return byPort, nil
+}
+
+// listen takes the socket that systemd passed for the port of address, or listens on
+// address; activated says which
+func listen(passed map[int]net.Listener, address string) (l net.Listener, activated bool, err error) {
+	if _, p, err := net.SplitHostPort(address); err == nil {
+		if port, err := strconv.Atoi(p); err == nil && passed[port] != nil {
+			l = passed[port]
+			delete(passed, port)
+			return l, true, nil
+		}
+	}
+	l, err = net.Listen("tcp", address)
+	return l, false, err
+}
+
+func closeAll(ls map[int]net.Listener) {
+	for _, l := range ls {
+		l.Close()
+	}
+}
+
+func passedBy(activated bool) []any {
+	if activated {
+		return []any{"socket", "passed by systemd"}
+	}
 	return nil
 }
 

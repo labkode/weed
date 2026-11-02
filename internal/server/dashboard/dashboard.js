@@ -9,13 +9,12 @@ const KINDS = ["download", "upload", "tpc_pull", "tpc_push", "other"];
 const KIND_NAMES = { download: "downloads", upload: "uploads", tpc_pull: "TPC pulls", tpc_push: "TPC pushes", other: "other" };
 const KIND_NAME = { download: "download", upload: "upload", tpc_pull: "TPC pull", tpc_push: "TPC push", other: "other" };
 const CLASSES = ["2xx", "3xx", "4xx", "5xx"];
-const DELAYS = ["egress account", "egress total", "ingress account", "ingress total"];
 
 const state = {
   paused: false,
   inflight: false,
   timer: 0,
-  history: [], // a point per reading: {t, egress, ingress, req, delay, auth (rates), inprog}
+  history: [], // a point per reading: {t, egress, ingress, req, auth (rates), inprog}
   last: null, // the last reading's counters, for rates: {t, pid, c}
   counters: null, // the last counters
   status: null, // the last /status
@@ -75,7 +74,6 @@ function si(v, unit) {
 const bytesRate = (v) => si(v, "B/s");
 const perSecond = (v) => si(v, "/s");
 const count = (v) => si(v, "");
-const limitRate = (v) => (v > 0 ? bytesRate(v) : "no limit");
 
 function age(ms) {
   if (!Number.isFinite(ms) || ms < 0) ms = 0;
@@ -125,7 +123,7 @@ function gauge(samples, name, match) {
 
 // counters are what the charts show the rates of
 function counters(samples) {
-  const c = { egress: 0, ingress: 0, req: {}, delay: {}, auth: {} };
+  const c = { egress: 0, ingress: 0, req: {}, auth: {} };
   const add = (m, k, v) => (m[k] = (m[k] || 0) + v);
   for (const { name, labels, value } of samples) {
     switch (name) {
@@ -142,9 +140,6 @@ function counters(samples) {
       case "weed_http_requests_total":
         add(c.req, String(labels.code || "?")[0] + "xx", value);
         break;
-      case "weed_network_delay_seconds_total":
-        add(c.delay, labels.direction + " " + labels.limit, value);
-        break;
       case "weed_auth_requests_total":
         add(c.auth, labels.method + " " + labels.result, value);
         break;
@@ -160,12 +155,11 @@ function record(t, st, samples) {
   // weed starts its counters again when it restarts: no rate across that
   const dt = prev && prev.pid === st.pid ? (t - prev.t) / 1000 : 0;
   const rate = (now, before) => (dt > 0 && now >= (before || 0) ? (now - (before || 0)) / dt : null);
-  const point = { t, egress: null, ingress: null, req: {}, delay: {}, auth: {}, inprog: { ...st.in_progress.total } };
+  const point = { t, egress: null, ingress: null, req: {}, auth: {}, inprog: { ...st.in_progress.total } };
   if (dt > 0) {
     point.egress = rate(c.egress, prev.c.egress);
     point.ingress = rate(c.ingress, prev.c.ingress);
     for (const k of CLASSES) point.req[k] = rate(c.req[k] || 0, prev.c.req[k]);
-    for (const k of DELAYS) point.delay[k] = rate(c.delay[k] || 0, prev.c.delay[k]);
     for (const k of Object.keys(c.auth)) point.auth[k] = rate(c.auth[k], prev.c.auth[k]);
   }
   state.last = { t, pid: st.pid, c };
@@ -204,15 +198,14 @@ function niceScale(max, integer) {
 }
 
 class Chart {
-  // series: [{name, cls, get(point)}]; opts.refs() gives the dashed lines: [{value,
-  // label}]; opts.smooth averages each point with the previous ones, over that many
+  // series: [{name, cls, get(point)}]; opts.smooth averages each point with the
+  // previous ones, over that many
   constructor(title, series, format, opts = {}) {
     this.title = title;
     this.series = series;
     this.format = format;
     this.integer = !!opts.integer;
     this.smooth = opts.smooth || 1;
-    this.refs = opts.refs || (() => []);
     this.hover = null;
     this.legend = el("div", { class: "legend" });
     this.plot = el("div", { class: "plot" });
@@ -257,10 +250,8 @@ class Chart {
     const pw = w - PAD.l - PAD.r;
     const ph = HEIGHT - PAD.t - PAD.b;
     const t0 = (h.length ? h[h.length - 1].t : Date.now()) - WINDOW;
-    const refs = this.refs();
     let max = 0;
     for (const s of this.series) for (let i = 0; i < h.length; i++) max = Math.max(max, this.value(s, i) || 0);
-    for (const r of refs) max = Math.max(max, r.value);
     const { top, step } = niceScale(max, this.integer);
     const x = (t) => PAD.l + ((t - t0) / WINDOW) * pw;
     const y = (v) => PAD.t + (1 - v / top) * ph;
@@ -274,7 +265,6 @@ class Chart {
     for (const [f, label, anchor] of [[0, "−10 min", "start"], [0.5, "−5 min", "middle"], [1, "now", "end"]]) {
       svg.append(svgEl("text", { x: PAD.l + f * pw, y: HEIGHT - 4, "text-anchor": anchor }, label));
     }
-    for (const r of refs) svg.append(svgEl("line", { class: "ref", x1: PAD.l, x2: w - PAD.r, y1: y(r.value), y2: y(r.value) }));
     for (const s of this.series) {
       let d = "";
       let pen = false;
@@ -290,8 +280,6 @@ class Chart {
       }
       if (d) svg.append(svgEl("path", { class: s.cls, d }));
     }
-    // over the lines, which their outline hides
-    for (const r of refs) svg.append(svgEl("text", { class: "reflabel", x: w - PAD.r, y: y(r.value) - 4, "text-anchor": "end" }, r.label));
     const hovered = this.hover !== null && h[this.hover] ? h[this.hover] : null;
     if (hovered) svg.append(svgEl("line", { class: "cursor", x1: x(hovered.t), x2: x(hovered.t), y1: PAD.t, y2: PAD.t + ph }));
     this.plot.replaceChildren(svg);
@@ -313,16 +301,7 @@ const charts = [
       { name: "ingress", cls: "s2", get: (p) => p.ingress },
     ],
     bytesRate,
-    {
-      refs: () => {
-        const n = state.status && state.status.network;
-        const refs = [];
-        if (n && n.egress_rate > 0) refs.push({ value: n.egress_rate, label: "egress limit " + bytesRate(n.egress_rate) });
-        if (n && n.ingress_rate > 0) refs.push({ value: n.ingress_rate, label: "ingress limit " + bytesRate(n.ingress_rate) });
-        return refs;
-      },
-      smooth: 5,
-    },
+    { smooth: 5 },
   ),
   new Chart(
     "Requests per second, by status",
@@ -335,12 +314,6 @@ const charts = [
     KINDS.map((k, i) => ({ name: KIND_NAMES[k], cls: "s" + (i + 1), get: (p) => p.inprog[k] ?? null })),
     count,
     { integer: true },
-  ),
-  new Chart(
-    "Transfers held back by rate limits, on average",
-    DELAYS.map((k, i) => ({ name: k.replace(" ", ", "), cls: ["s1", "s5", "s2", "s4"][i], get: (p) => p.delay[k] })),
-    count,
-    { smooth: 5 },
   ),
 ];
 
@@ -367,6 +340,9 @@ function renderAlerts() {
     alerts.push(["err", `Cannot read weed: ${state.error}.` + (state.updated ? ` What follows is from ${age(Date.now() - state.updated)} ago.` : "")]);
   }
   if (st) {
+    if (st.storage_unmounted) {
+      alerts.push(["err", `The storage of the exported directory is not mounted, since ${when(st.storage_unmounted)}: requests get 503 until it is again.`]);
+    }
     for (const [reason, why] of Object.entries(st.restart_pending || {})) alerts.push(["warn", `Restart pending (${reason}): ${why}`]);
     if (st.reload && !st.reload.successful) {
       alerts.push(["warn", `The last reload (${when(st.reload.last)}) could not read every file, which kept their previous contents: see weed's log. The last complete one: ${when(st.reload.last_success)}.`]);
@@ -391,7 +367,6 @@ function renderAlerts() {
 }
 
 function renderTiles(st) {
-  const n = st.network;
   const inprog = st.in_progress.total;
   const accounts = new Set(st.workers.map((w) => w.account)).size;
   const blocked = st.workers.reduce((s, w) => s + w.blocked_threads, 0);
@@ -399,20 +374,14 @@ function renderTiles(st) {
   const push = gauge(state.samples, "weed_tpc_active_transfers", (l) => l.mode === "push") || 0;
   const errors = recent((p) => p.req["5xx"]);
   const tiles = [
-    tile("Egress", bytesRate(recent((p) => p.egress)), n && n.egress_rate > 0 ? "of " + bytesRate(n.egress_rate) : "no total limit"),
-    tile("Ingress", bytesRate(recent((p) => p.ingress)), n && n.ingress_rate > 0 ? "of " + bytesRate(n.ingress_rate) : "no total limit"),
+    tile("Egress", bytesRate(recent((p) => p.egress)), "downloads, TPC pushes"),
+    tile("Ingress", bytesRate(recent((p) => p.ingress)), "uploads, TPC pulls"),
     tile("Requests", perSecond(recent((p) => total(p.req))), `4xx ${perSecond(recent((p) => p.req["4xx"]))} · 5xx ${perSecond(errors)}`, errors > 0 ? "warn" : null),
     tile("In progress", count(total(inprog)), `${inprog.download || 0} down · ${inprog.upload || 0} up · ${(inprog.tpc_pull || 0) + (inprog.tpc_push || 0)} TPC`),
-  ];
-  if (n) {
-    const held = n.accounts.reduce((s, a) => s + a.held_egress + a.held_ingress, 0);
-    tiles.push(tile("Held by rates", count(held), `${count(recent((p) => total(p.delay)))} on average`, held ? "warn" : null));
-  }
-  tiles.push(
     tile("Workers", count(st.workers.length), `${accounts} accounts · ${blocked} blocked threads`, blocked ? "err" : null),
     tile("Third-party copies", count(pull + push), `${pull} pulling · ${push} pushing`),
     tile("Banned users", count(st.banned_users), "weed utils bans lists them"),
-  );
+  ];
   $("tiles").replaceChildren(...tiles);
 }
 
@@ -451,37 +420,17 @@ const ACCOUNT_COLUMNS = [
     render: (r) => KINDS.filter((k) => r.kinds[k]).map((k) => `${r.kinds[k]} ${(r.kinds[k] === 1 ? KIND_NAME : KIND_NAMES)[k]}`).join(", ") || "–",
   },
   {
-    key: "held", label: "Held out / in", num: true, network: true,
-    value: (r) => (r.limits ? r.limits.held_egress + r.limits.held_ingress : 0),
-    render: (r) => (r.limits ? el("span", { class: r.limits.held_egress + r.limits.held_ingress ? "held" : null }, `${r.limits.held_egress} / ${r.limits.held_ingress}`) : "–"),
-  },
-  {
-    key: "egress", label: "Egress rate", num: true, network: true,
-    value: (r) => (r.limits && r.limits.egress_rate > 0 ? r.limits.egress_rate : Infinity),
-    render: (r) => (r.limits ? limitRate(r.limits.egress_rate) : "–"),
-  },
-  {
-    key: "ingress", label: "Ingress rate", num: true, network: true,
-    value: (r) => (r.limits && r.limits.ingress_rate > 0 ? r.limits.ingress_rate : Infinity),
-    render: (r) => (r.limits ? limitRate(r.limits.ingress_rate) : "–"),
-  },
-  {
-    key: "weight", label: "Weight", num: true, network: true,
-    value: (r) => (r.limits ? r.limits.weight : 0),
-    render: (r) => (r.limits ? r.limits.weight : "–"),
-  },
-  {
     key: "blocked", label: "Blocked threads", num: true,
     value: (r) => r.blocked,
     render: (r) => (r.blocked ? el("span", { class: "bad" }, r.blocked) : "0"),
   },
 ];
 
-// accountRows joins, by account, its workers, its requests in progress and its rates
+// accountRows joins, by account, its workers and its requests in progress
 function accountRows(st) {
   const rows = new Map();
   const row = (name) => {
-    if (!rows.has(name)) rows.set(name, { account: name, workers: 0, retired: 0, blocked: 0, kinds: {}, inprog: 0, limits: null });
+    if (!rows.has(name)) rows.set(name, { account: name, workers: 0, retired: 0, blocked: 0, kinds: {}, inprog: 0 });
     return rows.get(name);
   };
   for (const w of st.workers) {
@@ -495,14 +444,13 @@ function accountRows(st) {
     r.kinds = kinds;
     r.inprog = total(kinds) || 0;
   }
-  for (const a of (st.network && st.network.accounts) || []) row(a.account).limits = a;
   return [...rows.values()];
 }
 
 function renderAccounts() {
   const st = state.status;
   if (!st) return;
-  const columns = ACCOUNT_COLUMNS.filter((c) => !c.network || st.network);
+  const columns = ACCOUNT_COLUMNS;
   const sortBy = columns.find((c) => c.key === state.sort.key && c.value) || columns[0];
   const filter = state.filter.toLowerCase();
   const rows = accountRows(st).filter((r) => r.account.toLowerCase().includes(filter));

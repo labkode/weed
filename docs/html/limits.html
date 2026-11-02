@@ -98,21 +98,16 @@
 <header id="title-block-header">
 <h1 class="title">Limits per account</h1>
 </header>
-<p>weed limits what each Unix account uses: memory, CPU, I/O and processes through the cgroup of its workers, and the network through rates that weed keeps itself. The configuration sets the limits of every account. A limits file sets them otherwise for some users and groups, and weed re-reads it when it reloads.</p>
+<p>weed has the kernel limit what each Unix account uses: memory, CPU, I/O and processes, through the cgroup of its workers. The configuration sets the limits of every account. A limits file sets them otherwise for some users and groups, and weed re-reads it when it reloads. The network, weed does not limit itself (see <a href="#network">Network</a>).</p>
 <pre><code>[unix_users]
 cgroup_limits = [&quot;memory.max=8G&quot;, &quot;pids.max=5000&quot;]
-limits = &quot;/etc/weed/limits.json&quot;
-
-[network]
-egress_rate = &quot;9Gbit/s&quot;
-ingress_rate = &quot;9Gbit/s&quot;
-account_egress_rate = &quot;2Gbit/s&quot;</code></pre>
+limits = &quot;/etc/weed/limits.json&quot;</code></pre>
 <h2 id="file">The limits file</h2>
 <p><code>unix_users.limits</code> names a JSON file of rules, each for a user or for a Unix group:</p>
 <pre><code>[
-  {&quot;group&quot;: &quot;cms&quot;, &quot;cgroup_limits&quot;: [&quot;memory.max=32G&quot;, &quot;cpu.weight=400&quot;], &quot;weight&quot;: 300, &quot;egress_rate&quot;: &quot;max&quot;},
-  {&quot;user&quot;: &quot;cmsprod&quot;, &quot;weight&quot;: 1000},
-  {&quot;user&quot;: &quot;alice&quot;, &quot;ingress_rate&quot;: &quot;10MB/s&quot;}
+  {&quot;group&quot;: &quot;cms&quot;, &quot;cgroup_limits&quot;: [&quot;memory.max=32G&quot;, &quot;cpu.weight=400&quot;]},
+  {&quot;user&quot;: &quot;cmsprod&quot;, &quot;cgroup_limits&quot;: [&quot;cpu.weight=1000&quot;]},
+  {&quot;user&quot;: &quot;alice&quot;, &quot;cgroup_limits&quot;: [&quot;io.max=8:16 rbps=100000000 wbps=50000000&quot;]}
 ]</code></pre>
 <table>
 <thead>
@@ -134,23 +129,11 @@ account_egress_rate = &quot;2Gbit/s&quot;</code></pre>
 <td><code>cgroup_limits</code></td>
 <td>file=value settings of the account's cgroup, as <code>unix_users.cgroup_limits</code></td>
 </tr>
-<tr>
-<td><code>egress_rate</code></td>
-<td>the most the account sends, as <code>network.account_egress_rate</code></td>
-</tr>
-<tr>
-<td><code>ingress_rate</code></td>
-<td>the most the account receives, as <code>network.account_ingress_rate</code></td>
-</tr>
-<tr>
-<td><code>weight</code></td>
-<td>the account's share of the total rates, from 1 to 10000 (default 100)</td>
-</tr>
 </tbody>
 </table>
-<p>Each setting of an account comes from the first rule for the user that has it, else from the first rule for one of its groups that has it, else from the configuration. Cgroup limits are taken file by file in the same way. With the file above, every member of cms gets memory.max=32G, cpu.weight=400, pids.max=5000 and no egress rate; cmsprod gets the same with a weight of 1000; alice gets the defaults with an ingress rate of 10MB/s. A rate of "max" lifts a limit that a group or the configuration sets.</p>
-<p>weed reads the file at startup, and does not start if it cannot. A misspelt key, a group that does not exist or a value out of range makes the file unreadable. When weed reloads (see <a href="reloading.html">Reloading</a>), it reads the file again and applies it at once: the rates to transfers in progress, the cgroup limits to the accounts that have workers. A file that cannot be read then keeps the previous rules, and the reload is partial:</p>
-<pre><code>level=WARN msg=&quot;cannot read limits file, keeping the previous rules&quot; file=/etc/weed/limits.json rules=3 error=&quot;/etc/weed/limits.json: json: unknown field \&quot;egres_rate\&quot;&quot;</code></pre>
+<p>Each cgroup limit of an account comes from the first rule for the user that sets its file, else from the first rule for one of its groups that does, else from the configuration. With the file above, every member of cms gets memory.max=32G, cpu.weight=400 and pids.max=5000; cmsprod, if a member, the same with cpu.weight=1000; alice gets the defaults, and reads 100 MB/s and writes 50 MB/s at most of the block device 8:16. A limit set to its value without limit (memory.max=max) lifts one that a group or the configuration sets.</p>
+<p>weed reads the file at startup, and does not start if it cannot. A misspelt key, a group that does not exist or a cgroup file that is not one makes the file unreadable; the kernel checks the values as weed writes them. When weed reloads (see <a href="reloading.html">Reloading</a>), it reads the file again and writes the cgroup limits of the accounts that have workers at once. A file that cannot be read then keeps the previous rules, and the reload is partial:</p>
+<pre><code>level=WARN msg=&quot;cannot read limits file, keeping the previous rules&quot; file=/etc/weed/limits.json rules=3 error=&quot;/etc/weed/limits.json: json: unknown field \&quot;cgroup_limit\&quot;&quot;</code></pre>
 <h2 id="cgroups">Memory, CPU and I/O</h2>
 <p>The workers of each account run in a cgroup of their own (see <a href="unix-accounts.html#cgroups">Unix accounts</a>). When one starts, weed writes the account's cgroup limits; when weed reloads, it writes them again for the accounts that have workers. The kernel applies a limit to the account's workers together, retired ones included.</p>
 <pre><code># cat /sys/fs/cgroup/system.slice/weed.service/worker-cms001/memory.max
@@ -160,49 +143,11 @@ account_egress_rate = &quot;2Gbit/s&quot;</code></pre>
 <p>weed sets cgroups up at startup when the configuration or the limits file has cgroup limits, or <code>unix_users.cgroups</code> is set. If a reload brings the first cgroup limits, restart weed to apply them.</p>
 <p>The Go runtime of a worker keeps its memory below 90% of the lower of memory.max and memory.high, so that it collects garbage harder before the kernel reclaims its memory or kills it. A worker reads the limits of its cgroup when it starts and when weed reloads (GOMEMLIMIT, in weed's environment, prevails):</p>
 <pre><code>level=INFO msg=&quot;set the Go memory limit from the cgroup&#39;s&quot; worker.user=cms001 worker.pid=215 cgroup_memory_limit=17179869184 go_memory_limit=15461882262</code></pre>
-<h2 id="network">Network rates</h2>
-<p>Egress are the bytes weed sends: downloads, and the third-party copies it pushes. Ingress are those it receives: uploads, and the third-party copies it pulls. The bodies of requests and responses count, their headers do not. Rates are written as "100MB/s", "10Gbit/s" or "1GiB/s" (k, M, G and T are powers of 1000, Ki, Mi, Gi and Ti of 1024), and "max" or "" is no limit.</p>
-<p><code>network.account_egress_rate</code> and <code>account_ingress_rate</code> are the most each account sends and receives, all its transfers together, unless the limits file says otherwise. <code>network.egress_rate</code> and <code>ingress_rate</code> are the most weed sends and receives, all accounts together.</p>
-<p>weed relays what clients send and receive, and holds a transfer back when it is ahead of a rate. The workers make third-party copies themselves, and ask weed for each part they move, so the same rates apply to them. A rate is kept on average: a transfer moves a little before it waits (256 KiB, 512 KiB for a third-party copy), so a small file can go faster than its rate.</p>
-<h3 id="weights">Sharing the total by weight</h3>
-<p>When a total rate holds transfers back, the accounts that want more than they get share it in proportion to their weights. An account that wants less than its share gets what it wants, and leaves the rest to the others; an account alone gets it all, up to its own rate. The weight is the account's, whatever the number of its transfers.</p>
-<p>With the file above, an <code>egress_rate</code> of 40MB/s and an <code>account_egress_rate</code> of 30MB/s, cms001 (weight 300) and alice (weight 100) each downloaded 64 MiB at the same time. cms001 got 30MB/s, alice 10MB/s; once cms001 was done, alice got 30MB/s, her own rate:</p>
-<pre><code>cms001 67108864 bytes in 2.291244 s: 29289269 B/s
-alice 67108864 bytes in 3.755363 s: 17870140 B/s</code></pre>
-<p>Weights decide who gets what only where weed is the bottleneck. When the network is, its queues decide, and they share among connections, not accounts. To decide it in weed, set the total rates a little below what the network carries, e.g. 9Gbit/s on a 10 Gbit/s link.</p>
-<h3 id="shows">What weed shows</h3>
-<p>At startup:</p>
-<pre><code>level=INFO msg=&quot;network rates are limited&quot; egress_rate=40MB/s ingress_rate=40MB/s account_egress_rate=30MB/s account_ingress_rate=max limits_file=/etc/weed/limits.json</code></pre>
-<p>/status (see <a href="monitoring.html#status">Monitoring</a>) has the total rates, in bytes per second (0: no limit), the rules of the limits file, and the rates and weight of each account with workers or requests in progress. held_egress and held_ingress are its transfers that a rate holds back now:</p>
-<pre><code># curl -s localhost:9100/status | jq .network
-{
-  &quot;egress_rate&quot;: 40000000,
-  &quot;ingress_rate&quot;: 40000000,
-  &quot;rules&quot;: 3,
-  &quot;accounts&quot;: [
-    {
-      &quot;account&quot;: &quot;alice&quot;,
-      &quot;egress_rate&quot;: 30000000,
-      &quot;ingress_rate&quot;: 10000000,
-      &quot;weight&quot;: 100,
-      &quot;held_egress&quot;: 1,
-      &quot;held_ingress&quot;: 0
-    },
-    {
-      &quot;account&quot;: &quot;cms001&quot;,
-      &quot;egress_rate&quot;: 0,
-      &quot;ingress_rate&quot;: 0,
-      &quot;weight&quot;: 300,
-      &quot;held_egress&quot;: 1,
-      &quot;held_ingress&quot;: 0
-    }
-  ]
-}</code></pre>
-<p><code>weed_network_delay_seconds_total{direction, limit}</code> adds up how long transfers waited, because of their account's rate (limit="account") or of the total (limit="total"). Its rate is how many transfers wait, on average:</p>
-<pre><code>weed_network_delay_seconds_total{direction=&quot;egress&quot;,limit=&quot;account&quot;} 3.47101971
-weed_network_delay_seconds_total{direction=&quot;egress&quot;,limit=&quot;total&quot;} 4.321274925
-weed_network_delay_seconds_total{direction=&quot;ingress&quot;,limit=&quot;account&quot;} 1.608468295</code></pre>
-<p>Without network rates and without a limits file, weed does not pace anything, and /status has no network section.</p>
+<h2 id="network">Network</h2>
+<p>weed does not pace transfers: the kernel does, on the network interface, with tc. A queueing discipline at the root limits what the machine sends: in total with htb or tbf, each connection with fq's maxrate, e.g.</p>
+<pre><code># tc qdisc replace dev eth0 root fq maxrate 2gbit</code></pre>
+<p>What it receives, a policer limits (tc's ingress qdisc), or a shaper on an ifb device that the traffic is redirected to. See tc(8), tc-htb(8) and tc-fq(8).</p>
+<p>The kernel cannot tell the accounts apart there: the clients' transfers flow through weed's own process, which terminates TLS and relays them to the workers. What each account reads and writes of a block device, io.max in its cgroup limits (above); NFS and other network file systems have no block device of their own, and io.max does not apply to them.</p>
 </div>
 <!-- end content -->
 </body>

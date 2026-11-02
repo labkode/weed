@@ -100,7 +100,7 @@
 </header>
 <p>Every option of the configuration file, with its default. <em>weed config</em> prints the same, as a configuration file, and this page is made from it. Without a configuration file, weed uses these defaults except <code>server.address = "127.0.0.1"</code> and <code>server.anonymous = true</code> (see <a href="configuration.html#quickstart">Configuration</a>).</p>
 <p>Paths are used as written: relative ones are relative to the directory weed starts in. Durations are strings such as <code>"90s"</code>, <code>"10m"</code> or <code>"24h"</code>.</p>
-<p>Sections: <a href="#server">[server]</a>, <a href="#tls">[tls]</a>, <a href="#x509">[x509]</a>, <a href="#basic">[basic]</a>, <a href="#oidc">[oidc]</a>, <a href="#macaroons">[macaroons]</a>, <a href="#tokens">[tokens]</a>, <a href="#tpc">[tpc]</a>, <a href="#unix_users">[unix_users]</a>, <a href="#network">[network]</a>, <a href="#admin">[admin]</a>.</p>
+<p>Sections: <a href="#server">[server]</a>, <a href="#tls">[tls]</a>, <a href="#x509">[x509]</a>, <a href="#basic">[basic]</a>, <a href="#oidc">[oidc]</a>, <a href="#macaroons">[macaroons]</a>, <a href="#tokens">[tokens]</a>, <a href="#tpc">[tpc]</a>, <a href="#unix_users">[unix_users]</a>, <a href="#admin">[admin]</a>.</p>
 <h2 id="server">[server]</h2>
 <p>Server. See <a href="configuration.html">Configuration</a>.</p>
 <table>
@@ -126,6 +126,11 @@
 <td><span id="server.dir"><code>dir</code></span></td>
 <td><code>"."</code></td>
 <td>Directory exported under /webdav/.</td>
+</tr>
+<tr>
+<td><span id="server.require_mount"><code>require_mount</code></span></td>
+<td><code>false</code></td>
+<td>Serve dir only from a file system other than that of /, the storage mounted at dir or above it: weed does not start while it is not mounted, and never serves the directory beneath it.</td>
 </tr>
 <tr>
 <td><span id="server.anonymous"><code>anonymous</code></span></td>
@@ -437,11 +442,6 @@
 <td>At most this many requests in progress in each worker process, counted until the worker has finished them, also once their clients have gone; beyond, requests of its account get 503. A request whose storage does not answer blocks a thread of the worker until it does.</td>
 </tr>
 <tr>
-<td><span id="unix_users.landlock"><code>landlock</code></span></td>
-<td><code>true</code></td>
-<td>Confine the worker processes with Landlock (Linux 5.19 or later, with landlock in lsm=): they may write below dir alone, and read only below it and the system's files (/etc, /usr, /proc, /sys/fs/cgroup) and tpc.ca_path, whatever the permissions. Without Landlock in the kernel, weed says so as it starts, and workers are confined by Unix permissions only.</td>
-</tr>
-<tr>
 <td><span id="unix_users.cgroups"><code>cgroups</code></span></td>
 <td><code>false</code></td>
 <td>Run the worker processes of each account in a cgroup of their own, below weed's, which must be delegated to weed (systemd: Delegate=yes); cgroup v2.</td>
@@ -454,40 +454,7 @@
 <tr>
 <td><span id="unix_users.limits"><code>limits</code></span></td>
 <td><code>""</code></td>
-<td>Limits of some users and Unix groups, in this JSON file ("" for none), which weed re-reads when it reloads: [{"user": "alice", "egress_rate": "100MB/s"}, {"group": "cms", "cgroup_limits": ["memory.max=32G"], "ingress_rate": "1GB/s", "weight": 400}]. A setting of a rule for the user prevails over one for a group, which prevails over cgroup_limits (file by file) and network.account_*_rate; weight, from 1 to 10000 (default 100), is the account's share of network.egress_rate and ingress_rate when they hold transfers back.</td>
-</tr>
-</tbody>
-</table>
-<h2 id="network">[network]</h2>
-<p>Network rate limits, such as "100MB/s", "10Gbit/s" or "1GiB/s" ("" or "max": no limit). Egress are the bytes weed sends (downloads, third-party copies it pushes), ingress those it receives (uploads, third-party copies it pulls); bodies count, headers do not. See <a href="limits.html#network">Limits per account</a>.</p>
-<table>
-<thead>
-<tr>
-<th>Option</th>
-<th>Default</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><span id="network.egress_rate"><code>egress_rate</code></span></td>
-<td><code>""</code></td>
-<td>The most weed sends, all accounts together: when it holds transfers back, the accounts that want more share it in proportion to their weights (unix_users.limits). For weed to decide who gets what, rather than the network, set it a little below the network's capacity.</td>
-</tr>
-<tr>
-<td><span id="network.ingress_rate"><code>ingress_rate</code></span></td>
-<td><code>""</code></td>
-<td>The most weed receives, all accounts together, shared in the same way.</td>
-</tr>
-<tr>
-<td><span id="network.account_egress_rate"><code>account_egress_rate</code></span></td>
-<td><code>""</code></td>
-<td>The most each account sends, unless unix_users.limits says otherwise.</td>
-</tr>
-<tr>
-<td><span id="network.account_ingress_rate"><code>account_ingress_rate</code></span></td>
-<td><code>""</code></td>
-<td>The most each account receives, unless unix_users.limits says otherwise.</td>
+<td>Cgroup limits of some users and Unix groups, in this JSON file ("" for none), which weed re-reads when it reloads: [{"user": "alice", "cgroup_limits": ["io.max=8:16 wbps=100000000"]}, {"group": "cms", "cgroup_limits": ["memory.max=32G", "cpu.weight=400"]}]. A limit of a rule for the user prevails over one for a group, which prevails over cgroup_limits, file by file (implies cgroups).</td>
 </tr>
 </tbody>
 </table>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,10 +22,23 @@ import (
 )
 
 // anyFile is what the test workers serve: a GET reads the file at the path of its
-// URL, a PUT writes it, wherever it is, as a worker with a bug would
+// URL, a PUT writes it, wherever it is, as a worker with a bug would; DIAL connects
+// to the TCP address of the path, LISTEN listens on a port
 var anyFile = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch r.Method {
+	case "DIAL":
+		var c net.Conn
+		if c, err = net.Dial("tcp", strings.TrimPrefix(r.URL.Path, "/")); err == nil {
+			c.Close()
+			return
+		}
+	case "LISTEN":
+		var l net.Listener
+		if l, err = net.Listen("tcp", "127.0.0.1:0"); err == nil {
+			l.Close()
+			return
+		}
 	case "GET":
 		var b []byte
 		if b, err = os.ReadFile(r.URL.Path); err == nil {
@@ -66,7 +80,7 @@ func TestLandlock(t *testing.T) {
 	os.WriteFile(filepath.Join(export, "in"), []byte("in"), 0o644)
 	os.WriteFile(filepath.Join(outside, "out"), []byte("out"), 0o644)
 
-	p, err := New(Options{Config: config.Config{Directory: export}, Landlock: true})
+	p, err := New(Options{Config: config.Config{Directory: export}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +125,8 @@ func TestLandlock(t *testing.T) {
 
 // A storage mounted again over the exported directory, whose root has the same device
 // and inode numbers as before, but is another inode for Landlock, gets workers that
-// reach it. It needs a privileged container, and mkfs.ext4.
+// reach it. Unmounted in between, the directory beneath gets none. It needs a
+// privileged container, and mkfs.ext4.
 func TestLandlockRemount(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("starting workers as other accounts needs root")
@@ -146,7 +161,8 @@ func TestLandlockRemount(t *testing.T) {
 	mount()
 	before, _ := identify(unix.AT_FDCWD, export)
 
-	p, err := New(Options{Config: config.Config{Directory: export}, Landlock: true})
+	lost := make(chan bool, 10)
+	p, err := New(Options{Config: config.Config{Directory: export}, Unmounted: func(u bool) { lost <- u }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +172,38 @@ func TestLandlockRemount(t *testing.T) {
 	}
 	pid := p.Workers()[0].PID
 	umount()
+	beneath, _ := identify(unix.AT_FDCWD, export)
+	root, _ := identify(unix.AT_FDCWD, "/")
+	blocked := beneath.dev == root.dev
+	if !blocked {
+		t.Logf("the directory beneath is not on the file system of / (%s is a tmpfs?): not blocked", base)
+	} else {
+		select {
+		case u := <-lost:
+			if !u {
+				t.Fatal("Unmounted(false) first")
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("no Unmounted(true) once the storage was unmounted")
+		}
+		if code, body := asNobody(p, "PUT", filepath.Join(export, "beneath")); code != 503 {
+			t.Errorf("PUT while unmounted = %d (%s), want 503", code, strings.TrimSpace(body))
+		}
+		if _, err := os.Stat(filepath.Join(export, "beneath")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("written in the directory beneath: %v", err)
+		}
+	}
 	mount()
+	if blocked {
+		select {
+		case u := <-lost:
+			if u {
+				t.Fatal("Unmounted(true) again")
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("no Unmounted(false) once the storage was mounted again")
+		}
+	}
 	defer umount()
 	if after, _ := identify(unix.AT_FDCWD, export); after.dev != before.dev || after.ino != before.ino {
 		t.Logf("mounted again, the root is another file: %+v, %+v", before, after)
@@ -190,22 +237,40 @@ func replaced(t *testing.T, p *Pool, pid int) {
 	t.Errorf("worker %d was not replaced", pid)
 }
 
-// What Landlock refuses that this process can open is found before workers start, as
-// on file systems that Landlock cannot follow
-func TestReachable(t *testing.T) {
-	if abi := landlock.ABI(); abi < landlock.MinABI {
+// Workers bind no TCP port, and connect to none unless they make third-party copies
+func TestLandlockTCP(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("starting workers as other accounts needs root")
+	}
+	if abi := landlock.ABI(); abi < landlock.TCPABI {
 		t.Skipf("Landlock ABI %d", abi)
 	}
-	in, out := t.TempDir(), t.TempDir()
-	rs, err := landlock.New([]landlock.Rule{{Path: in, Access: landlock.Read}})
+	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rs.Close()
-	if err := reachable(rs, in, filepath.Join(in, "missing")); err != nil {
-		t.Errorf("allowed: %v", err)
-	}
-	if err := reachable(rs, in, out); err == nil || !strings.Contains(err.Error(), "could not open "+out+" which weed opens without") {
-		t.Errorf("refused: %v", err)
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	for _, tpc := range []bool{false, true} {
+		p, err := New(Options{Config: config.Config{Directory: t.TempDir(), TPC: tpc}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[bool]int{false: 403, true: 200}[tpc]
+		if code, body := asNobody(p, "DIAL", "/"+l.Addr().String()); code != want {
+			t.Errorf("tpc %v: connect = %d (%s), want %d", tpc, code, strings.TrimSpace(body), want)
+		}
+		if code, body := asNobody(p, "LISTEN", "/"); code != 403 {
+			t.Errorf("tpc %v: bind = %d (%s), want 403", tpc, code, strings.TrimSpace(body))
+		}
+		p.Close(context.Background())
 	}
 }

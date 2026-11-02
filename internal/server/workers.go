@@ -1,19 +1,19 @@
 package server
 
 import (
-	"cmp"
 	"context"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/labkode/weed/internal/auth"
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/davreq"
 	"github.com/labkode/weed/internal/handlers"
-	"github.com/labkode/weed/internal/limits"
 	"github.com/labkode/weed/internal/logger"
+	"github.com/labkode/weed/internal/systemd"
 	"github.com/labkode/weed/internal/worker"
 	"github.com/labkode/weed/internal/x509utils"
 )
@@ -31,18 +31,29 @@ func (s *Server) startWorkers() error {
 	if _, err := s.loadLimits(); err != nil {
 		return err
 	}
-	if s.limitsConfigured() {
-		s.shaper = limits.NewShaper(s.limits.Load())
-	}
 	s.cgroups = s.Config.WorkerCgroups || len(s.Config.WorkerCgroupLimits) > 0 || s.limits.Load().HasCgroupLimits()
+	s.moved = make(chan error, 1)
 	opts := worker.Options{
 		Config:       workerConfig(s.Config, dir),
 		IdleTimeout:  s.Config.WorkerIdleTimeout,
 		MaxWorkers:   s.Config.MaxWorkers,
 		Cgroups:      s.cgroups,
 		CgroupLimits: s.cgroupLimits,
-		Shaper:       s.shaper,
-		Landlock:     s.Config.WorkerLandlock,
+		Confined:     confined,
+		Moved: func(err error) {
+			select {
+			case s.moved <- err:
+			default:
+			}
+		},
+		Unmounted: func(lost bool) {
+			var u *unmounted
+			if lost {
+				u = &unmounted{since: time.Now(), dir: dir}
+			}
+			s.unmounted.Store(u)
+			systemd.Status(s.StatusLine())
+		},
 		Refused: func(account string) bool {
 			_, banned := s.Bans.Get(account)
 			return banned
@@ -65,11 +76,6 @@ func (s *Server) startWorkers() error {
 	s.Workers = pool
 	slog.Info("files are accessed by a worker process per Unix account",
 		"idle_timeout", s.Config.WorkerIdleTimeout, "max_workers", s.Config.MaxWorkers, "max_requests", s.Config.WorkerMaxRequests, "cgroups", s.cgroups)
-	if s.shaper != nil {
-		c := s.Config
-		slog.Info("network rates are limited", "egress_rate", cmp.Or(c.EgressRate, "max"), "ingress_rate", cmp.Or(c.IngressRate, "max"),
-			"account_egress_rate", cmp.Or(c.AccountEgressRate, "max"), "account_ingress_rate", cmp.Or(c.AccountIngressRate, "max"), "limits_file", c.LimitsFile)
-	}
 	return nil
 }
 
@@ -141,7 +147,7 @@ func RunWorker() error {
 	}
 	h := handlers.NewWebDAVHandler(cfg.Directory, &cfg, nil)
 	if cfg.TPC {
-		if h.TPC, err = newTPCEngine(&cfg, c.Payer()); err != nil {
+		if h.TPC, err = newTPCEngine(&cfg); err != nil {
 			return c.Fail(err)
 		}
 	}

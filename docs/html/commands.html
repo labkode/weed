@@ -116,7 +116,7 @@ as root. On macOS, it serves for development only: in its own process, as the
 account that runs it (not root), for every identity.</code></pre>
 <h2 id="weed">weed</h2>
 <pre><code># weed -config /etc/weed/weed.toml</code></pre>
-<p>Serves until SIGTERM or SIGINT, then stops accepting requests, gives those in progress 30 seconds to finish, and stops its workers. SIGHUP reopens the log file and reloads credentials (see <a href="reloading.html">Reloading</a>). Under systemd, weed tells systemd when it is ready, reloading and stopping, and its status line (see <a href="installation.html#systemd">Installation</a>).</p>
+<p>Serves until SIGTERM or SIGINT, then stops accepting requests, gives those in progress 30 seconds to finish, and stops its workers. SIGHUP reopens the log file and reloads credentials (see <a href="reloading.html">Reloading</a>). Under systemd, weed tells systemd when it is ready, reloading and stopping, and its status line, and serves on the sockets that systemd passes, if it does (see <a href="installation.html#systemd">Installation</a>).</p>
 <p>weed serves on Linux, as root or with CAP_SETUID and CAP_SETGID. On macOS, it serves for development only (see <a href="getting-started.html#macos">Getting started</a>); on other systems, it does not serve. <em>weed worker</em> is how weed starts its worker processes: it is not for running by hand.</p>
 <table>
 <thead>
@@ -133,6 +133,10 @@ account that runs it (not root), for every identity.</code></pre>
 <tr>
 <td>1</td>
 <td>weed could not start, or stopped on an error; it says why on standard error and in its log</td>
+</tr>
+<tr>
+<td>75</td>
+<td>weed stopped to be started again: a storage was mounted over the exported directory, or in its place (see <a href="installation.html#mounted">Installation</a>)</td>
 </tr>
 <tr>
 <td>2</td>

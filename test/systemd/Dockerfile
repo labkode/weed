@@ -1,0 +1,12 @@
+# systemd as PID 1, as on weed's target, AlmaLinux 10 (systemd 257: Type=notify-reload
+# needs 253 or later), for make test-systemd
+FROM almalinux:10
+RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
+        systemd dbus util-linux shadow-utils procps-ng curl jq diffutils && \
+    dnf clean all && \
+    systemctl mask getty.target console-getty.service systemd-firstboot.service \
+        systemd-udevd.service systemd-udev-trigger.service systemd-hwdb-update.service \
+        systemd-modules-load.service
+ENV container=docker
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

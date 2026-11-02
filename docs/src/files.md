@@ -8,6 +8,7 @@ The files that weed reads and writes, with the paths of the examples in this gui
 |----|----|----|----|
 | /usr/local/bin/weed |  | root, 0755 | The binary. Replace it, do not write into it (see [Upgrading](upgrading.html)). |
 | /etc/systemd/system/weed.service |  | root, 0644 | The unit (see [Installation](installation.html#systemd)). |
+| /etc/systemd/system/weed.socket |  | root, 0644 | The sockets that systemd listens on for weed, if you use them (see [Installation](installation.html#socket-activation)). |
 | /etc/weed/weed.toml | `-config` | root, 0600 if it holds secrets | The configuration, read at startup. |
 | /etc/grid-security/hostcert.pem, hostkey.pem | `tls.cert`, `tls.key` | root; the key 0400 | The host certificate and key, reloaded. |
 | /etc/grid-security/certificates/ | `x509.ca`, `x509.crl_path`, `tpc.ca_path` | readable by all | CAs and CRLs, kept current by fetch-crl, reloaded. The workers read `tpc.ca_path` as their accounts. |

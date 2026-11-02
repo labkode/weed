@@ -215,6 +215,12 @@
 <td>Worker processes that exited, by reason: stopped when asked to (e.g. when idle), killed when their account was banned, failed otherwise.</td>
 </tr>
 <tr>
+<td><span id="weed_storage_unmounted"><code>weed_storage_unmounted</code></span></td>
+<td>gauge</td>
+<td></td>
+<td>1 while the storage that the exported directory was on when weed started is not mounted: requests get 503 until it is again, never served from the directory beneath (see <a href="installation.html#mounted">Installation</a>).</td>
+</tr>
+<tr>
 <td><span id="weed_worker_blocked_threads"><code>weed_worker_blocked_threads</code></span></td>
 <td>gauge</td>
 <td></td>
@@ -233,12 +239,6 @@
 </tr>
 </thead>
 <tbody>
-<tr>
-<td><span id="weed_network_delay_seconds_total"><code>weed_network_delay_seconds_total</code></span></td>
-<td>counter</td>
-<td>direction, limit</td>
-<td>How long transfers waited because of network rates, by direction (egress, ingress) and limit: account, the account's own rate, or total, weed's total rate, which accounts share by weight. Transfers in parallel each count, so its rate is how many wait, on average (see <a href="limits.html#shows">Limits per account</a>). Absent without network rates.</td>
-</tr>
 </tbody>
 </table>
 <h2 id="credentials">Credentials</h2>
@@ -360,6 +360,7 @@ weed_restart_pending{reason=&quot;binary&quot;} 0
 weed_reload_last_success_timestamp_seconds 1.793264817406e+09
 weed_reload_last_successful 1
 weed_banned_users 0
+weed_storage_unmounted 0
 weed_worker_blocked_threads 0</code></pre>
 <p>Series of a counter appear once something has been counted; weed_requests_in_progress and weed_restart_pending have every series from the start.</p>
 </div>

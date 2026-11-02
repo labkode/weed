@@ -98,7 +98,7 @@
 <header id="title-block-header">
 <h1 class="title">Installation</h1>
 </header>
-<p>weed is a single binary, without runtime dependencies. You build it from source with Go, install it, and run it as a systemd service.</p>
+<p>weed is a single binary, without runtime dependencies. You build it from source with Go, install it, and run it as a systemd service, or under another supervisor (see <a href="#without-systemd">Without systemd</a>).</p>
 <h2 id="building">Building</h2>
 <p>weed needs Go 1.26 or later to build. In a checkout of the source:</p>
 <pre><code>$ git clone https://github.com/labkode/weed.git
@@ -151,15 +151,24 @@ build    go:2CX-x4_-THjPR2Dy4JCE/TtMef8lUxfkIJsGhiXwh/3-NbDYhNvYZpdojQpjfp/Dg3..
 <p>weed is a notify service: it tells systemd when it is ready (once it listens), when it reloads and when it stops, and keeps its status line current. Write /etc/systemd/system/weed.service:</p>
 <pre><code>[Unit]
 Description=weed WebDAV server
-After=network-online.target
+After=network-online.target remote-fs.target
 Wants=network-online.target
+# Restart= for ever, not 5 times in 10 seconds and then never again
+StartLimitIntervalSec=0
 
 [Service]
 # systemd 253 or later; before, Type=notify and ExecReload=/bin/kill -HUP $MAINPID
 Type=notify-reload
 ExecStartPre=/usr/local/bin/weed check -config /etc/weed/weed.toml
 ExecStart=/usr/local/bin/weed -config /etc/weed/weed.toml
+# After a crash, and when weed exits to start again (status 75): in 2 seconds, and
+# up to a minute apart while it keeps failing (RestartSteps=: systemd 254)
 Restart=on-failure
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=1min
+# A worker that the kernel kills for its memory does not stop weed
+OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target</code></pre>
@@ -174,6 +183,7 @@ WantedBy=multi-user.target</code></pre>
 <p>If weed cannot start, the journal says why, also when weed logs to a file (<code>server.log_file</code>):</p>
 <pre><code>weed: cannot start: failed to load the grid-mapfile: open /etc/grid-security/grid-mapfile: no such file or directory</code></pre>
 <p>On stop, weed stops taking connections, and gives the requests in progress 30 seconds to finish (so do the workers). Transfers still running after that are cancelled; an upload that is cancelled never replaces a file.</p>
+<p>weed starts again on its own: after a crash, and after it exited because a storage was mounted over the exported directory (below). While it keeps failing to start, such as while its storage is not mounted (<code>require_mount</code>, below), systemd tries again ever less often, every minute at last, and never gives up. With OOMPolicy=continue, a worker that the kernel kills for its memory is one that weed starts again at the account's next request, and the other accounts do not notice; without it, systemd would stop weed as a whole (its default, except with Delegate=yes). Limit the memory of each account (<code>memory.max</code> in <code>unix_users.cgroup_limits</code>, see <a href="limits.html">Limits per account</a>): an account that reaches it has its worker killed within its own cgroup, never weed's own process.</p>
 <p>Add <code>Delegate=yes</code> to [Service] if you run each worker in a cgroup of its own (<code>unix_users.cgroups</code>, see <a href="unix-accounts.html#cgroups">Unix accounts</a>).</p>
 <h3 id="sandboxing">Sandboxing</h3>
 <p>systemd can confine weed and its workers together, beyond what weed does for workers (see <a href="unix-accounts.html#confinement">Unix accounts</a>), so also the process that terminates TLS and authenticates requests, as root. For instance, in [Service]:</p>
@@ -187,9 +197,92 @@ ReadWritePaths=/data
 # Unless the exported directory is below /home
 ProtectHome=yes
 PrivateTmp=yes</code></pre>
-<p>weed's tests do not cover these: try them with <em>weed check</em> and a few requests of each kind, uploads and third-party copies included.</p>
+<p>weed confines itself with Landlock as well (see <a href="unix-accounts.html#process">Unix accounts</a>). ReadWritePaths= makes writable what /data is as weed starts, as Landlock does: weed starts again when it changes (below).</p>
+<h3 id="mounted">A storage mounted at the exported directory</h3>
+<p>weed is confined to the exported directory as it was when weed started (see <a href="unix-accounts.html#process">Unix accounts</a>), and looks at it every 5 seconds:</p>
+<ul>
+<li>When the storage that the directory was on is no longer mounted, so that the directory is on the file system of / again, or gone (a storage mounted above it), weed blocks. Requests get 503, /healthz too, and weed never serves the directory beneath: uploads there would fill the root file system, and be hidden once the storage is back. weed goes on running: <code>systemctl status weed</code> says since when it is blocked, /status has <code>storage_unmounted</code>, and the metric <code>weed_storage_unmounted</code> is 1 (see <a href="metrics.html">Metrics</a>).</li>
+<li>When a storage is mounted over the directory or in its place, a remount, the storage mounted again after it was lost, or one mounted after weed started, weed lets the requests in progress finish (30 seconds at most), and exits with status 75. systemd starts it again (Restart=on-failure), confined to what is there then; meanwhile, requests get 503.</li>
+</ul>
+<p>A storage that comes back thus needs no one: weed serves it again within seconds.</p>
+<pre><code>level=ERROR msg=&quot;the storage of the exported directory is no longer mounted: workers do not start, until it is again&quot; error=&quot;the storage that the exported directory /data was on when weed started is no longer mounted: ...&quot;
+level=WARN msg=&quot;weed exits, to be started again by its supervisor, confined to the exported directory as it now is&quot; status=75 error=&quot;weed may no longer open the exported directory /data, a storage mounted over it or in its place since weed started: ...&quot;</code></pre>
+<p>weed knows that there was a storage only while it runs. One that starts while the storage is not mounted, after a boot where the mount failed, a crash, or <code>systemctl restart</code>, serves the directory beneath. If the exported directory is on a storage of its own, mounted at it or above it (NFS, a file system of its own), set <code>require_mount</code>, which refuses to serve it from the file system of /:</p>
+<pre><code>[server]
+dir = &quot;/data&quot;
+require_mount = true</code></pre>
+<p>weed then does not start while the storage is not mounted, and starts once it is back, as systemd tries again. After=remote-fs.target starts weed after the network file systems at boot; RequiresMountsFor=/data is not needed, and would do more: a mount that fails at boot would fail weed's start, which Restart= does not retry.</p>
+<h3 id="socket-activation">Socket activation</h3>
+<p>With a socket unit, systemd listens on weed's ports and passes the sockets to weed: while weed restarts, after a crash, a remount or an upgrade, clients wait in the queue instead of being refused, and weed binds no port (as an account of its own, it needs no CAP_NET_BIND_SERVICE). Write /etc/systemd/system/weed.socket, with the ports of <code>server.port</code> and <code>server.metrics_address</code>:</p>
+<pre><code>[Unit]
+Description=weed WebDAV server&#39;s sockets
+
+[Socket]
+ListenStream=443
+ListenStream=127.0.0.1:9100
+
+[Install]
+WantedBy=sockets.target</code></pre>
+<p>Then start it, and weed again:</p>
+<pre><code># systemctl daemon-reload
+# systemctl enable --now weed.socket
+# systemctl restart weed</code></pre>
+<p>weed takes the socket of each of its ports, by port, and listens itself on any that systemd does not pass; a socket on another port keeps it from starting. It logs which, and its Landlock rules then let it bind nothing (<code>tcp="no bind, ..."</code>):</p>
+<pre><code>level=INFO msg=listening address=[::]:443 scheme=https socket=&quot;passed by systemd&quot;</code></pre>
+<p>systemd starts weed at the first connection if it does not run: <em>systemctl stop weed.socket weed</em> stops both.</p>
+<h3 id="test-systemd">Testing the service</h3>
+<p><em>make test-systemd</em> runs weed as this page installs it, in an AlmaLinux 10 container that boots systemd: the units above with the sandboxing and <code>Delegate=yes</code>, as root, and then as an account of its own (below). It checks that weed serves uploads, downloads and third-party copies, reloads, bans, restarts after a crash, and stops with its workers; that weed may write only what the sandboxing allows; that it starts again on its own when a storage is mounted over the exported directory; that it blocks while its storage is unmounted, writing nothing beneath, and serves it again once it is mounted; that with <code>require_mount</code> it does not start while the storage is not mounted; that a worker killed for its memory leaves weed serving; and that with weed.socket, a restart refuses no connection. Try other directives with <em>weed check</em> and a few requests of each kind, uploads and third-party copies included.</p>
+<h2 id="without-systemd">Without systemd</h2>
+<p>weed does not need systemd: it is a process that serves in the foreground, which any supervisor can run (runit, s6, supervisord, a container's init). What the unit above gives it, it gets otherwise:</p>
+<table>
+<thead>
+<tr>
+<th>With systemd</th>
+<th>Otherwise</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Type=notify-reload</code>: systemd knows when weed is ready, reloading, stopping</td>
+<td>weed tells systemd only when NOTIFY_SOCKET is set. Elsewhere, wait for /healthz to answer 200.</td>
+</tr>
+<tr>
+<td><code>systemctl reload</code></td>
+<td>SIGHUP: weed reopens its log file and reloads its credentials.</td>
+</tr>
+<tr>
+<td><code>systemctl stop</code></td>
+<td>SIGTERM or SIGINT: weed stops taking requests, and waits up to 30 seconds for those in progress.</td>
+</tr>
+<tr>
+<td><code>Restart=on-failure</code></td>
+<td>Start weed again when it exits with a status other than 0: 75 when a storage was mounted over the exported directory, so that it is confined to the directory as it now is.</td>
+</tr>
+<tr>
+<td>weed.socket</td>
+<td>weed listens on its ports itself. Supervisors that pass sockets as systemd does (LISTEN_FDS) work too.</td>
+</tr>
+<tr>
+<td>The journal</td>
+<td>weed logs to standard error, or to <code>server.log_file</code>.</td>
+</tr>
+<tr>
+<td><code>ExecStartPre=weed check</code></td>
+<td>Run <em>weed check</em> before starting weed.</td>
+</tr>
+<tr>
+<td><code>Delegate=yes</code>, for <code>unix_users.cgroups</code></td>
+<td>weed needs a cgroup v2 directory that it may write, with its controllers: a container's own cgroup namespace, or one that you make for it.</td>
+</tr>
+<tr>
+<td>ProtectSystem= and the other sandboxing</td>
+<td>weed confines itself with Landlock anyway (see <a href="unix-accounts.html#process">Unix accounts</a>).</td>
+</tr>
+</tbody>
+</table>
+<p><em>make interop</em> and <em>make test-linux</em> run weed that way, started from a script in a container; <em>make test-cgroups</em> runs its cgroups in a container without systemd.</p>
 <h2 id="without-root">Running without root</h2>
-<p>weed needs root only to start workers as other accounts. It can run as an account of its own with the CAP_SETUID and CAP_SETGID capabilities, and CAP_NET_BIND_SERVICE for port 443. Its workers get none of them. Add to [Service]:</p>
+<p>weed needs root only to start workers as other accounts. It can run as an account of its own with the CAP_SETUID and CAP_SETGID capabilities, and CAP_NET_BIND_SERVICE for port 443 unless systemd listens on it (<a href="#socket-activation">socket activation</a>). Its workers get none of them. Add to [Service]:</p>
 <pre><code>User=weed
 AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE
 RuntimeDirectory=weed

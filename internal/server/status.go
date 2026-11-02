@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/labkode/weed/internal/config"
-	"github.com/labkode/weed/internal/limits"
 	"github.com/labkode/weed/internal/metrics"
 	"github.com/labkode/weed/internal/systemd"
 	"github.com/labkode/weed/internal/version"
@@ -54,6 +53,12 @@ type running struct {
 	lastReload        time.Time // zero until the first reload
 	lastReloadSuccess time.Time
 	lastReloadOK      bool
+}
+
+// unmounted is since when the storage of the exported directory dir is not mounted
+type unmounted struct {
+	since time.Time
+	dir   string
 }
 
 // pendingRestart says why a restart would run something else ("" if it would not)
@@ -183,6 +188,10 @@ func (s *Server) StatusLine() string {
 	s.run.mu.Lock()
 	defer s.run.mu.Unlock()
 	line := fmt.Sprintf("Serving since %s: weed %s", startTime.UTC().Format(time.DateTime+" MST"), version.Current().Version)
+	if u := s.unmounted.Load(); u != nil {
+		line = fmt.Sprintf("Blocked since %s, the storage of %s not mounted (requests get 503): weed %s",
+			u.since.UTC().Format(time.DateTime+" MST"), u.dir, version.Current().Version)
+	}
 	if s.run.source.Path != "" {
 		line += fmt.Sprintf(", %s (sha256 %.12s)", s.run.source.Path, s.run.source.SHA256)
 	}
@@ -222,6 +231,11 @@ func (s *Server) writeStatusGauges(w io.Writer) {
 	}
 	metrics.WriteGauge(w, "weed_reload_last_successful", "1 if the last reload read every credential file, CA and certificate (0: some kept their previous contents).", ok, nil, nil)
 	metrics.WriteGauge(w, "weed_banned_users", "Users that weed refuses whatever their credentials (weed utils ban).", float64(s.Bans.Len()), nil, nil)
+	lost := 0.0
+	if s.unmounted.Load() != nil {
+		lost = 1
+	}
+	metrics.WriteGauge(w, "weed_storage_unmounted", "1 while the storage that the exported directory was on when weed started is not mounted: requests get 503 until it is again, never served from the directory beneath.", lost, nil, nil)
 }
 
 // status is what /status reports
@@ -236,31 +250,12 @@ type status struct {
 	Workers        []worker.Info     `json:"workers"`
 	BannedUsers    int               `json:"banned_users"` // weed utils bans lists them
 	InProgress     statusInProgress  `json:"in_progress"`
-	Network        *statusNetwork    `json:"network,omitempty"` // if rates may apply
+	// StorageUnmounted is since when the storage that the exported directory was on
+	// when weed started is not mounted (absent while it is): requests get 503
+	StorageUnmounted time.Time `json:"storage_unmounted,omitzero"`
 	// Development is the account that every identity accesses files as, in the
 	// development mode of systems other than Linux
 	Development string `json:"development,omitempty"`
-}
-
-// statusNetwork is what the network rate limits allow, in bytes per second (0: no
-// limit), and what they hold back
-type statusNetwork struct {
-	EgressRate  int64 `json:"egress_rate"`
-	IngressRate int64 `json:"ingress_rate"`
-	Rules       int   `json:"rules"` // in the limits file
-	// Accounts are those with workers or requests in progress
-	Accounts []statusAccount `json:"accounts"`
-}
-
-type statusAccount struct {
-	Account     string `json:"account"`
-	EgressRate  int64  `json:"egress_rate"`
-	IngressRate int64  `json:"ingress_rate"`
-	Weight      int    `json:"weight"`
-	// Held are the account's transfers that its rates, or the total ones, hold back
-	// now: those of requests, and the third-party copies of its workers
-	HeldEgress  int `json:"held_egress"`
-	HeldIngress int `json:"held_ingress"`
 }
 
 type statusConfig struct {
@@ -293,6 +288,9 @@ func (s *Server) statusHandler(w http.ResponseWriter, r *http.Request) {
 		InProgress:     s.inProgress.status(),
 		Development:    s.development,
 	}
+	if u := s.unmounted.Load(); u != nil {
+		st.StorageUnmounted = u.since
+	}
 	for reason, p := range s.run.pending {
 		st.RestartPending[reason] = p.why
 	}
@@ -305,15 +303,6 @@ func (s *Server) statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.Workers != nil {
 		st.Workers = s.Workers.Workers()
-	}
-	if s.shaper != nil {
-		l := s.limits.Load()
-		st.Network = &statusNetwork{EgressRate: l.EgressRate, IngressRate: l.IngressRate, Rules: len(l.Rules), Accounts: []statusAccount{}}
-		for _, u := range s.shaper.Usage() {
-			st.Network.Accounts = append(st.Network.Accounts, statusAccount{Account: u.Account,
-				EgressRate: u.Limits.EgressRate, IngressRate: u.Limits.IngressRate, Weight: u.Limits.Weight,
-				HeldEgress: u.Held[limits.Egress], HeldIngress: u.Held[limits.Ingress]})
-		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)

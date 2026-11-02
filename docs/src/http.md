@@ -13,7 +13,7 @@ title: 'HTTP endpoints'
 | /oidc_redirect | none | Where the issuer sends users back after they log in. |
 | /auth/basic | Basic | Asks the browser for a password, with `basic.enabled`. |
 | /auth/x509 | X.509 | Checks the client certificate, with `x509.enabled`. |
-| /healthz | none | "ok" if the exported directory responds, 503 otherwise (see [Monitoring](monitoring.html#healthz)). |
+| /healthz | none | "ok" if the exported directory responds and its storage is mounted, 503 otherwise (see [Monitoring](monitoring.html#healthz)). |
 | / | none | An index page with links to the above. |
 | /metrics, /status, /dashboard/ | none | Only without a configuration file, whose clients are local. |
 
@@ -52,4 +52,4 @@ None of these require authentication: serve them on localhost or a management ne
 | 412 | an upload that does not match its Repr-Digest; a failed If-Match or If-None-Match; Overwrite: F onto an existing resource |
 | 423 | a locked resource |
 | 501 | shared locks; third-party copies when disabled, or with credential delegation |
-| 503 | no worker for the account (`unix_users.max_workers`), too many third-party copies (`tpc.max_transfers`), with Retry-After; storage not responding (/healthz) |
+| 503 | no worker for the account (`unix_users.max_workers`), too many third-party copies (`tpc.max_transfers`), with Retry-After; storage not responding (/healthz), the storage of the exported directory not mounted |

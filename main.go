@@ -64,6 +64,11 @@ func main() {
 		logger.Fatal("cannot open the log file", err)
 	}
 
+	// Executes weed again, confined with Landlock
+	if err := server.Confine(cfg, src); err != nil {
+		logger.Fatal("cannot confine weed with Landlock", err)
+	}
+
 	srv := server.New(cfg)
 	srv.SetSource(src)
 	srv.MonitorOnMainPort = src.Path == "" // no metrics_address without a file
@@ -91,7 +96,9 @@ func main() {
 	// Serve until SIGINT/SIGTERM, then shut down gracefully
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := srv.Run(ctx); err != nil {
+	if err := srv.Run(ctx); errors.Is(err, server.ErrRestart) {
+		os.Exit(server.RestartStatus)
+	} else if err != nil {
 		logger.Fatal("cannot serve", err)
 	}
 }

@@ -14,7 +14,7 @@ DOCKER_GO  = --rm -v "$(CURDIR):/src" -v "$$($(GO) env GOMODCACHE):/go/pkg/mod" 
              -v weed-gocache:/root/.cache/go-build -w /src --cap-add SYS_PTRACE \
              -e GOPROXY=off -e GOFLAGS=-buildvcs=false
 
-.PHONY: all build test test-root test-linux test-cgroups bench-workers interop lab lab-ssh lab-stop find-limits check fmt vulncheck fuzz bench cross ci docs clean help
+.PHONY: test-systemd all build test test-root test-linux test-cgroups bench-workers interop lab lab-ssh lab-stop find-limits check fmt vulncheck fuzz bench cross ci docs clean help
 
 all: build
 
@@ -35,6 +35,9 @@ test-cgroups: ## The cgroups of worker processes, in a privileged Linux containe
 	$(GO) mod download
 	docker run --privileged -e WEED_TEST_CGROUPS=1 $(DOCKER_GO) $(GO_IMAGE) \
 		go test -count=1 -run TestWorkerCgroups -v ./internal/server
+
+test-systemd: ## weed as the guide's systemd service, sandboxed, as root and as an account of its own (Docker)
+	test/systemd/systemd.sh
 
 interop: ## Interoperability tests with gfal2, davix and XRootD (Docker)
 	test/interop/interop.sh

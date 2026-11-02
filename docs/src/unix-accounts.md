@@ -47,13 +47,23 @@ Symbolic links
 :   Workers open every name beneath the exported directory, and follow a link only when it is relative and stays inside. A link that leads outside, and every absolute link (even one to a file inside), gets 403, is left out of listings, and is logged as *refused a name that leads outside the exported directory*. Otherwise, a user who can make links there, over ssh or NFS, could have weed read whatever the account can, such as /etc.
 
 Landlock
-:   With `unix_users.landlock` (the default) and Linux 5.19 or later, with landlock among the security modules (lsm=), weed confines each worker with Landlock as it starts it. Whatever a bug in the worker tries, it may write beneath the exported directory alone, and read only beneath it and /etc, /usr, /lib, /proc and /sys/fs/cgroup (and `tpc.ca_path`, SSL_CERT_FILE and SSL_CERT_DIR), whatever the permissions. It may execute weed alone (and, for a build with cgo, its dynamic loader, which can run other programs, confined the same); it cannot make symbolic links, devices, sockets or FIFOs; from Linux 6.12, nor signal processes or connect to abstract Unix sockets outside its confinement. Each worker checks that it is confined, and refuses to serve otherwise. Landlock does not cover stat, chmod, chown, utime and extended attributes: on files outside the exported directory, permissions alone keep those.
+:   weed confines itself and each worker with Landlock as it starts it, and does not start without it: it needs Linux 5.19 or later, with landlock among the security modules (lsm=). Whatever a bug in a worker tries, it may write beneath the exported directory alone, and read only beneath it and /etc, /usr, /lib, /proc and /sys/fs/cgroup (and `tpc.ca_path`, SSL_CERT_FILE and SSL_CERT_DIR), whatever the permissions. It may execute weed alone (and, for a build with cgo, its dynamic loader, which can run other programs, confined the same); it cannot make symbolic links, devices, sockets or FIFOs. From Linux 6.7, it binds no TCP port, and connects to none unless `tpc.enabled`, for third-party copies (Landlock does not confine UDP). From Linux 6.12, it signals no process (but on RHEL 9's kernels, which lack that) and connects to no abstract Unix socket outside its confinement. Each worker checks that it is confined, and refuses to serve otherwise. Landlock does not cover stat, chmod, chown, utime and extended attributes: on files outside the exported directory, permissions alone keep those.
 
-weed logs the rules as it starts, or warns that the kernel has no Landlock, and workers are then confined by permissions only:
+weed logs the rules as it starts:
 
-    INFO workers are confined with Landlock landlock_abi=6 rules="[write /data read /etc read /proc read /sys/fs/cgroup read /usr read /lib read /lib64 execute /proc/self/exe write /dev/null]"
+    INFO workers are confined with Landlock landlock_abi=6 rules="[write /data read /etc read /proc read /sys/fs/cgroup read /usr read /lib read /lib64 execute /proc/self/exe write /dev/null]" tcp="no bind, connect (tpc.enabled)"
 
-The rules name the exported directory as it was when the worker started. weed looks at it every 5 seconds, and replaces the workers that started before it changed, such as when a storage is mounted again over it.
+### weed's own process {#process}
+
+weed confines itself with Landlock too: the process that terminates TLS and authenticates requests, as root. It may write the exported directory, the directories of `server.log_file`, `admin.socket` and `admin.bans`, and its cgroup, and read only those, the system's files (as workers) and the files that its configuration names. From Linux 6.7, it binds only its ports, and connects only to token issuers and for third-party copies.
+
+Landlock confines a thread and what it executes: weed executes itself again, from a thread that it confines, and refuses to start if it then is not confined. It logs the rules as it does:
+
+    INFO weed confines itself with Landlock, and executes itself again confined landlock_abi=6 rules="[write /data read /etc ... write and make sockets in /run/weed write /var/lib/weed write /sys/fs/cgroup/system.slice/weed.service]" tcp="bind 443 9100, connect (token issuers, tpc.enabled)"
+
+Confined to /, weed would reach everything: it does not export /, nor keep its files there.
+
+Landlock confines to plain directories and to mount points alike. A rule names the directory that its path leads to as weed starts: with a storage mounted at /data, the root of that storage; without one, the directory /data itself. It covers everything beneath, storage mounted below it later included. It does not cover what is mounted over it, or above it, later, nor what replaces it: a storage mounted at /data after weed started, or the directory beneath once the storage is unmounted, is out of weed's reach. weed looks at the directory every 5 seconds. When a storage is there in its place, weed exits, to be started again by its supervisor, confined to it. When the storage that weed started on is no longer mounted, weed does not exit, and refuses requests until the storage is back: a weed started again would serve the directory beneath (see [Installation](installation.html#mounted)).
 
 Two more would confine workers further, and are not part of weed. A mount namespace per worker, holding only the exported directory and the system files a worker needs (pivot_root, as containers do), would hide what is outside even from stat; weed would need CAP_SYS_ADMIN, and storage mounted after a worker started (autofs, NFS remounts) to propagate into it. systemd's sandboxing confines weed and its workers together, so also the process that terminates TLS and authenticates requests (see [Installation](installation.html#sandboxing)); it does not separate the accounts from each other.
 
@@ -101,3 +111,17 @@ weed checks that each limit has the form file=value when it reads the configurat
 Downloads relayed from workers run at about 92% of the speed of serving files directly, and uploads at the same speed (1 GiB files over loopback without TLS: about 5200 MB/s against 5600 MB/s). That needs 1 MiB socket buffers, which root gets. If weed runs as another account, also raise net.core.wmem_max and net.core.rmem_max to 1048576, or downloads lose a third:
 
     # sysctl -w net.core.wmem_max=1048576 net.core.rmem_max=1048576
+
+A client that reads slower than weed sends, as a job across a WAN does, keeps those buffers full: each such download holds about 2.7 MB of memory, in the kernel and in weed. Clients that hold a connection and make small requests cost much less: 8192 clients each making a GET of a 4 KiB file every second got 8172 requests/s, p99 35 ms, from weed using 2.7 CPUs and 1.6 GB, 196 kB per client (one account, through TLS, in a container of 8 CPUs and 8 GB).
+
+Every connection is an open file: Go raises weed's soft limit of open files to the hard one (systemd's default: 524288).
+
+### Measuring a server {#stress}
+
+test/stress finds what a server sustains. For each kind of request (small files read, written and listed, new TLS connections, downloads and uploads of large files, each authentication method, many accounts), it doubles the clients until throughput stops growing, more than 1% of requests fail, or the p99 latency passes 2 seconds. Two more grow a crowd of up to 8192 clients that each hold a connection, the small GETs and slow downloads above, and report the memory that each client adds. Run weed as it will serve, and stress from another machine, as an account that may write the directory it is given; stress works in a directory of its own below it, and removes it:
+
+    $ go build -o stress ./test/stress
+    $ ./stress -url https://weed.example.org/webdav/home/alice \
+          -cert usercert.pem -key userkey.pem -ca /etc/grid-security/certificates
+
+*stress -h* lists the kinds of requests and options; `-json` writes the results. From a checkout of weed with Docker, `make find-limits` runs it against weed in a container, on the same machine.

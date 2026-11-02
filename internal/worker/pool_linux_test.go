@@ -28,6 +28,28 @@ func TestThreadState(t *testing.T) {
 	}
 }
 
+func TestUnmounted(t *testing.T) {
+	root := fileID{dev: 1, ino: 2, mnt: 1}
+	storage := fileID{dev: 7, ino: 2, mnt: 30}
+	for _, c := range []struct {
+		name         string
+		started, now fileID
+		want         bool
+	}{
+		{"the storage unmounted: the directory beneath, on /", storage, fileID{dev: 1, ino: 40, mnt: 1}, true},
+		{"the storage above unmounted: the directory gone", storage, fileID{}, true},
+		{"another storage mounted in its place", storage, fileID{dev: 8, ino: 2, mnt: 31}, false},
+		{"the storage mounted again", storage, fileID{dev: 7, ino: 2, mnt: 32}, false},
+		{"a plain directory on /, replaced by another", fileID{dev: 1, ino: 40, mnt: 1}, fileID{dev: 1, ino: 41, mnt: 1}, false},
+		{"a plain directory on /, a storage mounted over it", fileID{dev: 1, ino: 40, mnt: 1}, storage, false},
+		{"a plain directory on /, gone", fileID{dev: 1, ino: 40, mnt: 1}, fileID{}, false},
+	} {
+		if got := unmounted(c.started, c.now, root); got != c.want {
+			t.Errorf("%s: unmounted = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 // A killed worker that does not exit, as one whose threads wait for storage that does
 // not answer, is not waited for: neither by Kill (a ban) nor by Close (shutdown)
 func TestKilledWorkerThatDoesNotExit(t *testing.T) {

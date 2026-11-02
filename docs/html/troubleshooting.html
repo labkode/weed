@@ -130,8 +130,20 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <td>Run weed as root, or give it the capabilities (see <a href="installation.html#without-root">Installation</a>).</td>
 </tr>
 <tr>
+<td><code>cannot confine weed with Landlock: weed confines itself and its workers with Landlock, which this kernel does not have (Landlock ABI 0, and 2 is needed: Linux 5.19 or later, with landlock in lsm=)</code></td>
+<td><em>cat /sys/kernel/security/lsm</em> lists the security modules: add landlock to the kernel's lsm= boot parameter, or upgrade the kernel (see <a href="unix-accounts.html#confinement">Unix accounts</a>). weed does not serve unconfined.</td>
+</tr>
+<tr>
+<td><code>cannot confine weed with Landlock: confined with Landlock to write /, weed would reach everything: it does not export /, nor keep its files there</code></td>
+<td>Export a directory below /, and keep the log, the admin socket and the bans file below / too.</td>
+</tr>
+<tr>
+<td><code>cannot confine weed with Landlock: confined with Landlock, weed could not open /data which it opens without: it is on a file system that Landlock cannot follow ...</code></td>
+<td>As for workers below: move it.</td>
+</tr>
+<tr>
 <td><code>cannot confine the worker with Landlock: confined with Landlock, workers could not open /data which weed opens without: it is on a file system that Landlock cannot follow</code></td>
-<td>Landlock refuses every access on some file systems, whatever its rules, such as Docker Desktop's mounts of the host: put the exported directory and weed's binary on another, or set <code>unix_users.landlock = false</code> (see <a href="unix-accounts.html#confinement">Unix accounts</a>).</td>
+<td>Landlock refuses every access on some file systems, whatever its rules, such as Docker Desktop's mounts of the host: put the exported directory and weed's binary on another (see <a href="unix-accounts.html#confinement">Unix accounts</a>).</td>
 </tr>
 <tr>
 <td><code>cannot read the banned users (admin.bans): open /var/lib/weed/bans.json: permission denied</code></td>
@@ -237,6 +249,9 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <pre><code># sudo -u alice ls -l /data/alice
 # sudo -u alice touch /data/alice/test</code></pre>
 <p>The account needs search permission on every directory above, and write permission on a directory to create or replace files in it. See <a href="unix-accounts.html#permissions">Unix accounts</a>.</p>
+<p>A path through a symbolic link gets 403 when the link leads outside the exported directory, or is absolute, even to a file inside. weed logs it:</p>
+<pre><code>level=WARN msg=&quot;refused a name that leads outside the exported directory, through a symbolic link&quot; worker.user=alice worker.pid=1630 path=/alice/data/f request_id=5f0c2a91</code></pre>
+<p>Make the link relative, and inside the exported directory. The local tools of the account follow it, but weed does not (see <a href="unix-accounts.html#confinement">Unix accounts</a>).</p>
 <h2 id="unavailable">503 Service Unavailable</h2>
 <table>
 <thead>
@@ -255,6 +270,22 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <td>The worker could not start: weed logs why, e.g. a failed cgroup limit, or a binary that changed in place (see <a href="upgrading.html#old-binary">Upgrading</a>).</td>
 </tr>
 <tr>
+<td><code>weed may no longer open the exported directory /data, a storage mounted over it or in its place since weed started ...</code></td>
+<td>weed, confined with Landlock, reaches the exported directory as it was when it started: it exits (status 75), and its supervisor starts it again (see <a href="installation.html#mounted">Installation</a>). If it does not come back, see why it does not start.</td>
+</tr>
+<tr>
+<td><code>the storage that the exported directory /data was on when weed started is no longer mounted ...</code></td>
+<td>The storage was unmounted, or the one above the exported directory: requests get 503 until it is mounted again, and weed then starts again, confined to it, within seconds (see <a href="installation.html#mounted">Installation</a>). weed never serves the directory beneath; to serve it instead, restart weed, without <code>server.require_mount</code>.</td>
+</tr>
+<tr>
+<td><code>the exported directory /data is on the file system of /, not on a storage of its own (server.require_mount): is its storage mounted?</code></td>
+<td>With <code>server.require_mount</code>, weed does not start until the storage of the exported directory is mounted. Mount it: systemd starts weed again within a minute.</td>
+</tr>
+<tr>
+<td><code>the exported directory has not answered yet, and workers are confined to it with Landlock</code></td>
+<td>The exported directory did not answer as weed started, and workers start once it does: check its storage (see <a href="#hung-storage">below</a>).</td>
+</tr>
+<tr>
 <td><code>too many requests in progress for the account (unix_users.max_requests)</code></td>
 <td>The account's worker has <code>unix_users.max_requests</code> requests in progress. If <code>blocked_threads</code> in /status is high too, its storage does not answer (see <a href="#hung-storage">below</a>); otherwise the account is busy: raise the limit.</td>
 </tr>
@@ -266,11 +297,18 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <td>/healthz: storage unavailable, storage not responding</td>
 <td>The exported directory cannot be read, or does not answer within 5 seconds: check the filesystem (a hung NFS or a lost mount, see <a href="#hung-storage">below</a>).</td>
 </tr>
+<tr>
+<td>/healthz: storage not mounted</td>
+<td>The storage of the exported directory is no longer mounted: see above.</td>
+</tr>
 </tbody>
 </table>
 <h2 id="slow">Slow transfers</h2>
-<p>A network rate may hold them back: the account's own, or the total, which accounts share by weight. /status has the rates of each account with workers, and how many of its transfers a rate holds back now; <code>weed_network_delay_seconds_total</code> adds up how long transfers waited, by limit (see <a href="limits.html#shows">Limits per account</a>).</p>
-<pre><code># curl -s localhost:9100/status | jq &#39;.network.accounts[] | select(.held_egress + .held_ingress &gt; 0)&#39;</code></pre>
+<p>weed does not hold transfers back itself. The kernel may: tc on the network interface (see <a href="limits.html#network">Limits per account</a>), or the account's cgroup limits, such as io.max for its disk, cpu.max and cpu.weight for its CPU, and memory.high, near which the kernel reclaims its memory. The pressure files of its cgroup say how long its workers have waited for each:</p>
+<pre><code># cat /sys/fs/cgroup/system.slice/weed.service/worker-cms001/io.pressure
+some avg10=41.27 avg60=38.02 avg300=12.55 total=95512644
+full avg10=40.11 avg60=37.20 avg300=12.20 total=93024112
+# tc -s qdisc show dev eth0</code></pre>
 <h2 id="hung-storage">Storage that does not answer</h2>
 <p>When the filesystem of the exported directory stops answering, a hung NFS server or a failing disk, the requests that need it wait in the kernel. Each waits with a thread of its worker, which nothing interrupts, not even SIGKILL, until the storage answers, also once its client has given up. Meanwhile:</p>
 <ul>

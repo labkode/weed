@@ -33,22 +33,26 @@ type cgroups struct {
 // controllers are enabled for the workers' cgroups when weed's cgroup has them
 var controllers = []string{"cpu", "io", "memory", "pids"}
 
-func newCgroups() (*cgroups, error) {
-	c := &cgroups{written: make(map[string]map[string]string)}
+// Cgroup is the directory of this process's cgroup, in the cgroup v2 hierarchy ("" if
+// it has none)
+func Cgroup() string {
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
-		return nil, err
+		return ""
 	}
-	var path string
 	for _, line := range strings.Split(string(data), "\n") {
 		if p, ok := strings.CutPrefix(line, "0::"); ok {
-			path = p
+			return filepath.Join(cgroupRoot, p)
 		}
 	}
-	if path == "" {
+	return ""
+}
+
+func newCgroups() (*cgroups, error) {
+	c := &cgroups{written: make(map[string]map[string]string), base: Cgroup()}
+	if c.base == "" {
 		return nil, errors.New("worker cgroups need the cgroup v2 hierarchy")
 	}
-	c.base = filepath.Join(cgroupRoot, path)
 
 	// Once controllers are enabled below a cgroup, it may have no processes of its
 	// own, so weed moves into a cgroup next to those of the workers

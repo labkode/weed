@@ -17,6 +17,9 @@ type Config struct {
 	Port      int
 	Address   string
 	Directory string
+	// RequireMount refuses to serve Directory from the file system of /: never the
+	// directory beneath an unmounted storage
+	RequireMount bool
 	// Anonymous serves requests without credentials, as the account nobody (loopback only)
 	Anonymous   bool
 	TLS         bool
@@ -35,25 +38,17 @@ type Config struct {
 	WorkerMaxRequests int
 	// WorkerCgroups runs the workers of each account in a cgroup of their own
 	WorkerCgroups bool
-	// WorkerLandlock confines the workers to the exported directory with Landlock
-	WorkerLandlock bool
 	// WorkerCgroupLimits are written to the cgroup of every account (file=value),
 	// unless LimitsFile says otherwise
 	WorkerCgroupLimits []string
 	// LimitsFile sets limits for some users and groups (see internal/limits)
-	LimitsFile string
-	// Network rate limits (e.g. "100MB/s"; "": none), of all accounts together
-	EgressRate  string
-	IngressRate string
-	// and of each account, unless LimitsFile says otherwise
-	AccountEgressRate  string
-	AccountIngressRate string
-	BasicAuth          bool
-	HtpasswdFile       string
-	AppTokensFile      string
-	LogFile            string
-	LogLevel           string // debug, info, warn or error
-	LogFormat          string // text or json
+	LimitsFile    string
+	BasicAuth     bool
+	HtpasswdFile  string
+	AppTokensFile string
+	LogFile       string
+	LogLevel      string // debug, info, warn or error
+	LogFormat     string // text or json
 	// ReloadInterval is how often credential files are re-read (0: only on SIGHUP)
 	ReloadInterval time.Duration
 	// MetricsAddress serves /metrics, /status, the dashboard and /healthz without
@@ -150,12 +145,6 @@ func (c *Config) Validate() error {
 	for _, l := range c.WorkerCgroupLimits {
 		if err := limits.CheckCgroupLimit(l); err != nil {
 			return fmt.Errorf("unix_users.cgroup_limits: %w", err)
-		}
-	}
-	for key, rate := range map[string]string{"egress_rate": c.EgressRate, "ingress_rate": c.IngressRate,
-		"account_egress_rate": c.AccountEgressRate, "account_ingress_rate": c.AccountIngressRate} {
-		if _, err := limits.ParseRate(rate); err != nil {
-			return fmt.Errorf("network.%s: %w", key, err)
 		}
 	}
 	if c.TokenCAPath != "" && c.TokenIssuers == "" {

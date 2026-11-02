@@ -30,7 +30,7 @@ macOS is only for developing weed, not for serving: there, weed accesses files i
     $ weed
     level=WARN msg="development mode, as on macOS: weed serves files in its own process, as the account that runs it, for every identity; ..." account=alice
 
-Authentication, checksums, locks, third-party copies, bans, metrics, /status and the dashboard work as on Linux. Worker processes, Unix accounts, Landlock, cgroups, network rates and `unix_users.limits` do not, and /status shows `"development": "alice"`. The control plane's socket and the bans file, by default in /run/weed and /var/lib/weed, are in the user's cache directory (~/Library/Caches/weed on macOS), also when a configuration file sets them to those defaults. To try weed as on a server from a Mac, use the lab (`make lab`, Docker), and `make test-linux` for the tests of worker processes.
+Authentication, checksums, locks, third-party copies, bans, metrics, /status and the dashboard work as on Linux. Worker processes, Unix accounts, Landlock, cgroups and `unix_users.limits` do not, and /status shows `"development": "alice"`. The control plane's socket and the bans file, by default in /run/weed and /var/lib/weed, are in the user's cache directory (~/Library/Caches/weed on macOS), also when a configuration file sets them to those defaults. To try weed as on a server from a Mac, use the lab (`make lab`, Docker), and `make test-linux` for the tests of worker processes.
 
 ## A grid storage node {#storage-node}
 
