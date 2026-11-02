@@ -89,7 +89,7 @@ cross: ## Build and vet for every platform in PLATFORMS
 		GOOS=$${p%/*} GOARCH=$${p#*/} $(GO) vet ./...; \
 	done
 
-ci: check test cross ## What CI runs, except root tests, fuzzing, govulncheck and interop
+ci: check test cross ## What CI runs, except root tests, fuzzing, govulncheck, interop and docs
 
 docs: build ## The administration guide, docs/html, from docs/src (pandoc)
 	$(MAKE) -C docs/src dist WEED=$(abspath $(BIN))

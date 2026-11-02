@@ -848,9 +848,10 @@ SciTokens and HTTP-TPC plugins) as a second implementation; and a test token iss
 They cover X.509 proxies, macaroons, tokens, revocation with SIGHUP, metrics, Unix
 accounts, bans, and third-party copies in both directions between two weed servers
 and between weed and XRootD. Each parser also has a fuzz test (go test -fuzz). CI
-(.github/workflows/ci.yml) runs the tests with -race on Linux and macOS and as root
-on Linux, go vet, gofmt, govulncheck, cross-builds, the fuzz tests and the
-interoperability tests.
+(.github/workflows/ci.yml) runs on Linux: the tests with -race and as root, go vet,
+gofmt, govulncheck, cross-builds, the fuzz tests and the interoperability tests. It
+also makes the administration guide from docs/src, fails if docs/html is not what
+make docs makes, and publishes it on GitHub Pages from the main branch.
 
 test/stress finds what a weed server sustains. For each scenario (small files read,
 written and listed, new TLS connections, downloads and uploads of large files, each

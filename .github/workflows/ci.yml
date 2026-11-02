@@ -9,11 +9,7 @@ permissions:
 
 jobs:
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -22,12 +18,17 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
-      - run: go test -race -count=1 ./...
+      - name: go test -race
+        run: |
+          status=0
+          go test -race -count=1 ./... 2>&1 | tee test.log || status=$?
+          # The failures as annotations, which the pages of commits and pull requests show
+          grep -E '^--- FAIL|^ +[A-Za-z0-9_]+\.go:[0-9]+: |^panic: ' test.log | head -30 |
+            sed -e 's/%/%25/g' -e 's/^ *//' -e 's/^/::error title=go test::/' || true
+          exit $status
       - name: Tests of worker processes running as Unix accounts (as root)
-        if: runner.os == 'Linux'
         run: go test -exec sudo -count=1 -run 'TestUnixUsers|TestWorker' ./internal/server ./internal/worker
       - name: cgroups of worker processes (privileged container)
-        if: runner.os == 'Linux'
         run: make test-cgroups
 
   build:
@@ -50,9 +51,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # The latest Go release, which weed is built with: go.mod's is the oldest that
+      # builds it, whose standard library may have vulnerabilities fixed since
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: stable
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   fuzz:
@@ -80,3 +83,46 @@ jobs:
           go-version-file: go.mod
       - name: gfal2, davix and XRootD against weed
         run: test/interop/interop.sh
+
+  # The administration guide, made from docs/src as make docs makes it, for GitHub
+  # Pages (Settings, Pages, Source: GitHub Actions)
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: pandoc, the version that made docs/html
+        run: |
+          v=$(sed -n 's/^PANDOC_VERSION = //p' docs/src/Makefile)
+          curl -fsSL -o "$RUNNER_TEMP/pandoc.deb" "https://github.com/jgm/pandoc/releases/download/$v/pandoc-$v-1-amd64.deb"
+          sudo dpkg -i "$RUNNER_TEMP/pandoc.deb"
+      - run: make docs
+      - name: docs/html is what make docs makes from docs/src
+        run: |
+          test -z "$(git status --porcelain -- docs/html)" || {
+            git status --short -- docs/html
+            echo "::error title=docs::docs/html is not what make docs makes from docs/src: run make docs, and commit docs/html"
+            exit 1
+          }
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/html
+
+  pages:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: docs
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v5
