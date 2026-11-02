@@ -14,7 +14,7 @@ import (
 // weed's own rules: those of workers, the files that its configuration names, of what
 // it enables, and where it writes; and its ports
 func TestProcessRules(t *testing.T) {
-	dir, _ := filepath.EvalSymlinks(t.TempDir()) // macOS: /var is /private/var
+	dir, _ := filepath.EvalSymlinks(t.TempDir()) // TMPDIR may be a symbolic link
 	for _, d := range []string{"etc", "log", "run", "state"} {
 		os.Mkdir(filepath.Join(dir, d), 0o755)
 	}

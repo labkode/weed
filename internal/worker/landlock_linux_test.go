@@ -24,7 +24,8 @@ import (
 // anyFile is what the test workers serve: a GET reads the file at the path of its
 // URL, a PUT writes it, wherever it is, as a worker with a bug would; DIAL connects
 // to the TCP address of the path, LISTEN listens on a port (with TCP, not the MPTCP
-// of net.Listen, which Landlock does not confine)
+// of net.Listen, which Landlock does not confine), MPTCP opens a socket of MPTCP.
+// What Landlock or seccomp refuses gets 403.
 var anyFile = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch r.Method {
@@ -32,6 +33,12 @@ var anyFile = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var c net.Conn
 		if c, err = net.Dial("tcp", strings.TrimPrefix(r.URL.Path, "/")); err == nil {
 			c.Close()
+			return
+		}
+	case "MPTCP":
+		var fd int
+		if fd, err = unix.Socket(unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_MPTCP); err == nil {
+			unix.Close(fd)
 			return
 		}
 	case "LISTEN":
@@ -57,7 +64,7 @@ var anyFile = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := http.StatusInternalServerError
-	if errors.Is(err, os.ErrPermission) {
+	if errors.Is(err, os.ErrPermission) || errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EPROTONOSUPPORT) {
 		code = http.StatusForbidden
 	}
 	http.Error(w, err.Error(), code)
@@ -128,8 +135,8 @@ func TestLandlock(t *testing.T) {
 
 // A storage mounted again over the exported directory, whose root has the same device
 // and inode numbers as before, but is another inode for Landlock, gets workers that
-// reach it. Unmounted in between, the directory beneath gets none. It needs a
-// privileged container, and mkfs.ext4.
+// reach it. Unmounted in between, the directory beneath gets none. It needs root, and
+// mkfs.ext4.
 func TestLandlockRemount(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("starting workers as other accounts needs root")
@@ -152,8 +159,9 @@ func TestLandlockRemount(t *testing.T) {
 	}
 	mount := func() {
 		if out, err := exec.Command("mount", "-o", "loop", img, export).CombinedOutput(); err != nil {
-			t.Skipf("cannot mount (not a privileged container?): %v: %s", err, out)
+			t.Skipf("cannot mount (a container without privileges?): %v: %s", err, out)
 		}
+		t.Cleanup(func() { exec.Command("umount", "-l", export).Run() }) // if the test fails mounted
 		os.Chmod(export, 0o777)
 	}
 	umount := func() {
@@ -273,6 +281,9 @@ func TestLandlockTCP(t *testing.T) {
 		}
 		if code, body := asNobody(p, "LISTEN", "/"); code != 403 {
 			t.Errorf("tpc %v: bind = %d (%s), want 403", tpc, code, strings.TrimSpace(body))
+		}
+		if code, body := asNobody(p, "MPTCP", "/"); code != 403 {
+			t.Errorf("tpc %v: MPTCP = %d (%s), want 403", tpc, code, strings.TrimSpace(body))
 		}
 		p.Close(context.Background())
 	}

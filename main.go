@@ -1,3 +1,6 @@
+//go:build linux
+
+// weed builds and runs on Linux alone
 package main
 
 import (

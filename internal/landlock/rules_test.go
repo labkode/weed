@@ -12,7 +12,7 @@ import (
 func TestAdd(t *testing.T) {
 	dir := t.TempDir()
 	if real, err := filepath.EvalSymlinks(dir); err == nil {
-		dir = real // macOS: /var is /private/var
+		dir = real // TMPDIR may be a symbolic link
 	}
 	sub := filepath.Join(dir, "sub")
 	os.Mkdir(sub, 0o755)

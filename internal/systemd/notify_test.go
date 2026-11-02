@@ -4,16 +4,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestNotify(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no unixgram sockets")
-	}
 	// Not t.TempDir(): socket paths are limited to about 100 bytes
 	dir, err := os.MkdirTemp("", "sd")
 	if err != nil {
@@ -43,7 +39,7 @@ func TestNotify(t *testing.T) {
 		t.Errorf("Ready: %q", got)
 	}
 	Reloading()
-	if got := read(); !strings.HasPrefix(got, "RELOADING=1") || (runtime.GOOS == "linux") != strings.Contains(got, "\nMONOTONIC_USEC=") {
+	if got := read(); !strings.HasPrefix(got, "RELOADING=1") || !strings.Contains(got, "\nMONOTONIC_USEC=") {
 		t.Errorf("Reloading: %q", got)
 	}
 	Status("restart pending")

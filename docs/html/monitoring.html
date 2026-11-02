@@ -30,6 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -88,6 +89,7 @@
 			<li><a href="metrics.html">Metrics</a></li>
 			<li><a href="http.html">HTTP endpoints</a></li>
 			<li><a href="files.html">Files</a></li>
+			<li><a href="changelog.html">Changelog</a></li>
 		</ul>
 	</div>
 </div>
@@ -212,10 +214,6 @@ since when the storage that the exported directory was on when weed started is n
 <dt>workers</dt>
 <dd>
 each worker: its account, its pid, since when it runs, and how many requests weed waits for it to answer. A retired worker finishes its requests and takes no new ones, e.g. after its account's groups changed. blocked_threads are the worker's threads that wait in the kernel, uninterruptibly: for a moment while they read or write files, and for long when its storage does not answer, also once their clients have gone (see <a href="troubleshooting.html#hung-storage">Troubleshooting</a>).
-</dd>
-<dt>development</dt>
-<dd>
-only on macOS, where weed serves for development: the account that every request accesses files as (see <a href="getting-started.html#macos">Getting started</a>).
 </dd>
 </dl>
 <h2 id="in-progress">Transfers in progress</h2>

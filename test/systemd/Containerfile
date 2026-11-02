@@ -7,6 +7,4 @@ RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
     systemctl mask getty.target console-getty.service systemd-firstboot.service \
         systemd-udevd.service systemd-udev-trigger.service systemd-hwdb-update.service \
         systemd-modules-load.service
-ENV container=docker
-STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

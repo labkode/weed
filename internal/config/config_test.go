@@ -44,21 +44,14 @@ func TestEveryFieldHasAKey(t *testing.T) {
 	}
 }
 
-// localDefault is Default, with the paths of this system (see localize)
-func localDefault() *Config {
-	c := Default()
-	c.localize()
-	return c
-}
-
 // weed config prints a file that gives the defaults
 func TestExample(t *testing.T) {
 	c, err := Load(write(t, Example(), 0600))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(c, localDefault()) {
-		t.Errorf("the example gives\n%+v\nnot the defaults\n%+v", c, localDefault())
+	if !reflect.DeepEqual(c, Default()) {
+		t.Errorf("the example gives\n%+v\nnot the defaults\n%+v", c, Default())
 	}
 	if err := Default().Validate(); err != nil {
 		t.Errorf("the defaults are not valid: %v", err)
@@ -84,7 +77,7 @@ cgroup_limits = ["memory.max=8G", "pids.max=1000"]
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := localDefault()
+	want := Default()
 	want.Port, want.Directory, want.TLS, want.TPC, want.TPCStallTimeout = 8443, "/data", true, true, 90*time.Second
 	want.WorkerCgroupLimits = []string{"memory.max=8G", "pids.max=1000"}
 	if !reflect.DeepEqual(c, want) {

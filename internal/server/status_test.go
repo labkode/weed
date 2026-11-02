@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -262,9 +261,6 @@ func TestStatus(t *testing.T) {
 
 // Under systemd (Type=notify), weed says it is ready once it listens, and that it stops
 func TestRunNotifiesSystemd(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no unixgram sockets")
-	}
 	sockDir, err := os.MkdirTemp("", "sd") // short: socket paths are limited
 	if err != nil {
 		t.Fatal(err)

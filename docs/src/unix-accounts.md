@@ -41,25 +41,28 @@ Workers are started from /proc/self/exe: the binary that weed itself runs, even 
 
 ## What workers reach {#confinement}
 
-Beyond the permissions of its account, two things keep a worker to the exported directory.
+Beyond the permissions of its account, three things confine a worker.
 
 Symbolic links
 :   Workers open every name beneath the exported directory, and follow a link only when it is relative and stays inside. A link that leads outside, and every absolute link (even one to a file inside), gets 403, is left out of listings, and is logged as *refused a name that leads outside the exported directory*. Otherwise, a user who can make links there, over ssh or NFS, could have weed read whatever the account can, such as /etc.
 
 Landlock
-:   weed confines itself and each worker with Landlock as it starts it, and does not start without it: it needs Linux 5.19 or later, with landlock among the security modules (lsm=). Whatever a bug in a worker tries, it may write beneath the exported directory alone, and read only beneath it and /etc, /usr, /lib, /proc and /sys/fs/cgroup (and `tpc.ca_path`, SSL_CERT_FILE and SSL_CERT_DIR), whatever the permissions. It may execute weed alone (and, for a build with cgo, its dynamic loader, which can run other programs, confined the same); it cannot make symbolic links, devices, sockets or FIFOs. From Linux 6.7, it binds no TCP port, and connects to none unless `tpc.enabled`, for third-party copies (Landlock does not confine UDP). From Linux 6.12, it signals no process (but on RHEL 9's kernels, which lack that) and connects to no abstract Unix socket outside its confinement. Each worker checks that it is confined, and refuses to serve otherwise. Landlock does not cover stat, chmod, chown, utime and extended attributes: on files outside the exported directory, permissions alone keep those.
+:   weed confines itself and each worker with Landlock as it starts it, and does not start without it: it needs Linux 5.19 or later, with landlock among the security modules (lsm=). Whatever a bug in a worker tries, it may write beneath the exported directory alone, and read only beneath it and /etc, /usr, /lib, /proc and /sys/fs/cgroup (and `tpc.ca_path`, SSL_CERT_FILE and SSL_CERT_DIR), whatever the permissions. It may execute weed alone (and, for a build with cgo, its dynamic loader, which can run other programs, confined the same); it cannot make symbolic links, devices, sockets or FIFOs. From Linux 6.7, it binds no TCP port, and connects to none unless `tpc.enabled`, for third-party copies (Landlock does not confine UDP, nor MPTCP: see seccomp below). From Linux 6.12, it signals no process (but on RHEL 9's kernels, which lack that) and connects to no abstract Unix socket outside its confinement. Each worker checks that it is confined, and refuses to serve otherwise. Landlock does not cover stat, chmod, chown, utime and extended attributes: on files outside the exported directory, permissions alone keep those.
+
+seccomp
+:   Landlock's rules of TCP cover TCP alone: not MPTCP, which Go listens with where the kernel has it, and which falls back to TCP with peers that do not have it, nor SCTP, SMC, raw or packet sockets. weed filters the system calls of each worker with seccomp: it opens Unix sockets alone, and with `tpc.enabled` TCP and UDP ones too, UDP to resolve names. It has no io_uring, which opens sockets without socket(2). Each worker checks that it is filtered, and refuses to serve otherwise. The filters are of amd64 and arm64: elsewhere, weed does not start.
 
 weed logs the rules as it starts:
 
-    INFO workers are confined with Landlock landlock_abi=6 rules="[write /data read /etc read /proc read /sys/fs/cgroup read /usr read /lib read /lib64 execute /proc/self/exe write /dev/null]" tcp="no bind, connect (tpc.enabled)"
+    INFO workers are confined with Landlock landlock_abi=6 rules="[write /data read /etc read /proc read /sys/fs/cgroup read /usr read /lib read /lib64 execute /proc/self/exe write /dev/null]" tcp="no bind, connect (tpc.enabled)" sockets="Unix, netlink, TCP and UDP"
 
 ### weed's own process {#process}
 
-weed confines itself with Landlock too: the process that terminates TLS and authenticates requests, as root. It may write the exported directory, the directories of `server.log_file`, `admin.socket` and `admin.bans`, and its cgroup, and read only those, the system's files (as workers) and the files that its configuration names. From Linux 6.7, it binds only its ports, and connects only to token issuers and for third-party copies.
+weed confines itself with Landlock too: the process that terminates TLS and authenticates requests, as root. It may write the exported directory, the directories of `server.log_file`, `admin.socket` and `admin.bans`, and its cgroup, and read only those, the system's files (as workers) and the files that its configuration names. From Linux 6.7, it binds only its ports, and connects only to token issuers and for third-party copies. With seccomp, it opens Unix, netlink, TCP and UDP sockets alone, and has no io_uring.
 
-Landlock confines a thread and what it executes: weed executes itself again, from a thread that it confines, and refuses to start if it then is not confined. It logs the rules as it does:
+Landlock and seccomp confine a thread and what it executes: weed executes itself again, from a thread that it confines, and refuses to start if it then is not confined. It logs the rules as it does:
 
-    INFO weed confines itself with Landlock, and executes itself again confined landlock_abi=6 rules="[write /data read /etc ... write and make sockets in /run/weed write /var/lib/weed write /sys/fs/cgroup/system.slice/weed.service]" tcp="bind 443 9100, connect (token issuers, tpc.enabled)"
+    INFO weed confines itself with Landlock, and executes itself again confined landlock_abi=6 rules="[write /data read /etc ... write and make sockets in /run/weed write /var/lib/weed write /sys/fs/cgroup/system.slice/weed.service]" tcp="bind 443 9100, connect (token issuers, tpc.enabled)" sockets="Unix, netlink, TCP and UDP"
 
 Confined to /, weed would reach everything: it does not export /, nor keep its files there.
 
@@ -124,4 +127,4 @@ test/stress finds what a server sustains. For each kind of request (small files 
     $ ./stress -url https://weed.example.org/webdav/home/alice \
           -cert usercert.pem -key userkey.pem -ca /etc/grid-security/certificates
 
-*stress -h* lists the kinds of requests and options; `-json` writes the results. From a checkout of weed with Docker, `make find-limits` runs it against weed in a container, on the same machine.
+*stress -h* lists the kinds of requests and options; `-json` writes the results.

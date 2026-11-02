@@ -8,12 +8,13 @@ page), macaroons or passwords.
 
 Every request accesses files as the Unix account that its credentials map to, from a
 worker process running as that account (see Unix accounts), so weed serves on Linux,
-and runs as root. It targets AlmaLinux 10 (EL10), which its tests run on. macOS is
-only for developing weed, which serves there as the account that runs it (see
-Development on macOS); other systems only get the helpers (weed utils, config,
-check, version). weed does not need systemd: any supervisor runs it, SIGHUP reloads
-it, SIGTERM stops it, and it exits with status 75 to be started again (see the
-guide's Installation, Without systemd).
+and runs as root. It targets AlmaLinux 10 (EL10), which its tests run on; weed and
+its helpers (weed utils) build and run on Linux alone. weed does not need systemd:
+any supervisor runs it, SIGHUP reloads it, SIGTERM stops it, and it exits with status
+75 to be started again (see the guide's Installation, Without systemd). Releases, on
+https://github.com/labkode/weed/releases, have weed for linux/amd64 and linux/arm64,
+and CHANGELOG.md what each version changed, incompatible changes first (see
+Releases).
 
     go build && sudo ./weed
 
@@ -390,7 +391,7 @@ needs 1 MiB socket buffers, which root gets; as another user, also raise
 net.core.wmem_max and net.core.rmem_max to 1048576, or downloads lose a third.
 Larger buffers would gain a few percent of one stream, but a client that reads
 slower than its worker keeps them full: 4 MiB took 7 MB of memory per slow client,
-1 MiB takes 2.7 MB (make find-limits, slow-download).
+1 MiB takes 2.7 MB (test/stress, slow-download).
 
 The users need search permission on the exported directory and its parents (and
 weed, for /healthz). Accounts are looked up again after a minute, and on reload; an
@@ -422,15 +423,23 @@ to the exported directory:
   cgo, its dynamic loader, which can run other programs, confined the same); it cannot
   make symbolic links, devices, sockets or FIFOs; from Linux 6.7, it binds no TCP port,
   and connects to none unless tpc.enabled, for third-party copies (Landlock does not
-  confine UDP); from Linux 6.12, it signals no process (but on RHEL 9's kernels, which
-  lack that) and connects to no abstract Unix socket outside its confinement. weed
-  logs the rules as it starts ("workers are confined with Landlock"). Each worker
-  checks that it is confined, and refuses to serve otherwise. On some file systems,
-  such as Docker Desktop's mounts of the host, Landlock refuses every access whatever
-  its rules: weed then does not start, and says so, if the exported directory or
-  weed's binary is on one. Landlock does not cover stat, chmod, chown, utime and
-  extended attributes: on files outside the exported directory, permissions alone
-  keep those.
+  confine UDP, nor MPTCP: see seccomp below); from Linux 6.12, it signals no process
+  (but on RHEL 9's kernels, which lack that) and connects to no abstract Unix socket
+  outside its confinement. weed logs the rules as it starts ("workers are confined with
+  Landlock"). Each worker checks that it is confined, and refuses to serve otherwise.
+  On some file systems, such as Docker Desktop's mounts of the host, Landlock refuses
+  every access whatever its rules: weed then does not start, and says so, if the
+  exported directory or weed's binary is on one. Landlock does not cover stat, chmod,
+  chown, utime and extended attributes: on files outside the exported directory,
+  permissions alone keep those.
+* seccomp: Landlock's rules of TCP cover TCP alone, not MPTCP, which Go listens with
+  where the kernel has it and which falls back to TCP with peers that do not, nor
+  SCTP, SMC, raw or packet sockets. weed filters the system calls of itself and of
+  each worker: a worker opens Unix sockets alone, and with tpc.enabled TCP and UDP
+  ones too (UDP to resolve names); weed's own process opens Unix, netlink, TCP and UDP
+  sockets. Neither has io_uring, which opens sockets without socket(2). weed logs
+  them (sockets=), and refuses to start if it is not filtered; each worker checks
+  that it is, and refuses to serve otherwise. The filters are of amd64 and arm64.
 And weed's own process, which terminates TLS and authenticates requests, as root: it
 may write the exported directory, the directories of server.log_file, admin.socket
 and admin.bans, and its cgroup, and read only those, the system's files (as workers)
@@ -804,43 +813,27 @@ Testing
 
     make test          unit and end-to-end tests (go test -race ./...); the tests of
                        request handling serve files in the test process, as its user
-    make test-root     the same as root, adding the tests of worker processes and
-                       Unix accounts (Linux, uses sudo)
-    make test-linux    the same as root in a Linux container, e.g. from macOS (Docker)
-    make test-cgroups  the cgroups of worker processes, in a privileged container
+    make test-root     the same as root, adding the tests of worker processes, Unix
+                       accounts and mounts (uses sudo)
+    make test-cgroups  the cgroups of worker processes, as root in a cgroup of their
+                       own (sudo, systemd-run)
     make test-systemd  weed as the service of the guide (Installation): its unit,
                        with Delegate=yes and the sandboxing above, as root and as an
                        account of its own, and storage unmounted from and mounted
                        over the exported directory, in a privileged AlmaLinux 10
-                       container that boots systemd (test/systemd/systemd.sh, Docker)
-    make interop       interoperability tests (test/interop/interop.sh, Docker)
-    make lab           weed with 22 Unix accounts under a load that does not stop, in
-                       a container, to watch its dashboard, /status, /metrics and the
-                       logs, with Prometheus and Grafana (test/lab/lab.sh, Docker);
-                       make lab-ssh opens a shell in it, make lab-stop stops it
-    make find-limits   the limits of weed on this machine: the lab without its load,
-                       or limits, under a load that grows until weed or the
-                       machine gives (test/stress, Docker); ARGS="..." go to stress
+                       container that boots systemd (test/systemd/systemd.sh, Podman)
+    make interop       interoperability tests (test/interop/interop.sh, Podman)
     make check         gofmt and go vet; make fuzz, make cross, make vulncheck and
                        make bench run the rest; make help lists every target
 
-TestLandlockRemount (internal/worker) mounts an ext4 image again over the exported
-directory, as a storage mounted again, and TestConfinedMounts (internal/landlock)
-mounts storage beneath, over and away from directories that rules name: they need
-root in a privileged container (and mkfs.ext4), and skip otherwise, as in make
-test-linux.
-
-Development on macOS. macOS is only for developing weed, not for serving: there,
-./weed accesses files in its own process, as the account that runs it, whatever
-identity a request has, and does not run as root. Authentication, checksums, locks,
-third-party copies, bans, metrics, /status and the dashboard work as on Linux; worker
-processes, Unix accounts, Landlock, cgroups and unix_users.limits do not. weed says
-so as it starts, and /status shows "development" with the account. The control
-plane's socket and the bans file, by default in /run/weed and /var/lib/weed, are in
-the user's cache directory (~/Library/Caches/weed), also when a configuration sets
-them to those defaults, as weed config prints them. make test runs every test but
-those of worker processes and Unix accounts, which make test-linux runs in a
-container; make lab runs weed as on a server.
+Everything runs on the machine, which must be Linux, but make test-systemd and make
+interop: they install units, accounts, packages and a CA, and so run in Podman
+containers (sudo podman).
+make test runs every test but those that need root, which make test-root runs with
+sudo: of worker processes and Unix accounts, and TestLandlockRemount
+(internal/worker) and TestConfinedMounts (internal/landlock), which mount an ext4
+image (mkfs.ext4) and tmpfs in their temporary directories, beneath, over and away
+from directories that Landlock rules name.
 
 The interoperability tests run weed in an AlmaLinux 10 container against real WLCG
 software, from EPEL: gfal2, davix and curl as clients; XRootD (with its macaroons,
@@ -849,9 +842,11 @@ They cover X.509 proxies, macaroons, tokens, revocation with SIGHUP, metrics, Un
 accounts, bans, and third-party copies in both directions between two weed servers
 and between weed and XRootD. Each parser also has a fuzz test (go test -fuzz). CI
 (.github/workflows/ci.yml) runs on Linux: the tests with -race and as root, go vet,
-gofmt, govulncheck, cross-builds, the fuzz tests and the interoperability tests. It
-also makes the administration guide from docs/src, fails if docs/html is not what
-make docs makes, and publishes it on GitHub Pages from the main branch.
+gofmt, govulncheck, builds for amd64 and arm64, the fuzz tests, the interoperability
+tests and make test-systemd. It also makes the administration guide from docs/src,
+fails if docs/html is not what make docs makes, and publishes it on GitHub Pages from
+the main branch: the guide of the latest release, and main's under dev/. For a tag, it
+makes the release (see Releases).
 
 test/stress finds what a weed server sustains. For each scenario (small files read,
 written and listed, new TLS connections, downloads and uploads of large files, each
@@ -867,10 +862,8 @@ They report what each client adds to weed's memory and to the machine's, and sto
 when clients fall behind, or the machine has used 90% of its memory. It works in a
 directory of its own below the URL it is given, and removes it.
 
-make find-limits runs it in the lab's container, with weed's files on a Docker volume:
-the load shares the CPUs with weed, and downloads read one file, from memory. To
-measure the machine that will serve, run weed there as it will serve, and stress from
-another machine:
+On weed's machine, the load shares the CPUs with weed. To measure the machine that
+will serve, run weed there as it will serve, and stress from another machine:
 
     go build -o stress ./test/stress
     ./stress -url https://weed.example.org/webdav/home/alice \
@@ -879,13 +872,42 @@ another machine:
 stress -h lists the scenarios and options; -json writes the results as JSON.
 
 
+Releases
+
+CHANGELOG.md has the changes of each version, the newest first, and the guide has it
+as a page. A change that users or administrators may notice adds a line to its first
+section, Unreleased, which the first change after a release begins; one that is not
+compatible goes under Incompatible changes, and makes the next release a new major
+version (the guide's Upgrading, Versions, says which are).
+
+A release is a tag vMAJOR.MINOR.PATCH on main. Its commit names the version and the
+day as the first section of CHANGELOG.md, in place of Unreleased, and has the guide
+that make docs then makes, whose header says the version. From v2 on, the path of the
+module, in go.mod and the imports, ends in the major version (as
+github.com/labkode/weed/v2), which Go needs to take the tag for weed's version:
+
+    sed -i 's/^## Unreleased$/## v1.2.0 (2026-11-20)/' CHANGELOG.md
+    make docs
+    git commit -am "weed v1.2.0"
+    git tag -a v1.2.0 -m "weed v1.2.0"
+    git push origin main v1.2.0
+
+CI then runs as for every commit and, once it passes, release/dist.sh builds weed for
+linux/amd64 and linux/arm64 with cgo on AlmaLinux 10, each on a runner of its
+architecture, test/systemd/systemd.sh tests it as the guide installs it, and the
+release on GitHub gets the archives (weed, README.txt, CHANGELOG.md, LICENSE and the
+guide), SHA256SUMS, and the version's section of the changelog as its notes. Pushing
+main with the tag publishes the release's guide on GitHub Pages. make dist builds the
+archive of a tagged commit on an EL10 machine, for its architecture.
+
+
 Not implemented
 
 * X.509 credential delegation for TPC (Credential: gridsite): use tokens or
   macaroons in TransferHeaderAuthorization
 * Authorization by token groups alone: a token needs storage scopes even when its
   groups choose its Unix account
-* Serving on systems other than Linux
+* Systems other than Linux, on which weed does not build
 * WebDAV locks across accounts: each worker keeps its own
 
 

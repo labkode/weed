@@ -604,11 +604,11 @@ func TestWorkerReplacedDuringRequest(t *testing.T) {
 	})
 }
 
-// TestWorkerCgroups rearranges the cgroups of the machine it runs on, as a service
-// manager delegating a cgroup to weed would: run it in a container (make test-cgroups)
+// TestWorkerCgroups rearranges the cgroup it runs in, as a service manager delegating a
+// cgroup to weed would: make test-cgroups runs it in one of its own (systemd-run)
 func TestWorkerCgroups(t *testing.T) {
 	if os.Getenv("WEED_TEST_CGROUPS") == "" {
-		t.Skip("rearranges the machine's cgroups: run in a container with make test-cgroups")
+		t.Skip("rearranges the cgroup it runs in: make test-cgroups gives it one of its own")
 	}
 	cgroupOf := func(pid int) string {
 		data, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))

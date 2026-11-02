@@ -3,7 +3,6 @@ package server
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -14,7 +13,7 @@ import (
 // Operations the filesystem refuses get 403, not the 404, 405 or 500 that
 // x/net/webdav would answer
 func TestPermissionDeniedIs403(t *testing.T) {
-	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+	if os.Geteuid() == 0 {
 		t.Skip("needs a user that file permissions apply to")
 	}
 	n := newNode(t, nil)

@@ -29,14 +29,13 @@ jobs:
           exit $status
       - name: Tests of worker processes running as Unix accounts (as root)
         run: go test -exec sudo -count=1 -run 'TestUnixUsers|TestWorker' ./internal/server ./internal/worker
-      - name: cgroups of worker processes (privileged container)
+      - name: cgroups of worker processes (as root, in a cgroup of their own)
         run: make test-cgroups
 
   build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux, darwin, windows, freebsd]
         goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v5
@@ -45,7 +44,6 @@ jobs:
           go-version-file: go.mod
       - run: go build -o /dev/null . && go vet ./...
         env:
-          GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
 
   vulncheck:
@@ -82,8 +80,22 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - name: Podman
+        run: command -v podman >/dev/null || { sudo apt-get -q update && sudo apt-get -q install -y podman; }
       - name: gfal2, davix and XRootD against weed
-        run: test/interop/interop.sh
+        run: make interop
+
+  systemd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Podman
+        run: command -v podman >/dev/null || { sudo apt-get -q update && sudo apt-get -q install -y podman; }
+      - name: weed as the guide installs it, under systemd
+        run: make test-systemd
 
   # The administration guide, made from docs/src as make docs makes it, for GitHub
   # Pages (Settings, Pages, Source: GitHub Actions)
@@ -91,6 +103,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the tags, whose guides the site has
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -107,9 +121,20 @@ jobs:
             echo "::error title=docs::docs/html is not what make docs makes from docs/src: run make docs, and commit docs/html"
             exit 1
           }
+      - name: The site, the guide of the latest release, and main's under dev/
+        run: |
+          site=$RUNNER_TEMP/site
+          latest=$(git tag --list --sort=-v:refname 'v*' | grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          if [ -z "$latest" ]; then
+            cp -R docs/html "$site" # no release yet
+          else
+            mkdir "$site"
+            git archive "$latest" docs/html | tar -x --strip-components=2 -C "$site"
+            cp -R docs/html "$site/dev"
+          fi
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: docs/html
+          path: ${{ runner.temp }}/site
 
   pages:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -127,3 +152,80 @@ jobs:
     steps:
       - id: deploy
         uses: actions/deploy-pages@v5
+
+  # A release, for a tag vMAJOR.MINOR.PATCH once every other job has passed: weed
+  # built on AlmaLinux 10 on a runner of each architecture (release/dist.sh), tested
+  # there as the guide installs it, then the release on GitHub (README.txt, Releases)
+  dist:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [test, build, vulncheck, fuzz, interop, systemd, docs]
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: almalinux:10
+    steps:
+      - run: dnf -y -q install gcc git-core tar gzip gawk # git first: checkout then clones
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the tag, which gives weed its version
+      # The latest Go release, whose standard library vulncheck checked
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          release/dist.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist/*.tar.gz
+
+  # Podman, which the job container of dist has not
+  dist-test:
+    needs: dist
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist
+      - name: Podman
+        run: command -v podman >/dev/null || { sudo apt-get -q update && sudo apt-get -q install -y podman; }
+      - name: The release's weed as the guide installs it (make test-systemd)
+        run: |
+          tar -xzf dist/weed-*-linux-${{ matrix.arch }}.tar.gz -C "$RUNNER_TEMP"
+          WEED=$(echo "$RUNNER_TEMP"/weed-*/weed) test/systemd/systemd.sh
+
+  release:
+    needs: dist-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: The release on GitHub, with the version's section of CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          (cd dist && sha256sum weed-*.tar.gz >SHA256SUMS && cat SHA256SUMS)
+          release/notes.sh "$TAG" >"$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --verify-tag --title "weed $TAG" --notes-file "$RUNNER_TEMP/notes.md" dist/*

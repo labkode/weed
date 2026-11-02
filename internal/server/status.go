@@ -253,9 +253,6 @@ type status struct {
 	// StorageUnmounted is since when the storage that the exported directory was on
 	// when weed started is not mounted (absent while it is): requests get 503
 	StorageUnmounted time.Time `json:"storage_unmounted,omitzero"`
-	// Development is the account that every identity accesses files as, in the
-	// development mode of systems other than Linux
-	Development string `json:"development,omitempty"`
 }
 
 type statusConfig struct {
@@ -286,7 +283,6 @@ func (s *Server) statusHandler(w http.ResponseWriter, r *http.Request) {
 		Workers:        []worker.Info{},
 		BannedUsers:    s.Bans.Len(),
 		InProgress:     s.inProgress.status(),
-		Development:    s.development,
 	}
 	if u := s.unmounted.Load(); u != nil {
 		st.StorageUnmounted = u.since

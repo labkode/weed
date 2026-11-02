@@ -123,9 +123,6 @@ storage_unmounted
 workers
 :   each worker: its account, its pid, since when it runs, and how many requests weed waits for it to answer. A retired worker finishes its requests and takes no new ones, e.g. after its account's groups changed. blocked_threads are the worker's threads that wait in the kernel, uninterruptibly: for a moment while they read or write files, and for long when its storage does not answer, also once their clients have gone (see [Troubleshooting](troubleshooting.html#hung-storage)).
 
-development
-:   only on macOS, where weed serves for development: the account that every request accesses files as (see [Getting started](getting-started.html#macos)).
-
 ## Transfers in progress {#in-progress}
 
 `in_progress` counts the authenticated WebDAV requests being served, by kind, in total and by user:

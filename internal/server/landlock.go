@@ -14,6 +14,7 @@ import (
 
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/landlock"
+	"github.com/labkode/weed/internal/seccomp"
 	"github.com/labkode/weed/internal/systemd"
 	"github.com/labkode/weed/internal/worker"
 )
@@ -24,22 +25,23 @@ const confinedEnv = "WEED_LANDLOCK"
 // confined says that this process is confined with Landlock
 var confined bool
 
-// Confine confines weed's own process with Landlock, and so the workers it starts.
-// Landlock confines a thread, and what it executes: Confine executes weed again, from
-// a thread that it confines, and returns in weed so executed, once it has checked
-// that it is confined. weed does not serve unconfined: without Landlock in the
-// kernel, Confine fails. (On macOS, for development, it does nothing.)
+// Confine confines weed's own process with Landlock, and so the workers it starts;
+// and with seccomp to the sockets that Landlock confines, or does not need to: Unix,
+// netlink, TCP and UDP. Both confine a thread, and what it executes: Confine executes
+// weed again, from a thread that it confines, and returns in weed so executed, once
+// it has checked that it is confined. weed does not serve unconfined: without
+// Landlock in the kernel, Confine fails.
 func Confine(c *config.Config, src config.Source) error {
 	again := os.Getenv(confinedEnv) != ""
 	os.Unsetenv(confinedEnv)
-	if runtime.GOOS != "linux" {
-		return nil
-	}
 	if again {
 		// No rule allows / itself
 		if f, err := os.Open("/"); err == nil {
 			f.Close()
 			return errors.New("weed was executed again to be confined with Landlock, and is not")
+		}
+		if !seccomp.Filtered(seccomp.TCPUDP) {
+			return fmt.Errorf("weed was executed again to open %s sockets alone (seccomp), and opens others", seccomp.TCPUDP)
 		}
 		confined = true
 		return nil
@@ -100,7 +102,12 @@ func Confine(c *config.Config, src config.Source) error {
 			tcp += ", no connect"
 		}
 	}
-	slog.Info("weed confines itself with Landlock, and executes itself again confined", "landlock_abi", abi, "rules", desc, "tcp", tcp)
+	slog.Info("weed confines itself with Landlock, and executes itself again confined", "landlock_abi", abi, "rules", desc, "tcp", tcp,
+		"sockets", seccomp.TCPUDP.String())
+	runtime.LockOSThread() // never unlocked: the thread is confined, and executes weed again (rs.Exec)
+	if err := seccomp.Restrict(seccomp.TCPUDP); err != nil {
+		return err
+	}
 	return rs.Exec(os.Args, append(os.Environ(), confinedEnv+"=1"))
 }
 

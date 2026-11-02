@@ -30,6 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -88,6 +89,7 @@
 			<li><a href="metrics.html">Metrics</a></li>
 			<li><a href="http.html">HTTP endpoints</a></li>
 			<li><a href="files.html">Files</a></li>
+			<li><a href="changelog.html">Changelog</a></li>
 		</ul>
 	</div>
 </div>
@@ -280,6 +282,10 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <tr>
 <td><code>the exported directory /data is on the file system of /, not on a storage of its own (server.require_mount): is its storage mounted?</code></td>
 <td>With <code>server.require_mount</code>, weed does not start until the storage of the exported directory is mounted. Mount it: systemd starts weed again within a minute.</td>
+</tr>
+<tr>
+<td><code>weed filters its system calls with seccomp on amd64 and arm64, not on ...</code>, <code>cannot filter system calls with seccomp</code></td>
+<td>weed opens only the sockets that Landlock confines (see <a href="unix-accounts.html#confinement">Unix accounts</a>), with filters of amd64 and arm64, and a kernel with seccomp filters (CONFIG_SECCOMP_FILTER, as every distribution's).</td>
 </tr>
 <tr>
 <td><code>the exported directory has not answered yet, and workers are confined to it with Landlock</code></td>

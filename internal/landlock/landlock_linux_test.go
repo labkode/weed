@@ -285,7 +285,7 @@ func TestConfinedSocket(t *testing.T) {
 // Rules confine to plain directories and to mount points alike: each names what its
 // path leads to as it is made, and covers what is beneath, storage mounted there
 // later included; not a storage mounted over it later, nor the directory that an
-// unmounted storage leaves. Needs root, in a privileged container.
+// unmounted storage leaves. Needs root.
 func TestConfinedMounts(t *testing.T) {
 	dir := t.TempDir()
 	plain, mnt := filepath.Join(dir, "plain"), filepath.Join(dir, "mnt")
@@ -300,7 +300,7 @@ func TestConfinedMounts(t *testing.T) {
 		return err
 	}
 	if err := mount(mnt); err != nil {
-		t.Skipf("cannot mount (not root in a privileged container?): %v", err)
+		t.Skipf("cannot mount (not root, or a container without privileges?): %v", err)
 	}
 	rules := []Rule{{Path: plain, Access: Write}, {Path: mnt, Access: Write}}
 	confined(t, rules, Net{Bind: true, Connect: true}, func() {

@@ -30,6 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -88,6 +89,7 @@
 			<li><a href="metrics.html">Metrics</a></li>
 			<li><a href="http.html">HTTP endpoints</a></li>
 			<li><a href="files.html">Files</a></li>
+			<li><a href="changelog.html">Changelog</a></li>
 		</ul>
 	</div>
 </div>
@@ -98,10 +100,28 @@
 <header id="title-block-header">
 <h1 class="title">Upgrading</h1>
 </header>
-<p>A new version of weed runs once weed restarts. Until then, weed and its workers keep running the binary they started with, and weed says that a restart is pending.</p>
+<p>A new version of weed runs once weed restarts. Until then, weed and its workers keep running the binary they started with, and weed says that a restart is pending. Before upgrading, read the <a href="changelog.html">Changelog</a> from your version to the new one: the Incompatible changes of each version say what to change first.</p>
+<h2 id="versions">Versions</h2>
+<p>weed's versions are numbered MAJOR.MINOR.PATCH, as in <a href="https://semver.org">Semantic Versioning</a>, and released on <a href="https://github.com/labkode/weed/releases">GitHub</a> (see <a href="installation.html#releases">Installation</a>):</p>
+<ul>
+<li>A new PATCH fixes bugs, and changes nothing else.</li>
+<li>A new MINOR adds what the version before did not have, such as options, metrics, fields of /status or commands, and keeps what that version did with the same configuration.</li>
+<li>A new MAJOR has incompatible changes, which the changelog lists first in its section.</li>
+</ul>
+<p>A change is incompatible if a server, or what watches it, may stop working as it did with the same configuration, files and clients:</p>
+<ul>
+<li>An option or a section that is removed or renamed, or whose default or meaning changes: weed refuses an option that it does not know.</li>
+<li>A file that weed reads or writes in another format: the configuration, the limits of unix_users.limits, app tokens, the bans file, the grid-mapfile, the stored checksums.</li>
+<li>What weed needs to run: Linux, its version and its security modules, the architectures, what the guide's systemd unit gives it.</li>
+<li>A metric, a label or a field of /status that is removed or renamed, or whose meaning changes.</li>
+<li>A command, a flag, an exit status or an output that scripts read, such as that of <em>weed utils bans</em>.</li>
+<li>What clients see: the URLs, the status codes and headers of requests that worked, the authentication methods, the checksums.</li>
+</ul>
+<p>What weed logs, the dashboard, and how weed talks to its workers (always of the same build) may change in any version.</p>
+<p>Between releases, the main branch is the development version, which the header of its guide says: its changes, incompatible ones too, are in the changelog's Unreleased section.</p>
 <h2 id="procedure">Upgrading</h2>
 <ol type="1">
-<li><p>Build the new version, and look at what it is:</p>
+<li><p>Get the new version (see <a href="installation.html#releases">Installation</a>), or build it, and look at what it is:</p>
 <pre><code>$ make build &amp;&amp; ./weed version</code></pre></li>
 <li><p>Install it by replacing the file: <em>install</em> and <em>mv</em> do, as package managers do. (Linux refuses to write into a binary that runs: <em>cp</em> onto it fails with "Text file busy".)</p>
 <pre><code># install -m 0755 weed /usr/local/bin/weed</code></pre>

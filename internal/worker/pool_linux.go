@@ -29,6 +29,7 @@ import (
 	"github.com/labkode/weed/internal/landlock"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
+	"github.com/labkode/weed/internal/seccomp"
 	"github.com/labkode/weed/internal/version"
 	"golang.org/x/sys/unix"
 )
@@ -200,7 +201,8 @@ func New(opts Options) (*Pool, error) {
 			tcp = "no bind, connect (tpc.enabled)"
 		}
 	}
-	slog.Info("workers are confined with Landlock", "landlock_abi", abi, "rules", desc, "tcp", tcp)
+	slog.Info("workers are confined with Landlock", "landlock_abi", abi, "rules", desc, "tcp", tcp,
+		"sockets", sockets(&opts.Config).String())
 	first := make(chan struct{})
 	go p.watchDir(first)
 	select {
@@ -428,6 +430,15 @@ func (p *Pool) confine() (*confinement, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// sockets are what workers may open (see seccomp): Unix sockets alone, unless they
+// make third-party copies, which need TCP, and UDP to resolve names
+func sockets(c *config.Config) seccomp.Sockets {
+	if c.TPC {
+		return seccomp.TCPUDP
+	}
+	return seccomp.UnixOnly
 }
 
 // network is what workers may do of TCP: bind no port, as they listen on none, and
@@ -876,7 +887,7 @@ func (p *Pool) spawn(wk *worker) (err error) {
 		cmd.SysProcAttr.UseCgroupFD = true
 		cmd.SysProcAttr.CgroupFD = fd
 	}
-	if err := startConfined(cmd, rules); err != nil {
+	if err := startConfined(cmd, rules, sockets(&p.opts.Config)); err != nil {
 		logs.Close()
 		if errors.Is(err, unix.EPERM) {
 			err = fmt.Errorf("%w (weed must run as root, or with CAP_SETUID and CAP_SETGID)", err)
@@ -1047,10 +1058,10 @@ func socketPair(typ int) (*net.UnixConn, *os.File, error) {
 // inherit: capabilities other than those needed to switch to the account (which the
 // kernel drops at execve), ambient and inheritable capabilities, and the ability to
 // gain privileges by executing files (no_new_privs, which also covers file
-// capabilities on the weed binary); and, with rules, confines itself with Landlock.
-// These are attributes of threads, so the thread is discarded afterwards rather than
-// returned to the Go scheduler.
-func startConfined(cmd *exec.Cmd, rules *landlock.Ruleset) error {
+// capabilities on the weed binary); and confines itself with Landlock to rules, and
+// with seccomp to the sockets s. These are attributes of threads, so the thread is
+// discarded afterwards rather than returned to the Go scheduler.
+func startConfined(cmd *exec.Cmd, rules *landlock.Ruleset, s seccomp.Sockets) error {
 	errc := make(chan error, 1)
 	go func() {
 		runtime.LockOSThread() // never unlocked: the thread ends with this goroutine
@@ -1074,6 +1085,9 @@ func startConfined(cmd *exec.Cmd, rules *landlock.Ruleset) error {
 			}
 			if err := rules.Restrict(); err != nil {
 				return fmt.Errorf("cannot confine the worker with Landlock: %w", err)
+			}
+			if err := seccomp.Restrict(s); err != nil {
+				return fmt.Errorf("cannot confine the worker: %w", err)
 			}
 			return cmd.Start()
 		}()

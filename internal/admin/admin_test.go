@@ -11,7 +11,8 @@ import (
 	"time"
 )
 
-// socketPath returns a path for a Unix socket: short enough (104 bytes on macOS)
+// socketPath returns a path for a Unix socket: short enough (108 bytes), which one in
+// t.TempDir() may not be
 func socketPath(t *testing.T) string {
 	dir, err := os.MkdirTemp("", "weed")
 	if err != nil {

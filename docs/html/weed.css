@@ -30,6 +30,12 @@ body {
     color: black;
 }
 
+.header .version {
+    margin-left: 1em;
+}
+.header a.version:link, .header a.version:visited {
+    color: #555;
+}
 .header a:hover {
     color: #e68a00;
 }

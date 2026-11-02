@@ -2,11 +2,32 @@
 title: 'Upgrading'
 ---
 
-A new version of weed runs once weed restarts. Until then, weed and its workers keep running the binary they started with, and weed says that a restart is pending.
+A new version of weed runs once weed restarts. Until then, weed and its workers keep running the binary they started with, and weed says that a restart is pending. Before upgrading, read the [Changelog](changelog.html) from your version to the new one: the Incompatible changes of each version say what to change first.
+
+## Versions {#versions}
+
+weed's versions are numbered MAJOR.MINOR.PATCH, as in [Semantic Versioning](https://semver.org), and released on [GitHub](https://github.com/labkode/weed/releases) (see [Installation](installation.html#releases)):
+
+- A new PATCH fixes bugs, and changes nothing else.
+- A new MINOR adds what the version before did not have, such as options, metrics, fields of /status or commands, and keeps what that version did with the same configuration.
+- A new MAJOR has incompatible changes, which the changelog lists first in its section.
+
+A change is incompatible if a server, or what watches it, may stop working as it did with the same configuration, files and clients:
+
+- An option or a section that is removed or renamed, or whose default or meaning changes: weed refuses an option that it does not know.
+- A file that weed reads or writes in another format: the configuration, the limits of unix_users.limits, app tokens, the bans file, the grid-mapfile, the stored checksums.
+- What weed needs to run: Linux, its version and its security modules, the architectures, what the guide's systemd unit gives it.
+- A metric, a label or a field of /status that is removed or renamed, or whose meaning changes.
+- A command, a flag, an exit status or an output that scripts read, such as that of *weed utils bans*.
+- What clients see: the URLs, the status codes and headers of requests that worked, the authentication methods, the checksums.
+
+What weed logs, the dashboard, and how weed talks to its workers (always of the same build) may change in any version.
+
+Between releases, the main branch is the development version, which the header of its guide says: its changes, incompatible ones too, are in the changelog's Unreleased section.
 
 ## Upgrading {#procedure}
 
-1.  Build the new version, and look at what it is:
+1.  Get the new version (see [Installation](installation.html#releases)), or build it, and look at what it is:
 
         $ make build && ./weed version
 

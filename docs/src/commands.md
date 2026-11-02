@@ -16,9 +16,8 @@ weed is a single binary. Options are set in the configuration file, not on the c
     Options are set in the configuration file. Without one, weed serves the current
     directory at http://127.0.0.1:9000/webdav/ to local clients, without authentication,
     as the Unix account nobody, and its metrics, status and dashboard at
-    http://127.0.0.1:9000/metrics, /status and /dashboard/. weed serves on Linux,
-    as root. On macOS, it serves for development only: in its own process, as the
-    account that runs it (not root), for every identity.
+    http://127.0.0.1:9000/metrics, /status and /dashboard/. weed runs on Linux,
+    as root.
 
 ## weed
 
@@ -26,7 +25,7 @@ weed is a single binary. Options are set in the configuration file, not on the c
 
 Serves until SIGTERM or SIGINT, then stops accepting requests, gives those in progress 30 seconds to finish, and stops its workers. SIGHUP reopens the log file and reloads credentials (see [Reloading](reloading.html)). Under systemd, weed tells systemd when it is ready, reloading and stopping, and its status line, and serves on the sockets that systemd passes, if it does (see [Installation](installation.html#systemd)).
 
-weed serves on Linux, as root or with CAP_SETUID and CAP_SETGID. On macOS, it serves for development only (see [Getting started](getting-started.html#macos)); on other systems, it does not serve. *weed worker* is how weed starts its worker processes: it is not for running by hand.
+weed runs on Linux, as root or with CAP_SETUID and CAP_SETGID. *weed worker* is how weed starts its worker processes: it is not for running by hand.
 
 | Exit status | When |
 |----|----|

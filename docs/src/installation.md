@@ -2,9 +2,23 @@
 title: 'Installation'
 ---
 
-weed is a single binary, without runtime dependencies. You build it from source with Go, install it, and run it as a systemd service, or under another supervisor (see [Without systemd](#without-systemd)).
+weed is a single binary, without runtime dependencies. You download a release, or build it from source with Go, install it, and run it as a systemd service, or under another supervisor (see [Without systemd](#without-systemd)).
 
-## Building
+## Releases {#releases}
+
+Each release on [GitHub](https://github.com/labkode/weed/releases) has an archive for linux/amd64 and one for linux/arm64, with weed, README.txt, CHANGELOG.md, LICENSE and this guide (guide/), and SHA256SUMS:
+
+    $ v=v1.2.0
+    $ curl -fLO https://github.com/labkode/weed/releases/download/$v/weed-$v-linux-amd64.tar.gz
+    $ curl -fLO https://github.com/labkode/weed/releases/download/$v/SHA256SUMS
+    $ sha256sum --ignore-missing -c SHA256SUMS
+    weed-v1.2.0-linux-amd64.tar.gz: OK
+    $ tar -xzf weed-$v-linux-amd64.tar.gz
+    $ weed-$v-linux-amd64/weed version
+
+Its weed is built with cgo on AlmaLinux 10, which weed targets: it looks accounts up as the system does (see [Building](#building)). Read the release's [Changelog](changelog.html) section before installing it over another version (see [Upgrading](upgrading.html#versions)).
+
+## Building {#building}
 
 weed needs Go 1.26 or later to build. In a checkout of the source:
 
@@ -154,7 +168,7 @@ systemd starts weed at the first connection if it does not run: *systemctl stop 
 
 ### Testing the service {#test-systemd}
 
-*make test-systemd* runs weed as this page installs it, in an AlmaLinux 10 container that boots systemd: the units above with the sandboxing and `Delegate=yes`, as root, and then as an account of its own (below). It checks that weed serves uploads, downloads and third-party copies, reloads, bans, restarts after a crash, and stops with its workers; that weed may write only what the sandboxing allows; that it starts again on its own when a storage is mounted over the exported directory; that it blocks while its storage is unmounted, writing nothing beneath, and serves it again once it is mounted; that with `require_mount` it does not start while the storage is not mounted; that a worker killed for its memory leaves weed serving; and that with weed.socket, a restart refuses no connection. Try other directives with *weed check* and a few requests of each kind, uploads and third-party copies included.
+*make test-systemd* runs weed as this page installs it, in an AlmaLinux 10 container that boots systemd (Podman): the units above with the sandboxing and `Delegate=yes`, as root, and then as an account of its own (below). It checks that weed serves uploads, downloads and third-party copies, reloads, bans, restarts after a crash, and stops with its workers; that weed may write only what the sandboxing allows; that it starts again on its own when a storage is mounted over the exported directory; that it blocks while its storage is unmounted, writing nothing beneath, and serves it again once it is mounted; that with `require_mount` it does not start while the storage is not mounted; that a worker killed for its memory leaves weed serving; and that with weed.socket, a restart refuses no connection. Try other directives with *weed check* and a few requests of each kind, uploads and third-party copies included.
 
 ## Without systemd {#without-systemd}
 
@@ -172,7 +186,7 @@ weed does not need systemd: it is a process that serves in the foreground, which
 | `Delegate=yes`, for `unix_users.cgroups` | weed needs a cgroup v2 directory that it may write, with its controllers: a container's own cgroup namespace, or one that you make for it. |
 | ProtectSystem= and the other sandboxing | weed confines itself with Landlock anyway (see [Unix accounts](unix-accounts.html#process)). |
 
-*make interop* and *make test-linux* run weed that way, started from a script in a container; *make test-cgroups* runs its cgroups in a container without systemd.
+*make interop* runs weed that way, started from a script in a container.
 
 ## Running without root {#without-root}
 

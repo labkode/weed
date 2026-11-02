@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Changelog</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+	<a class="version" href="changelog.html">for the development version</a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="limits.html">Limits per account</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+			<li><a href="changelog.html">Changelog</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Changelog</h1>
+</header>
+<p>The changes of each version of weed, the newest first. Versions are numbered MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number is not compatible with the one before it, and its section begins with Incompatible changes, what to change before upgrading to it. The guide's Upgrading page says what counts as incompatible.</p>
+<h2 id="unreleased">Unreleased</h2>
+<p>The first release. weed serves files over HTTP and WebDAV to the clients and services of the WLCG (gfal2, davix, FTS, Rucio, XRootD): authentication with X.509 certificates and proxies, WLCG and SciTokens tokens, macaroons, an OIDC login page and passwords; third-party copies in both directions; checksums from end to end; each request served as the Unix account that its credentials map to, by a worker process confined with Landlock and seccomp; cgroup limits per user and group; bans; metrics, /status and a dashboard.</p>
+<p>Until now, weed was built from the main branch. For a server that ran a build of it from 2026-10-29 or later, when the administration guide came, these are the changes.</p>
+<h3 id="incompatible-changes">Incompatible changes</h3>
+<ul>
+<li>weed builds and runs on Linux alone, on amd64 and arm64: weed utils, config, check and version no longer build for other systems, and weed no longer serves on macOS for development.</li>
+<li>weed needs Linux 5.19 or later with landlock among the security modules (lsm=), and seccomp: it confines itself and its workers, and does not start otherwise. unix_users.landlock is gone: a configuration that sets it is refused.</li>
+<li>weed's own process, which terminates TLS and authenticates requests, is confined with Landlock: it writes only the exported directory, the directories of admin.socket and admin.bans, its cgroup and its log file, and binds only its ports. weed does not export /.</li>
+<li>Network rate limits are gone: the [network] section (egress_rate, ingress_rate, account_egress_rate, account_ingress_rate), the rates in the file of unix_users.limits, which weed now refuses, /status's network and the metric weed_network_delay_seconds_total. The kernel paces transfers, with tc (see the guide's Limits per account).</li>
+<li>A symbolic link that leads outside the exported directory, and every absolute one, gets 403 and is left out of listings (see Fixed).</li>
+<li>When the storage that weed started on is no longer mounted, weed refuses requests with 503, /healthz too, rather than serve the directory beneath; when a storage is mounted again over the exported directory, weed exits with status 75, for its supervisor to start it again.</li>
+<li>weed listens with TCP, not with MPTCP, which Go listened with where the kernel has it. Clients with MPTCP fall back to TCP.</li>
+</ul>
+<h3 id="new">New</h3>
+<ul>
+<li>seccomp: weed opens Unix, netlink, TCP and UDP sockets alone, and its workers Unix sockets alone (as weed with tpc.enabled), and neither has io_uring.</li>
+<li>server.require_mount refuses to start while the exported directory is on the file system of /.</li>
+<li>weed serves on the sockets that systemd passes (socket activation), and the guide's systemd unit restarts it with a backoff that never gives up.</li>
+<li>/status's storage_unmounted and the metric weed_storage_unmounted.</li>
+<li>Releases, with this changelog, and the version that the guide is for in its header.</li>
+</ul>
+<h3 id="fixed">Fixed</h3>
+<ul>
+<li>Workers could open MPTCP, SCTP and other sockets that the rules of TCP of Landlock do not cover, and bind and connect with them where the rules refuse it.</li>
+<li>Symbolic links led outside the exported directory: a user who can make links in it could have weed read and write whatever their account can.</li>
+</ul>
+</div>
+<!-- end content -->
+</body>
+</html>

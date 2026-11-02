@@ -30,6 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -88,6 +89,7 @@
 			<li><a href="metrics.html">Metrics</a></li>
 			<li><a href="http.html">HTTP endpoints</a></li>
 			<li><a href="files.html">Files</a></li>
+			<li><a href="changelog.html">Changelog</a></li>
 		</ul>
 	</div>
 </div>
@@ -111,12 +113,6 @@ $ curl http://127.0.0.1:9000/webdav/hosts
 $ ls -l /tmp/demo
 -rw-r--r-- 1 nobody nobody 199 Oct 29 09:06 hosts</code></pre>
 <p>The file belongs to nobody, the account of anonymous requests. Without a configuration file, the same port also serves /metrics and /status (see <a href="monitoring.html">Monitoring</a>). Stop weed with Ctrl-C.</p>
-<h3 id="macos">On macOS, for development</h3>
-<p>macOS is only for developing weed, not for serving: there, weed accesses files in its own process, as the account that runs it, whatever identity a request has. It does not run as root, which would give every identity every file:</p>
-<pre><code>$ mkdir /tmp/demo &amp;&amp; cd /tmp/demo
-$ weed
-level=WARN msg=&quot;development mode, as on macOS: weed serves files in its own process, as the account that runs it, for every identity; ...&quot; account=alice</code></pre>
-<p>Authentication, checksums, locks, third-party copies, bans, metrics, /status and the dashboard work as on Linux. Worker processes, Unix accounts, Landlock, cgroups and <code>unix_users.limits</code> do not, and /status shows <code>"development": "alice"</code>. The control plane's socket and the bans file, by default in /run/weed and /var/lib/weed, are in the user's cache directory (~/Library/Caches/weed on macOS), also when a configuration file sets them to those defaults. To try weed as on a server from a Mac, use the lab (<code>make lab</code>, Docker), and <code>make test-linux</code> for the tests of worker processes.</p>
 <h2 id="storage-node">A grid storage node</h2>
 <p>The rest of this page sets up weed.example.org, which exports /data on port 443. Alice authenticates with her certificate, as the account alice; the CMS production jobs with WLCG tokens from https://iam.example.org/, as the account cms001.</p>
 <h3 id="accounts-and-directories">1. Accounts and directories</h3>

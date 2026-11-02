@@ -4,7 +4,7 @@ title: 'Introduction'
 
 weed, the WEbdav Exporter Daemon, exports a directory of a Linux server over WebDAV for the clients and services of the WLCG: gfal2, davix, FTS, Rucio and XRootD, and plain curl. It implements HTTP third-party copy (TPC) in both directions, and verifies checksums from end to end.
 
-This guide is for the administrators who install and run weed. It explains how weed works, how to configure it, and how to operate it: what it logs and measures, how to change credentials while it runs, how to upgrade it, and how to stop a user at once.
+This guide is for the administrators who install and run weed. It explains how weed works, how to configure it, and how to operate it: what it logs and measures, how to change credentials while it runs, how to upgrade it, and how to stop a user at once. Its header says which version of weed it is for, and the [Changelog](changelog.html) what each version changed.
 
 ## How weed works
 
@@ -29,7 +29,7 @@ weed is made so that nothing changes by surprise while it runs. It says which bu
 
 ## What you need
 
-- A Linux server: weed targets AlmaLinux 10 (and other EL10, such as RHEL 10 and Rocky Linux 10), which its tests run on. macOS is only for developing weed (see [Getting started](getting-started.html#macos)); on other systems, only its helpers work (*weed utils*, *config*, *check* and *version*).
+- A Linux server: weed targets AlmaLinux 10 (and other EL10, such as RHEL 10 and Rocky Linux 10), which its tests run on. weed and its helpers (*weed utils*) build and run on Linux alone.
 - root, or the CAP_SETUID and CAP_SETGID capabilities, to start workers as other accounts.
 - Linux 5.19 or later, with landlock among the security modules: weed confines itself and its workers with Landlock, and does not start without it (see [Unix accounts](unix-accounts.html#confinement)). AlmaLinux 10's kernel (6.12) has it by default, with its rules for TCP.
 - A local account for every user, in /etc/passwd or in a directory (LDAP, SSSD) that the system's user database reaches.

@@ -30,6 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -88,6 +89,7 @@
 			<li><a href="metrics.html">Metrics</a></li>
 			<li><a href="http.html">HTTP endpoints</a></li>
 			<li><a href="files.html">Files</a></li>
+			<li><a href="changelog.html">Changelog</a></li>
 		</ul>
 	</div>
 </div>
@@ -98,7 +100,17 @@
 <header id="title-block-header">
 <h1 class="title">Installation</h1>
 </header>
-<p>weed is a single binary, without runtime dependencies. You build it from source with Go, install it, and run it as a systemd service, or under another supervisor (see <a href="#without-systemd">Without systemd</a>).</p>
+<p>weed is a single binary, without runtime dependencies. You download a release, or build it from source with Go, install it, and run it as a systemd service, or under another supervisor (see <a href="#without-systemd">Without systemd</a>).</p>
+<h2 id="releases">Releases</h2>
+<p>Each release on <a href="https://github.com/labkode/weed/releases">GitHub</a> has an archive for linux/amd64 and one for linux/arm64, with weed, README.txt, CHANGELOG.md, LICENSE and this guide (guide/), and SHA256SUMS:</p>
+<pre><code>$ v=v1.2.0
+$ curl -fLO https://github.com/labkode/weed/releases/download/$v/weed-$v-linux-amd64.tar.gz
+$ curl -fLO https://github.com/labkode/weed/releases/download/$v/SHA256SUMS
+$ sha256sum --ignore-missing -c SHA256SUMS
+weed-v1.2.0-linux-amd64.tar.gz: OK
+$ tar -xzf weed-$v-linux-amd64.tar.gz
+$ weed-$v-linux-amd64/weed version</code></pre>
+<p>Its weed is built with cgo on AlmaLinux 10, which weed targets: it looks accounts up as the system does (see <a href="#building">Building</a>). Read the release's <a href="changelog.html">Changelog</a> section before installing it over another version (see <a href="upgrading.html#versions">Upgrading</a>).</p>
 <h2 id="building">Building</h2>
 <p>weed needs Go 1.26 or later to build. In a checkout of the source:</p>
 <pre><code>$ git clone https://github.com/labkode/weed.git
@@ -231,7 +243,7 @@ WantedBy=sockets.target</code></pre>
 <pre><code>level=INFO msg=listening address=[::]:443 scheme=https socket=&quot;passed by systemd&quot;</code></pre>
 <p>systemd starts weed at the first connection if it does not run: <em>systemctl stop weed.socket weed</em> stops both.</p>
 <h3 id="test-systemd">Testing the service</h3>
-<p><em>make test-systemd</em> runs weed as this page installs it, in an AlmaLinux 10 container that boots systemd: the units above with the sandboxing and <code>Delegate=yes</code>, as root, and then as an account of its own (below). It checks that weed serves uploads, downloads and third-party copies, reloads, bans, restarts after a crash, and stops with its workers; that weed may write only what the sandboxing allows; that it starts again on its own when a storage is mounted over the exported directory; that it blocks while its storage is unmounted, writing nothing beneath, and serves it again once it is mounted; that with <code>require_mount</code> it does not start while the storage is not mounted; that a worker killed for its memory leaves weed serving; and that with weed.socket, a restart refuses no connection. Try other directives with <em>weed check</em> and a few requests of each kind, uploads and third-party copies included.</p>
+<p><em>make test-systemd</em> runs weed as this page installs it, in an AlmaLinux 10 container that boots systemd (Podman): the units above with the sandboxing and <code>Delegate=yes</code>, as root, and then as an account of its own (below). It checks that weed serves uploads, downloads and third-party copies, reloads, bans, restarts after a crash, and stops with its workers; that weed may write only what the sandboxing allows; that it starts again on its own when a storage is mounted over the exported directory; that it blocks while its storage is unmounted, writing nothing beneath, and serves it again once it is mounted; that with <code>require_mount</code> it does not start while the storage is not mounted; that a worker killed for its memory leaves weed serving; and that with weed.socket, a restart refuses no connection. Try other directives with <em>weed check</em> and a few requests of each kind, uploads and third-party copies included.</p>
 <h2 id="without-systemd">Without systemd</h2>
 <p>weed does not need systemd: it is a process that serves in the foreground, which any supervisor can run (runit, s6, supervisord, a container's init). What the unit above gives it, it gets otherwise:</p>
 <table>
@@ -280,7 +292,7 @@ WantedBy=sockets.target</code></pre>
 </tr>
 </tbody>
 </table>
-<p><em>make interop</em> and <em>make test-linux</em> run weed that way, started from a script in a container; <em>make test-cgroups</em> runs its cgroups in a container without systemd.</p>
+<p><em>make interop</em> runs weed that way, started from a script in a container.</p>
 <h2 id="without-root">Running without root</h2>
 <p>weed needs root only to start workers as other accounts. It can run as an account of its own with the CAP_SETUID and CAP_SETGID capabilities, and CAP_NET_BIND_SERVICE for port 443 unless systemd listens on it (<a href="#socket-activation">socket activation</a>). Its workers get none of them. Add to [Service]:</p>
 <pre><code>User=weed

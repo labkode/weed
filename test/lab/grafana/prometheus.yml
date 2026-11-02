@@ -1,9 +1,0 @@
-# Prometheus of the lab (see lab.sh): scrapes weed's metrics address every 5 seconds
-global:
-  scrape_interval: 5s
-  evaluation_interval: 5s
-
-scrape_configs:
-  - job_name: weed
-    static_configs:
-      - targets: ["weed-lab:9100"]

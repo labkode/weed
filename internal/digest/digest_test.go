@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"testing"
 	"time"
 )
@@ -125,7 +124,7 @@ func TestStored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sums) == 0 && (runtime.GOOS == "linux" || runtime.GOOS == "darwin") {
+	if len(sums) == 0 {
 		t.Skip("extended attributes not supported on this filesystem")
 	}
 	if !reflect.DeepEqual(sums, Set{MD5: md5Of(data)}) {

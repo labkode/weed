@@ -216,7 +216,7 @@ t_stop() { # weed and its workers stop, and weed exits 0
 
 # --- As root
 # Mounts made here reach weed's namespace (ProtectSystem=), as on a host, where systemd
-# makes / shared; Docker makes it private
+# makes / shared; a container's is private
 mount --make-rshared /
 systemctl daemon-reload
 check "weed check accepts the configuration" weed check -config /etc/weed/weed.toml

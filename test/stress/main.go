@@ -9,7 +9,7 @@
 //	stress -identities ids.txt -as alice -url 'https://localhost:9443/webdav/{user}' -ca ca.pem
 //
 // It works in a directory of its own below the URL (weed-stress-...), which it
-// removes at the end, also when interrupted. make find-limits runs it in the lab.
+// removes at the end, also when interrupted.
 package main
 
 import (

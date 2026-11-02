@@ -23,6 +23,7 @@ import (
 	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
+	"github.com/labkode/weed/internal/seccomp"
 	"github.com/labkode/weed/internal/version"
 	"golang.org/x/sys/unix"
 )
@@ -79,6 +80,10 @@ func Attach() (*Child, error) {
 	if f, err := os.Open("/"); err == nil {
 		f.Close()
 		return nil, child.Fail(errors.New("refusing to serve: started to be confined with Landlock, and is not"))
+	}
+	// Nor may it open other sockets than its own (see sockets)
+	if s := sockets(&child.Settings.Config); !seccomp.Filtered(s) {
+		return nil, child.Fail(fmt.Errorf("refusing to serve: started to open %s sockets alone (seccomp), and opens others", s))
 	}
 	// Workers are started from /proc/self/exe: the front process's binary, unless it
 	// was overwritten in place, which the front process detects from the build

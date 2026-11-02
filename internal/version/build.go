@@ -10,23 +10,13 @@ import (
 	"errors"
 	"io"
 	"os"
-	"runtime"
 	"strings"
 )
 
-// ExecutableBuild identifies the build of the running executable (see Build). On
-// Linux it is read from /proc/self/exe, the running binary even if it has been
-// replaced on disk since.
+// ExecutableBuild identifies the build of the running executable (see Build), read
+// from /proc/self/exe: the running binary, even if it has been replaced on disk since
 func ExecutableBuild() (string, error) {
-	path := "/proc/self/exe"
-	if runtime.GOOS != "linux" {
-		p, err := os.Executable()
-		if err != nil {
-			return "", err
-		}
-		path = p
-	}
-	return Build(path)
+	return Build("/proc/self/exe")
 }
 
 // Build identifies the executable at path: by its Go build ID ("go:<id>"), which the

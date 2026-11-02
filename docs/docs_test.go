@@ -133,8 +133,8 @@ func lineError(line int, format string, args ...any) error {
 	return fmt.Errorf("line %d: %s", line, fmt.Sprintf(format, args...))
 }
 
-// sources returns the pages that src/Makefile makes (SRC), and options.md, which it
-// makes from weed config
+// sources returns the pages that src/Makefile makes (SRC), and options.md and
+// changelog.md, which it makes from weed config and from CHANGELOG.md
 func sources(t *testing.T) []string {
 	t.Helper()
 	b, err := os.ReadFile("src/Makefile")
@@ -145,7 +145,7 @@ func sources(t *testing.T) []string {
 	for _, m := range regexp.MustCompile(`(?m)^SRC \+?= ([a-z-]+\.md)$`).FindAllStringSubmatch(string(b), -1) {
 		src = append(src, m[1])
 	}
-	return append(src, "options.md")
+	return append(src, "options.md", "changelog.md")
 }
 
 // TestPages checks that make docs makes every page in src, that each has its title
@@ -351,7 +351,8 @@ func metricDefinitions(t *testing.T) map[string][]string {
 var metricRow = regexp.MustCompile(`<tr>\s*<td><span id="([^"]*)"><code>([^<]*)</code></span></td>\s*<td>(counter|gauge)</td>\s*<td>([^<]*)</td>\s*<td>.+?</td>\s*</tr>`)
 
 // TestMetrics checks that metrics.html has a row for every metric, with its labels,
-// and that the pages mention only metrics that exist
+// and that the pages mention only metrics that exist, but the changelog, which names
+// those of earlier versions
 func TestMetrics(t *testing.T) {
 	all := pages(t)
 	defined := metricDefinitions(t)
@@ -385,6 +386,9 @@ func TestMetrics(t *testing.T) {
 
 	mention := regexp.MustCompile(`\bweed_[a-z_]+`)
 	for name, p := range all {
+		if name == "changelog.html" {
+			continue
+		}
 		for _, m := range mention.FindAllString(p.text, -1) {
 			if _, ok := defined[m]; !ok {
 				t.Errorf("%s mentions %s, which is not a metric of weed", name, m)
