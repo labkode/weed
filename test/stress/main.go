@@ -86,6 +86,8 @@ Scenarios (-scenarios, comma-separated; all by default):
              clients that each download the large file at -client-rate, on a
              connection of their own, as jobs that read across a WAN: six steps
              of up to -clients clients
+The clients of clients and slow-download are all the first identity, or with
+-crowd-accounts, client i identity i of the identities of accounts.
 
 Run it from another machine than weed's to measure weed's alone: on weed's machine,
 it takes CPUs from weed, and says how many. There, -cgroup adds what weed used.
@@ -106,6 +108,7 @@ type config struct {
 	step, warmup, maxP99                time.Duration
 	smallSize, downloadSize, uploadSize int64
 	clients                             int           // of the last step of a crowd
+	crowdAccounts                       bool          // crowds as the identities of accounts
 	interval                            time.Duration // between the requests of each client of clients
 	clientRate                          int64         // what each client of slow-download reads per second
 	listEntries                         int
@@ -146,6 +149,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.Var(sizeFlag{&cfg.uploadSize}, "upload-size", "the size of the files uploaded")
 	fs.IntVar(&cfg.listEntries, "list-entries", 100, "the files of the directory listed")
 	fs.IntVar(&cfg.clients, "clients", 8192, "the clients of the last step of clients and slow-download; the steps before halve it")
+	fs.BoolVar(&cfg.crowdAccounts, "crowd-accounts", false, "the clients of clients and slow-download as the identities of accounts, each a worker of its own, rather than all the first; slow-download uploads -download-size to each")
 	fs.DurationVar(&cfg.interval, "interval", time.Second, "how often each client of clients makes a request")
 	fs.Var(sizeFlag{&cfg.clientRate}, "client-rate", "what each client of slow-download reads per second")
 	fs.StringVar(&cfg.cgroup, "cgroup", "", "weed's cgroup, e.g. /sys/fs/cgroup/system.slice/weed.service, to report the CPU and memory weed uses (on weed's machine)")
@@ -213,10 +217,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	runDir := fmt.Sprintf("weed-stress-%d-%04x", time.Now().Unix(), rand.IntN(1<<16))
 	var all []*identity
-	for _, spec := range specs {
+	for i, spec := range specs {
 		id, err := newIdentity(cfg, spec, tlsBase, *rawURL, runDir)
 		if err != nil {
 			return fail(err)
+		}
+		// Identities of one account, by several methods, have a directory each
+		if slices.ContainsFunc(all, func(o *identity) bool { return o.base == id.base }) {
+			id.base = strings.TrimSuffix(id.base, "/") + fmt.Sprintf("-%d/", i)
 		}
 		all = append(all, id)
 	}
@@ -507,7 +515,6 @@ func (id *identity) setup(ctx context.Context, cfg *config, what string) error {
 	case "small":
 		err = put("small", cfg.smallSize)
 	case "big":
-		fmt.Fprintf(cfg.out, "  (uploading the file of %s to download)\n", bytesIEC(cfg.downloadSize))
 		err = put("big", cfg.downloadSize)
 	case "list":
 		if err = id.do(ctx, id.keep, "MKCOL", id.base+"list/", nil, 0, nil); err != nil {
@@ -563,6 +570,10 @@ var kindNames = map[string]string{"cert": "an X.509 certificate", "bearer": "a b
 
 func scenarios(cfg *config, first *identity, all []*identity) (list []*scenario, skipped []string, err error) {
 	small := bytesIEC(cfg.smallSize)
+	crowd := []*identity{first}
+	if ids := accountsOf(all); cfg.crowdAccounts && len(ids) >= 2 {
+		crowd = ids
+	}
 	getSmall := func(name, what string, ids ...*identity) *scenario {
 		return &scenario{Name: name, What: what, Unit: "req/s", idents: ids, needs: "small",
 			op: func(ctx context.Context, id *identity, i int, moved *atomic.Int64) error {
@@ -630,14 +641,14 @@ func scenarios(cfg *config, first *identity, all []*identity) (list []*scenario,
 			list = append(list, getSmall(name, fmt.Sprintf("get-small, client i as identity i of %d", len(ids)), ids...))
 		case "clients":
 			list = append(list, &scenario{Name: name, What: fmt.Sprintf("clients that each hold a connection, and make a GET of a %s file every %s", small, cfg.interval),
-				Unit: "req/s", idents: []*identity{first}, needs: "small", every: cfg.interval,
+				Unit: "req/s", idents: crowd, needs: "small", every: cfg.interval,
 				crowdOp: func(ctx context.Context, m *member) error {
 					return m.id.do(ctx, m.client, "GET", m.id.base+"small", nil, 0, &m.crowd.moved)
 				}})
 		case "slow-download":
 			list = append(list, &scenario{Name: name, What: fmt.Sprintf("clients that each download a file of %s at %s/s, on a connection of their own",
 				bytesIEC(cfg.downloadSize), bytesIEC(cfg.clientRate)),
-				Unit: "B/s", idents: []*identity{first}, needs: "big", pace: cfg.clientRate,
+				Unit: "B/s", idents: crowd, needs: "big", pace: cfg.clientRate,
 				crowdOp: func(ctx context.Context, m *member) error {
 					resp, err := m.id.send(ctx, m.client, "GET", m.id.base+"big", nil, 0)
 					m.connected()
@@ -1102,6 +1113,15 @@ func ramp(ctx context.Context, cfg *config, sc *scenario) (*result, error) {
 	}
 	if err := refresh(); err != nil {
 		return res, err
+	}
+	if sc.needs == "big" {
+		n := len(slices.DeleteFunc(slices.Clone(sc.idents), func(id *identity) bool { return id.ready["big"] }))
+		if of := ""; n > 0 {
+			if n > 1 {
+				of = fmt.Sprintf(", for each of %d identities", n)
+			}
+			fmt.Fprintf(cfg.out, "  (uploading the file of %s to download%s)\n", bytesIEC(cfg.downloadSize), of)
+		}
 	}
 	for _, id := range sc.idents {
 		if err := id.setup(ctx, cfg, sc.needs); err != nil {

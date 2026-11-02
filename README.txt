@@ -823,12 +823,18 @@ Testing
                        over the exported directory, in a privileged AlmaLinux 10
                        container that boots systemd (test/systemd/systemd.sh, Podman)
     make interop       interoperability tests (test/interop/interop.sh, Podman)
+    make find-limits   the limits of weed on this machine, serving one account: a load
+                       that grows until weed or the machine gives (test/limits/host.sh,
+                       sudo); ARGS="..." go to test/stress
+    make find-limits-users
+                       the same with USERS accounts (100), and crowds of thousands of
+                       clients spread over them (test/limits/users.sh, Podman)
     make check         gofmt and go vet; make fuzz, make cross, make vulncheck and
                        make bench run the rest; make help lists every target
 
-Everything runs on the machine, which must be Linux, but make test-systemd and make
-interop: they install units, accounts, packages and a CA, and so run in Podman
-containers (sudo podman).
+Everything runs on the machine, which must be Linux, but make test-systemd, make
+interop and make find-limits-users: they install units, accounts, packages and a CA,
+and so run in Podman containers (sudo podman).
 make test runs every test but those that need root, which make test-root runs with
 sudo: of worker processes and Unix accounts, and TestLandlockRemount
 (internal/worker) and TestConfinedMounts (internal/landlock), which mount an ext4
@@ -862,6 +868,10 @@ They report what each client adds to weed's memory and to the machine's, and sto
 when clients fall behind, or the machine has used 90% of its memory. It works in a
 directory of its own below the URL it is given, and removes it.
 
+make find-limits runs it on this machine against weed serving one account, which
+authenticates with a certificate, a token and a password, in a unit of its own whose
+CPU and memory stress reports; make find-limits-users against weed serving many
+accounts in a Podman container, with the crowds spread over them (-crowd-accounts).
 On weed's machine, the load shares the CPUs with weed. To measure the machine that
 will serve, run weed there as it will serve, and stress from another machine:
 

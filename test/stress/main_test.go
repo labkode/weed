@@ -48,7 +48,8 @@ func TestRun(t *testing.T) {
 	ids := filepath.Join(dir, "identities")
 	results := filepath.Join(dir, "results.json")
 	os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o644)
-	os.WriteFile(ids, []byte("# name kind arguments\nu1 basic p-u1\nu2 basic p-u2\nu3 bearer t3\n"), 0o644)
+	// u1 twice, as one account by two methods would be: a directory each
+	os.WriteFile(ids, []byte("# name kind arguments\nu1 basic p-u1\nu2 basic p-u2\nu3 bearer t3\nu1 basic p-u1\n"), 0o644)
 	var stdout, stderr bytes.Buffer
 	code := run(ctx, []string{"-url", srv.URL + "/{user}", "-ca", ca, "-identities", ids,
 		"-max", "2", "-step", "200ms", "-warmup", "50ms", "-small-size", "1KiB", "-download-size", "1MiB",
@@ -83,7 +84,7 @@ func TestRun(t *testing.T) {
 			}
 		}
 	}
-	// auth: u1 authenticates with a password, u3 with a token; accounts: u1 and u2
+	// auth: u1 authenticates with a password, u3 with a token; accounts: u1, u2 and u1 again
 	want := []string{"get-small", "put-small", "list", "connect", "download", "upload", "auth-bearer", "accounts", "clients", "slow-download"}
 	if !slices.Equal(names, want) {
 		t.Errorf("scenarios %v, want %v", names, want)
@@ -101,6 +102,27 @@ func TestRun(t *testing.T) {
 		f.Close()
 		for _, fi := range left {
 			t.Errorf("/%s/%s is left", u, fi.Name())
+		}
+	}
+}
+
+// With -crowd-accounts, the clients of crowds are the identities of accounts
+func TestCrowdAccounts(t *testing.T) {
+	ids := []*identity{{Name: "u1", Kind: "basic"}, {Name: "u2", Kind: "basic"}, {Name: "u3", Kind: "bearer"}}
+	for _, spread := range []bool{false, true} {
+		cfg := &config{scenarios: []string{"clients", "slow-download"}, crowdAccounts: spread}
+		list, _, err := scenarios(cfg, ids[0], ids)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "u1 (basic)"
+		if spread {
+			want = "u1 (basic) and 1 more"
+		}
+		for _, s := range list {
+			if s.As != want {
+				t.Errorf("-crowd-accounts=%v: %s as %q, want %q", spread, s.Name, s.As, want)
+			}
 		}
 	}
 }

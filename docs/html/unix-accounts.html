@@ -184,7 +184,7 @@ cgroup_limits = [&quot;memory.max=8G&quot;, &quot;pids.max=5000&quot;, &quot;cpu
 <pre><code>$ go build -o stress ./test/stress
 $ ./stress -url https://weed.example.org/webdav/home/alice \
       -cert usercert.pem -key userkey.pem -ca /etc/grid-security/certificates</code></pre>
-<p><em>stress -h</em> lists the kinds of requests and options; <code>-json</code> writes the results.</p>
+<p><em>stress -h</em> lists the kinds of requests and options; <code>-json</code> writes the results. From a checkout of weed, <code>make find-limits</code> runs it on weed's machine against weed serving one account, and <code>make find-limits-users</code> against weed serving many accounts to crowds of thousands of clients, in a Podman container.</p>
 </div>
 <!-- end content -->
 </body>

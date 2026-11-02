@@ -1,0 +1,6 @@
+# What make find-limits-users runs weed and test/stress in: AlmaLinux 10, which weed
+# targets
+FROM almalinux:10
+RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
+        openssl shadow-utils procps-ng findutils curl util-linux && \
+    dnf clean all && mkdir /limits

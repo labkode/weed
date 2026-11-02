@@ -127,4 +127,4 @@ test/stress finds what a server sustains. For each kind of request (small files 
     $ ./stress -url https://weed.example.org/webdav/home/alice \
           -cert usercert.pem -key userkey.pem -ca /etc/grid-security/certificates
 
-*stress -h* lists the kinds of requests and options; `-json` writes the results.
+*stress -h* lists the kinds of requests and options; `-json` writes the results. From a checkout of weed, `make find-limits` runs it on weed's machine against weed serving one account, and `make find-limits-users` against weed serving many accounts to crowds of thousands of clients, in a Podman container.

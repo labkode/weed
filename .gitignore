@@ -34,3 +34,6 @@ docs/src/build/
 
 # The archives of a release (make dist)
 dist/
+
+# The results of make find-limits and make find-limits-users
+test/limits/out/

@@ -6,7 +6,7 @@ FUZZTIME  ?= 20s
 # Platforms that "make cross" builds for, as CI does: weed runs on Linux alone
 PLATFORMS ?= linux/amd64 linux/arm64
 
-.PHONY: test-systemd dist all build test test-root test-cgroups bench-workers interop check fmt vulncheck fuzz bench cross ci docs clean help
+.PHONY: test-systemd dist all build test test-root test-cgroups bench-workers interop find-limits find-limits-users check fmt vulncheck fuzz bench cross ci docs clean help
 
 all: build
 
@@ -30,6 +30,12 @@ test-systemd: ## weed as the guide's systemd service, sandboxed, as root and as 
 
 interop: ## Interoperability tests with gfal2, davix and XRootD (Podman, sudo)
 	test/interop/interop.sh
+
+find-limits: ## The limits of weed on this machine, serving one account (ACCOUNT=, DATA=): a load that grows until weed or the machine gives (sudo); ARGS="..." go to test/stress
+	ACCOUNT="$(ACCOUNT)" DATA="$(DATA)" PORT="$(PORT)" METRICS_PORT="$(METRICS_PORT)" test/limits/host.sh $(ARGS)
+
+find-limits-users: ## The limits of weed serving USERS accounts (100) to crowds of thousands of clients (Podman, sudo); ARGS="..." go to test/stress
+	USERS="$(USERS)" METRICS_PORT="$(METRICS_PORT)" test/limits/users.sh $(ARGS)
 
 check: ## gofmt and go vet
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "needs gofmt:"; echo "$$out"; exit 1; fi
