@@ -1,6 +1,7 @@
 package landlock
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -115,6 +116,15 @@ func TestConfinedChild(t *testing.T) {
 	}
 }
 
+// listenTCP listens on addr with a TCP socket. Not net.Listen, which listens with
+// MPTCP where the kernel has it (Go 1.24 on): Landlock's rules of TCP do not cover
+// MPTCP, nor other protocols, on recent kernels.
+func listenTCP(addr string) (net.Listener, error) {
+	var lc net.ListenConfig
+	lc.SetMultipathTCP(false)
+	return lc.Listen(context.Background(), "tcp", addr)
+}
+
 // From Landlock ABI 4 on, TCP binds and connects are refused unless allowed
 func TestConfinedTCP(t *testing.T) {
 	if abi := ABI(); abi < TCPABI {
@@ -143,7 +153,7 @@ func TestConfinedTCP(t *testing.T) {
 			if tcp.Connect != (err == nil) || err != nil && !errors.Is(err, os.ErrPermission) {
 				t.Errorf("%+v: connect: %v", tcp, err)
 			}
-			l2, err := net.Listen("tcp", "127.0.0.1:0")
+			l2, err := listenTCP("127.0.0.1:0")
 			if err == nil {
 				l2.Close()
 			}
@@ -166,13 +176,13 @@ func TestConfinedPorts(t *testing.T) {
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
 	confined(t, nil, Net{Ports: []uint16{uint16(port)}}, func() {
-		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		l, err := listenTCP(fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
 			t.Errorf("port %d, allowed: %v", port, err)
 		} else {
 			l.Close()
 		}
-		if l, err := net.Listen("tcp", "127.0.0.1:0"); !errors.Is(err, os.ErrPermission) {
+		if l, err := listenTCP("127.0.0.1:0"); !errors.Is(err, os.ErrPermission) {
 			t.Errorf("another port: %v, want a permission error", err)
 			if err == nil {
 				l.Close()

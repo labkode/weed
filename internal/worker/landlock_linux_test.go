@@ -23,7 +23,8 @@ import (
 
 // anyFile is what the test workers serve: a GET reads the file at the path of its
 // URL, a PUT writes it, wherever it is, as a worker with a bug would; DIAL connects
-// to the TCP address of the path, LISTEN listens on a port
+// to the TCP address of the path, LISTEN listens on a port (with TCP, not the MPTCP
+// of net.Listen, which Landlock does not confine)
 var anyFile = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch r.Method {
@@ -35,7 +36,9 @@ var anyFile = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		}
 	case "LISTEN":
 		var l net.Listener
-		if l, err = net.Listen("tcp", "127.0.0.1:0"); err == nil {
+		var lc net.ListenConfig
+		lc.SetMultipathTCP(false)
+		if l, err = lc.Listen(context.Background(), "tcp", "127.0.0.1:0"); err == nil {
 			l.Close()
 			return
 		}

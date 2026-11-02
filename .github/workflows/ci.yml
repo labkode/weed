@@ -19,6 +19,7 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - name: go test -race
+        shell: bash # -o pipefail: the status of go test, not of tee
         run: |
           status=0
           go test -race -count=1 ./... 2>&1 | tee test.log || status=$?
