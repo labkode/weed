@@ -84,20 +84,21 @@ func startNode(t testing.TB, inProcess bool, mod func(cfg *config.Config, baseUR
 	os.WriteFile(htpasswd, []byte(basicUser+":"+string(hash)+"\n"), 0600)
 
 	cfg := &config.Config{
-		Directory:           dir,
-		BasicAuth:           true,
-		HtpasswdFile:        htpasswd,
-		AppTokensFile:       filepath.Join(t.TempDir(), "app-tokens"),
-		MacaroonAuth:        true,
-		MacaroonSecretKey:   fmt.Sprintf("%032d", time.Now().UnixNano()),
-		MacaroonLocation:    "weed",
-		MacaroonMaxValidity: time.Hour,
-		TPC:                 true,
-		TPCAllowHTTP:        true,
-		TPCAllowLocal:       true,
-		TPCMaxTransfers:     4,
-		TPCMarkerInterval:   20 * time.Millisecond,
-		WorkerMaxRequests:   100,
+		Directory:             dir,
+		BasicAuth:             true,
+		HtpasswdFile:          htpasswd,
+		AppTokensFile:         filepath.Join(t.TempDir(), "app-tokens"),
+		MacaroonAuth:          true,
+		MacaroonSecretKey:     fmt.Sprintf("%032d", time.Now().UnixNano()),
+		MacaroonLocation:      "weed",
+		MacaroonMaxValidity:   time.Hour,
+		TPC:                   true,
+		TPCAllowHTTP:          true,
+		TPCAllowLocal:         true,
+		TPCMaxTransfers:       4,
+		TPCMarkerInterval:     20 * time.Millisecond,
+		WorkerMaxRequests:     100,
+		WorkerMaxStorageCalls: 64,
 	}
 	ts := httptest.NewUnstartedServer(nil)
 	scheme := "http"

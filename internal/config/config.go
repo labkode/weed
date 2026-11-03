@@ -36,6 +36,9 @@ type Config struct {
 	MaxWorkers int
 	// WorkerMaxRequests bounds the requests in progress in each worker
 	WorkerMaxRequests int
+	// WorkerMaxStorageCalls bounds the calls to the storage in progress at once in
+	// each worker, and so the threads they hold
+	WorkerMaxStorageCalls int
 	// WorkerCgroups runs the workers of each account in a cgroup of their own
 	WorkerCgroups bool
 	// WorkerCgroupLimits are written to the cgroup of every account (file=value),
@@ -166,6 +169,9 @@ func (c *Config) Validate() error {
 	}
 	if c.WorkerMaxRequests < 1 {
 		return errors.New("unix_users.max_requests must be at least 1")
+	}
+	if c.WorkerMaxStorageCalls < 1 {
+		return errors.New("unix_users.max_storage_calls must be at least 1")
 	}
 	if c.TPC {
 		if c.TPCMaxTransfers < 1 {

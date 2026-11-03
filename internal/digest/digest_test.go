@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 var data = []byte("hello, world\n")
@@ -99,6 +101,17 @@ func TestHasher(t *testing.T) {
 	}
 }
 
+// xattrFile is an *os.File as a File
+type xattrFile struct{ *os.File }
+
+func (f xattrFile) Getxattr(attr string, dest []byte) (int, error) {
+	return unix.Fgetxattr(int(f.Fd()), attr, dest)
+}
+
+func (f xattrFile) Setxattr(attr string, data []byte) error {
+	return unix.Fsetxattr(int(f.Fd()), attr, data, 0)
+}
+
 func TestStored(t *testing.T) {
 	stored := func(p string, algs ...string) (Set, error) {
 		f, err := os.Open(p)
@@ -106,7 +119,7 @@ func TestStored(t *testing.T) {
 			return nil, err
 		}
 		defer f.Close()
-		return Stored(f, algs)
+		return Stored(xattrFile{f}, algs)
 	}
 	p := filepath.Join(t.TempDir(), "f")
 	if err := os.WriteFile(p, data, 0644); err != nil {
@@ -118,7 +131,7 @@ func TestStored(t *testing.T) {
 	}
 
 	f, _ := os.OpenFile(p, os.O_WRONLY, 0)
-	Store(f, Set{Adler: adlerOf(data), MD5: md5Of(data)})
+	Store(xattrFile{f}, Set{Adler: adlerOf(data), MD5: md5Of(data)})
 	f.Close()
 	sums, err := stored(p, MD5, SHA256)
 	if err != nil {

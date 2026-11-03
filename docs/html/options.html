@@ -54,6 +54,7 @@
 			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
+			<li><a href="performance.html">Performance</a></li>
 		</ul>
 	</div>
 	<div class="nav">
@@ -142,7 +143,7 @@
 <tr>
 <td><span id="server.log_file"><code>log_file</code></span></td>
 <td><code>""</code></td>
-<td>Log to this file ("" for standard error); weed reopens it on SIGHUP, for logrotate.</td>
+<td>Log to this file ("" for standard error, which systemd sends to the journal: it drops the lines beyond its rate limit, a file keeps them all); weed reopens it on SIGHUP, for logrotate.</td>
 </tr>
 <tr>
 <td><span id="server.log_level"><code>log_level</code></span></td>
@@ -441,7 +442,12 @@
 <tr>
 <td><span id="unix_users.max_requests"><code>max_requests</code></span></td>
 <td><code>4000</code></td>
-<td>At most this many requests in progress in each worker process, counted until the worker has finished them, also once their clients have gone; beyond, requests of its account get 503. A request whose storage does not answer blocks a thread of the worker until it does.</td>
+<td>At most this many requests in progress in each worker process, counted until the worker has finished them, also once their clients have gone; beyond, requests of its account get 503.</td>
+</tr>
+<tr>
+<td><span id="unix_users.max_storage_calls"><code>max_storage_calls</code></span></td>
+<td><code>256</code></td>
+<td>At most this many calls to the storage (open, stat, a batch of a listing, a read, a write, ...) in progress at once in each worker process; the requests beyond wait for one to end, without a thread, until their clients go. Each call holds a thread of the worker until the storage answers: this bounds those threads, also when the storage is slow or does not answer.</td>
 </tr>
 <tr>
 <td><span id="unix_users.cgroups"><code>cgroups</code></span></td>
@@ -451,7 +457,7 @@
 <tr>
 <td><span id="unix_users.cgroup_limits"><code>cgroup_limits</code></span></td>
 <td><code>[]</code></td>
-<td>Write these file=value settings to the cgroup of every account, e.g. ["memory.max=8G", "pids.max=5000"] (implies cgroups), unless limits says otherwise; pids.max counts threads, and a worker that cannot make one dies: keep it above max_requests. The Go runtime of workers keeps below 90% of memory.max and memory.high.</td>
+<td>Write these file=value settings to the cgroup of every account, e.g. ["memory.max=8G", "pids.max=5000"] (implies cgroups), unless limits says otherwise; pids.max counts threads, and a worker that cannot make one dies: keep it above max_storage_calls, plus the CPUs, plus a hundred. The Go runtime of workers keeps below 90% of memory.max and memory.high.</td>
 </tr>
 <tr>
 <td><span id="unix_users.limits"><code>limits</code></span></td>

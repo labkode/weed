@@ -133,10 +133,10 @@ func Handler(next http.Handler, u *fsuser.User) http.Handler {
 }
 
 // limitRequests answers 503 to the requests beyond max in progress (max < 1: no
-// limit). A request counts until its handler returns, also once its client has gone:
-// while the storage does not answer, that is how long one of the worker's threads
-// waits in the kernel. So the limit also bounds those threads: the Go runtime stops
-// a process at 10000, and so does a cgroup's pids.max that refuses one.
+// limit). A request counts until its handler returns, also once its client has gone,
+// as long as the storage takes to answer it. The threads that wait for the storage
+// are bounded by davfs.Gate (unix_users.max_storage_calls), not by this: requests
+// beyond the gate's slots wait as goroutines.
 func limitRequests(h http.Handler, max int) http.Handler {
 	if max < 1 {
 		return h

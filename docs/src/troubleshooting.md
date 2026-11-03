@@ -34,7 +34,7 @@ With systemd, a failing `weed check` in ExecStartPre stops the start, and *syste
 
 For every refused credential, weed logs "authentication failed" with the method and why, followed by the request's record (see [Logging](logging.html#authentication)). Look the request up by time, client address or user:
 
-    # grep -B1 'status=40[13]' /var/log/weed.log | tail
+    # grep -B1 'status=40[13]' /var/log/weed/weed.log | tail
 
 | Status | weed says | What to do |
 |----|----|----|
@@ -63,11 +63,11 @@ Requests access files as the user's account, so a 403 without an "authentication
 
 The account needs search permission on every directory above, and write permission on a directory to create or replace files in it. See [Unix accounts](unix-accounts.html#permissions).
 
-A path through a symbolic link gets 403 when the link leads outside the exported directory, or is absolute, even to a file inside. weed logs it:
+A path with a symbolic link in it gets 403, wherever the link is and wherever it points: weed follows none. weed logs it:
 
-    level=WARN msg="refused a name that leads outside the exported directory, through a symbolic link" worker.user=alice worker.pid=1630 path=/alice/data/f request_id=5f0c2a91
+    level=WARN msg="refused a name with a symbolic link in it: weed follows none" worker.user=alice worker.pid=1630 path=/alice/data/f request_id=5f0c2a91
 
-Make the link relative, and inside the exported directory. The local tools of the account follow it, but weed does not (see [Unix accounts](unix-accounts.html#confinement)).
+Put the directory or file itself in place of the link, or bind-mount the directory there. The local tools of the account follow the link, but weed does not (see [Unix accounts](unix-accounts.html#confinement)).
 
 ## 503 Service Unavailable {#unavailable}
 
@@ -80,7 +80,7 @@ Make the link relative, and inside the exported directory. The local tools of th
 | `the exported directory /data is on the file system of /, not on a storage of its own (server.require_mount): is its storage mounted?` | With `server.require_mount`, weed does not start until the storage of the exported directory is mounted. Mount it: systemd starts weed again within a minute. |
 | `weed filters its system calls with seccomp on amd64 and arm64, not on ...`, `cannot filter system calls with seccomp` | weed opens only the sockets that Landlock confines (see [Unix accounts](unix-accounts.html#confinement)), with filters of amd64 and arm64, and a kernel with seccomp filters (CONFIG_SECCOMP_FILTER, as every distribution's). |
 | `the exported directory has not answered yet, and workers are confined to it with Landlock` | The exported directory did not answer as weed started, and workers start once it does: check its storage (see [below](#hung-storage)). |
-| `too many requests in progress for the account (unix_users.max_requests)` | The account's worker has `unix_users.max_requests` requests in progress. If `blocked_threads` in /status is high too, its storage does not answer (see [below](#hung-storage)); otherwise the account is busy: raise the limit. |
+| `too many requests in progress for the account (unix_users.max_requests)` | The account's worker has `unix_users.max_requests` requests in progress. If `blocked_threads` in /status stays near `unix_users.max_storage_calls` too, its storage does not answer, or not fast enough (see [below](#hung-storage)); otherwise the account is busy: raise the limit. |
 | Too many concurrent third-party copies | `tpc.max_transfers` copies are running; clients retry after the Retry-After. Raise it if the network and disks allow. |
 | /healthz: storage unavailable, storage not responding | The exported directory cannot be read, or does not answer within 5 seconds: check the filesystem (a hung NFS or a lost mount, see [below](#hung-storage)). |
 | /healthz: storage not mounted | The storage of the exported directory is no longer mounted: see above. |
@@ -94,14 +94,16 @@ weed does not hold transfers back itself. The kernel may: tc on the network inte
     full avg10=40.11 avg60=37.20 avg300=12.20 total=93024112
     # tc -s qdisc show dev eth0
 
+Across long distances, the TCP buffers bound each transfer: a connection carries at most one buffer each round trip, 4 MiB by default for what weed sends (see [Performance](performance.html#tcp-buffers)).
+
 ## Storage that does not answer {#hung-storage}
 
-When the filesystem of the exported directory stops answering, a hung NFS server or a failing disk, the requests that need it wait in the kernel. Each waits with a thread of its worker, which nothing interrupts, not even SIGKILL, until the storage answers, also once its client has given up. Meanwhile:
+When the filesystem of the exported directory stops answering, a hung NFS server or a failing disk, the requests that need it wait in the kernel. Each call to the storage waits with a thread of its worker, which nothing interrupts, not even SIGKILL, until the storage answers, also once its client has given up. A worker makes at most `unix_users.max_storage_calls` (default 256) calls at once (see [Unix accounts](unix-accounts.html#workers)): its other requests wait for one to end, without a thread, and stop waiting when their clients go. Meanwhile:
 
-- The worker's other requests go on, as long as they need nothing from the storage (e.g. files the kernel has cached), and so do the workers of other accounts, on other storage. weed itself never touches the files, and keeps answering: it looks at the exported directory for Landlock (see [Unix accounts](unix-accounts.html#confinement)) from one goroutine, with what the kernel has cached, and if it does not answer as weed starts, the requests that would start a worker get 503 until it does.
+- The worker's other requests go on, as long as they need nothing from the storage (e.g. files the kernel has cached) and fewer than `unix_users.max_storage_calls` calls are stuck. Once that many are, all the account's requests wait, even for cached files, until a call returns or their clients go. The workers of other accounts, on other storage, go on. weed itself never touches the files, and keeps answering: it looks at the exported directory for Landlock (see [Unix accounts](unix-accounts.html#confinement)) from one goroutine, with what the kernel has cached, and if it does not answer as weed starts, the requests that would start a worker get 503 until it does.
 - /healthz answers 503 "storage not responding" after 5 seconds. It looks at the directory once at a time, however often it is called.
 - /status shows each worker's stuck threads as `blocked_threads`, also once their clients have gone and `requests` has dropped to 0; `weed_worker_blocked_threads` counts them all. Under load, threads are in that state for moments: alert on a count that stays.
-- Stuck requests count towards `unix_users.max_requests` until they end: once they reach it, the account gets 503, and its worker has no more stuck threads than that.
+- Stuck requests count towards `unix_users.max_requests` until they end: once they reach it, the account gets 503. Its worker has no more stuck threads than `unix_users.max_storage_calls`.
 - An idle worker with stuck threads keeps running, rather than being replaced by a new worker, which could get stuck too. weed logs it once:
 
       level=WARN msg="an idle worker keeps running: threads of its requests wait in the kernel, for storage that does not answer?" worker.user=alice worker.pid=1630 blocked_threads=40

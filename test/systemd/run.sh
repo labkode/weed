@@ -91,8 +91,8 @@ t_ban() { # through admin.socket, in RuntimeDirectory; the bans in StateDirector
 }
 t_readonly() { ! nsenter -t "$(main)" -m touch /etc/weed/probe; }
 t_writable() {
-	nsenter -t "$(main)" -m sh -c 'touch /data/probe /run/weed/probe /var/lib/weed/probe &&
-		rm /data/probe /run/weed/probe /var/lib/weed/probe'
+	nsenter -t "$(main)" -m sh -c 'touch /data/probe /run/weed/probe /var/lib/weed/probe /var/log/weed/probe &&
+		rm /data/probe /run/weed/probe /var/lib/weed/probe /var/log/weed/probe'
 }
 t_home() { [ -n "$(ls -A /root)" ] && [ -z "$(nsenter -t "$(main)" -m ls -A /root)" ]; }
 t_tpc() { # the worker connects to weed, as to another server
@@ -223,13 +223,14 @@ check "weed check accepts the configuration" weed check -config /etc/weed/weed.t
 # Type=notify: systemctl returns once weed says it is ready, and it serves then
 check "systemctl start returns once weed serves" sh -c 'systemctl start weed && curl -sf 127.0.0.1:9100/healthz'
 check "the status line says since when weed serves" sh -c "systemctl show -P StatusText weed | grep '^Serving since'"
+check "TasksMax=infinity: systemd does not bound weed's threads" sh -c '[ "$(systemctl show -P TasksMax weed)" = infinity ]'
 check "weed's log is in the journal: workers confined with Landlock" sh -c "journalctl -u weed -o cat | grep 'workers are confined with Landlock'"
 check "weed's own process is confined with Landlock" t_confined
 check "alice uploads, and the file is hers" t_upload f
 check "a GET gives it back" t_get
 check "Delegate=yes: weed runs in main, alice's worker in worker-alice" t_cgroup
 check "ProtectSystem=strict: weed may not write /etc" t_readonly
-check "...but /data, /run/weed and /var/lib/weed" t_writable
+check "...but /data, /run/weed, /var/lib/weed and /var/log/weed (LogsDirectory=, for server.log_file)" t_writable
 check "ProtectHome=yes: /root is empty to weed" t_home
 check "a third-party copy that weed pulls from itself" t_tpc
 check "bob, without a password, is refused" t_refused

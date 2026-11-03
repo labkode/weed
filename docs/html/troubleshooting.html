@@ -54,6 +54,7 @@
 			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
+			<li><a href="performance.html">Performance</a></li>
 		</ul>
 	</div>
 	<div class="nav">
@@ -168,7 +169,7 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <p>With systemd, a failing <code>weed check</code> in ExecStartPre stops the start, and <em>systemctl status weed</em> shows its message.</p>
 <h2 id="refused">Clients are refused</h2>
 <p>For every refused credential, weed logs "authentication failed" with the method and why, followed by the request's record (see <a href="logging.html#authentication">Logging</a>). Look the request up by time, client address or user:</p>
-<pre><code># grep -B1 &#39;status=40[13]&#39; /var/log/weed.log | tail</code></pre>
+<pre><code># grep -B1 &#39;status=40[13]&#39; /var/log/weed/weed.log | tail</code></pre>
 <table>
 <thead>
 <tr>
@@ -251,9 +252,9 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <pre><code># sudo -u alice ls -l /data/alice
 # sudo -u alice touch /data/alice/test</code></pre>
 <p>The account needs search permission on every directory above, and write permission on a directory to create or replace files in it. See <a href="unix-accounts.html#permissions">Unix accounts</a>.</p>
-<p>A path through a symbolic link gets 403 when the link leads outside the exported directory, or is absolute, even to a file inside. weed logs it:</p>
-<pre><code>level=WARN msg=&quot;refused a name that leads outside the exported directory, through a symbolic link&quot; worker.user=alice worker.pid=1630 path=/alice/data/f request_id=5f0c2a91</code></pre>
-<p>Make the link relative, and inside the exported directory. The local tools of the account follow it, but weed does not (see <a href="unix-accounts.html#confinement">Unix accounts</a>).</p>
+<p>A path with a symbolic link in it gets 403, wherever the link is and wherever it points: weed follows none. weed logs it:</p>
+<pre><code>level=WARN msg=&quot;refused a name with a symbolic link in it: weed follows none&quot; worker.user=alice worker.pid=1630 path=/alice/data/f request_id=5f0c2a91</code></pre>
+<p>Put the directory or file itself in place of the link, or bind-mount the directory there. The local tools of the account follow the link, but weed does not (see <a href="unix-accounts.html#confinement">Unix accounts</a>).</p>
 <h2 id="unavailable">503 Service Unavailable</h2>
 <table>
 <thead>
@@ -293,7 +294,7 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 </tr>
 <tr>
 <td><code>too many requests in progress for the account (unix_users.max_requests)</code></td>
-<td>The account's worker has <code>unix_users.max_requests</code> requests in progress. If <code>blocked_threads</code> in /status is high too, its storage does not answer (see <a href="#hung-storage">below</a>); otherwise the account is busy: raise the limit.</td>
+<td>The account's worker has <code>unix_users.max_requests</code> requests in progress. If <code>blocked_threads</code> in /status stays near <code>unix_users.max_storage_calls</code> too, its storage does not answer, or not fast enough (see <a href="#hung-storage">below</a>); otherwise the account is busy: raise the limit.</td>
 </tr>
 <tr>
 <td>Too many concurrent third-party copies</td>
@@ -315,13 +316,14 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 some avg10=41.27 avg60=38.02 avg300=12.55 total=95512644
 full avg10=40.11 avg60=37.20 avg300=12.20 total=93024112
 # tc -s qdisc show dev eth0</code></pre>
+<p>Across long distances, the TCP buffers bound each transfer: a connection carries at most one buffer each round trip, 4 MiB by default for what weed sends (see <a href="performance.html#tcp-buffers">Performance</a>).</p>
 <h2 id="hung-storage">Storage that does not answer</h2>
-<p>When the filesystem of the exported directory stops answering, a hung NFS server or a failing disk, the requests that need it wait in the kernel. Each waits with a thread of its worker, which nothing interrupts, not even SIGKILL, until the storage answers, also once its client has given up. Meanwhile:</p>
+<p>When the filesystem of the exported directory stops answering, a hung NFS server or a failing disk, the requests that need it wait in the kernel. Each call to the storage waits with a thread of its worker, which nothing interrupts, not even SIGKILL, until the storage answers, also once its client has given up. A worker makes at most <code>unix_users.max_storage_calls</code> (default 256) calls at once (see <a href="unix-accounts.html#workers">Unix accounts</a>): its other requests wait for one to end, without a thread, and stop waiting when their clients go. Meanwhile:</p>
 <ul>
-<li><p>The worker's other requests go on, as long as they need nothing from the storage (e.g. files the kernel has cached), and so do the workers of other accounts, on other storage. weed itself never touches the files, and keeps answering: it looks at the exported directory for Landlock (see <a href="unix-accounts.html#confinement">Unix accounts</a>) from one goroutine, with what the kernel has cached, and if it does not answer as weed starts, the requests that would start a worker get 503 until it does.</p></li>
+<li><p>The worker's other requests go on, as long as they need nothing from the storage (e.g. files the kernel has cached) and fewer than <code>unix_users.max_storage_calls</code> calls are stuck. Once that many are, all the account's requests wait, even for cached files, until a call returns or their clients go. The workers of other accounts, on other storage, go on. weed itself never touches the files, and keeps answering: it looks at the exported directory for Landlock (see <a href="unix-accounts.html#confinement">Unix accounts</a>) from one goroutine, with what the kernel has cached, and if it does not answer as weed starts, the requests that would start a worker get 503 until it does.</p></li>
 <li><p>/healthz answers 503 "storage not responding" after 5 seconds. It looks at the directory once at a time, however often it is called.</p></li>
 <li><p>/status shows each worker's stuck threads as <code>blocked_threads</code>, also once their clients have gone and <code>requests</code> has dropped to 0; <code>weed_worker_blocked_threads</code> counts them all. Under load, threads are in that state for moments: alert on a count that stays.</p></li>
-<li><p>Stuck requests count towards <code>unix_users.max_requests</code> until they end: once they reach it, the account gets 503, and its worker has no more stuck threads than that.</p></li>
+<li><p>Stuck requests count towards <code>unix_users.max_requests</code> until they end: once they reach it, the account gets 503. Its worker has no more stuck threads than <code>unix_users.max_storage_calls</code>.</p></li>
 <li><p>An idle worker with stuck threads keeps running, rather than being replaced by a new worker, which could get stuck too. weed logs it once:</p>
 <pre><code>level=WARN msg=&quot;an idle worker keeps running: threads of its requests wait in the kernel, for storage that does not answer?&quot; worker.user=alice worker.pid=1630 blocked_threads=40</code></pre></li>
 <li><p>A killed worker, by a ban or as weed stops, exits only once its threads return. Reads waiting for data end when killed; writes waiting for the disk (the fsync that ends an upload) do not. weed waits 10 seconds for the worker, then says so and goes on:</p>

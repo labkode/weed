@@ -79,6 +79,12 @@ weed is a notify service: it tells systemd when it is ready (once it listens), w
     RestartMaxDelaySec=1min
     # A worker that the kernel kills for its memory does not stop weed
     OOMPolicy=continue
+    # weed bounds its threads itself, and those of each account with pids.max:
+    # systemd's default can be fewer than its workers hold when the storage hangs
+    # (see Performance)
+    TasksMax=infinity
+    # /var/log/weed, for server.log_file (see Logging)
+    LogsDirectory=weed
 
     [Install]
     WantedBy=multi-user.target
@@ -112,7 +118,7 @@ systemd can confine weed and its workers together, beyond what weed does for wor
     # /run/weed for admin.socket, /var/lib/weed for admin.bans
     RuntimeDirectory=weed
     StateDirectory=weed
-    # The exported directory, and that of server.log_file
+    # The exported directory (/var/log/weed, of LogsDirectory=, is writable too)
     ReadWritePaths=/data
     # Unless the exported directory is below /home
     ProtectHome=yes
@@ -181,7 +187,7 @@ weed does not need systemd: it is a process that serves in the foreground, which
 | `systemctl stop` | SIGTERM or SIGINT: weed stops taking requests, and waits up to 30 seconds for those in progress. |
 | `Restart=on-failure` | Start weed again when it exits with a status other than 0: 75 when a storage was mounted over the exported directory, so that it is confined to the directory as it now is. |
 | weed.socket | weed listens on its ports itself. Supervisors that pass sockets as systemd does (LISTEN_FDS) work too. |
-| The journal | weed logs to standard error, or to `server.log_file`. |
+| The journal, `LogsDirectory=` | weed logs to standard error, or to `server.log_file`, which keeps every record: the journal drops those beyond its rate limit (see [Logging](logging.html#file)). |
 | `ExecStartPre=weed check` | Run *weed check* before starting weed. |
 | `Delegate=yes`, for `unix_users.cgroups` | weed needs a cgroup v2 directory that it may write, with its controllers: a container's own cgroup namespace, or one that you make for it. |
 | ProtectSystem= and the other sandboxing | weed confines itself with Landlock anyway (see [Unix accounts](unix-accounts.html#process)). |
@@ -199,7 +205,7 @@ weed needs root only to start workers as other accounts. It can run as an accoun
     StateDirectory=weed
     StateDirectoryMode=0700
 
-RuntimeDirectory and StateDirectory create /run/weed and /var/lib/weed for that account. The account must be able to read the configuration file and every file it names, the host key included. Without the capabilities, weed does not start:
+RuntimeDirectory and StateDirectory create /run/weed and /var/lib/weed for that account, as LogsDirectory, in the unit, does /var/log/weed. The account must be able to read the configuration file and every file it names, the host key included. Raise net.core.wmem_max and rmem_max as well, or downloads lose a third (see [Performance](performance.html#socket-buffers)). Without the capabilities, weed does not start:
 
     level=ERROR msg="cannot start" error="cannot start the worker processes, which access files as Unix accounts: cannot start a worker for nobody: fork/exec /proc/self/exe: operation not permitted (weed must run as root, or with CAP_SETUID and CAP_SETGID)"
 

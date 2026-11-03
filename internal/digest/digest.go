@@ -268,11 +268,20 @@ func (h *Hasher) Sums() Set {
 	return s
 }
 
+// File is an open file, whose digests are stored in its extended attributes
+// (davfs.File)
+type File interface {
+	Name() string
+	Stat() (os.FileInfo, error)
+	Getxattr(attr string, dest []byte) (int, error)
+	Setxattr(attr string, data []byte) error
+}
+
 // Stored returns those of the digests algs that are stored with the open file f
 // (see Store) and still describe it: they were computed for its current size and
 // modification time. Digests are computed only while weed writes a file, never to
 // answer a read: a file written otherwise has none.
-func Stored(f *os.File, algs []string) (Set, error) {
+func Stored(f File, algs []string) (Set, error) {
 	fi, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -292,7 +301,7 @@ func Stored(f *os.File, algs []string) (Set, error) {
 // Store records the digests computed while writing f, in extended attributes of f,
 // for Stored. Call it after the last write; failures are ignored (on a filesystem
 // without user extended attributes, files have no stored digests).
-func Store(f *os.File, sums Set) {
+func Store(f File, sums Set) {
 	if fi, err := f.Stat(); err == nil {
 		writeStored(f, sums, fi)
 	}

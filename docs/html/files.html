@@ -54,6 +54,7 @@
 			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
+			<li><a href="performance.html">Performance</a></li>
 		</ul>
 	</div>
 	<div class="nav">
@@ -172,10 +173,10 @@
 <td>The limits of some users and groups, reloaded (see <a href="limits.html#file">Limits per account</a>).</td>
 </tr>
 <tr>
-<td>/var/log/weed.log</td>
+<td>/var/log/weed/weed.log</td>
 <td><code>server.log_file</code></td>
 <td>weed</td>
-<td>The log, reopened on SIGHUP (see <a href="logging.html#rotation">Logging</a>).</td>
+<td>The log, reopened on SIGHUP (see <a href="logging.html#rotation">Logging</a>); in the directory of <code>LogsDirectory=weed</code>.</td>
 </tr>
 <tr>
 <td>/run/weed/admin.sock (default)</td>

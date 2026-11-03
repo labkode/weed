@@ -75,7 +75,8 @@ func (s *Server) startWorkers() error {
 	}
 	s.Workers = pool
 	slog.Info("files are accessed by a worker process per Unix account",
-		"idle_timeout", s.Config.WorkerIdleTimeout, "max_workers", s.Config.MaxWorkers, "max_requests", s.Config.WorkerMaxRequests, "cgroups", s.cgroups)
+		"idle_timeout", s.Config.WorkerIdleTimeout, "max_workers", s.Config.MaxWorkers, "max_requests", s.Config.WorkerMaxRequests,
+		"max_storage_calls", s.Config.WorkerMaxStorageCalls, "cgroups", s.cgroups)
 	return nil
 }
 
@@ -83,17 +84,18 @@ func (s *Server) startWorkers() error {
 // needs, and no credentials
 func workerConfig(c *config.Config, dir string) config.Config {
 	return config.Config{
-		Directory:         dir,
-		LogLevel:          c.LogLevel,
-		WorkerMaxRequests: c.WorkerMaxRequests,
-		TPC:               c.TPC,
-		TPCCAPath:         c.TPCCAPath,
-		TPCAllowHTTP:      c.TPCAllowHTTP,
-		TPCAllowLocal:     c.TPCAllowLocal,
-		TPCAllowPrivate:   c.TPCAllowPrivate,
-		TPCMaxTransfers:   c.TPCMaxTransfers,
-		TPCMarkerInterval: c.TPCMarkerInterval,
-		TPCStallTimeout:   c.TPCStallTimeout,
+		Directory:             dir,
+		LogLevel:              c.LogLevel,
+		WorkerMaxRequests:     c.WorkerMaxRequests,
+		WorkerMaxStorageCalls: c.WorkerMaxStorageCalls,
+		TPC:                   c.TPC,
+		TPCCAPath:             c.TPCCAPath,
+		TPCAllowHTTP:          c.TPCAllowHTTP,
+		TPCAllowLocal:         c.TPCAllowLocal,
+		TPCAllowPrivate:       c.TPCAllowPrivate,
+		TPCMaxTransfers:       c.TPCMaxTransfers,
+		TPCMarkerInterval:     c.TPCMarkerInterval,
+		TPCStallTimeout:       c.TPCStallTimeout,
 	}
 }
 

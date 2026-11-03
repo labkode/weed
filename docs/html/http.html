@@ -54,6 +54,7 @@
 			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
+			<li><a href="performance.html">Performance</a></li>
 		</ul>
 	</div>
 	<div class="nav">
@@ -205,7 +206,7 @@
 <tbody>
 <tr>
 <td>GET, HEAD</td>
-<td>Range requests; Repr-Digest or Digest when asked for (Want-Repr-Digest, Want-Digest), if weed stored one when it wrote the file.</td>
+<td>Range requests; Repr-Digest or Digest when asked for (Want-Repr-Digest, Want-Digest), if weed stored one when it wrote the file. Content-Type from the name's extension: application/octet-stream when the system's MIME types (shared-mime-info or /etc/mime.types) and Go's do not know it. Directories, FIFOs and devices get 405.</td>
 </tr>
 <tr>
 <td>PUT</td>
@@ -213,7 +214,7 @@
 </tr>
 <tr>
 <td>PROPFIND</td>
-<td>Depth 0 and 1; Depth: infinity is refused (403).</td>
+<td>Depth 0 and 1; Depth: infinity is refused (403). Properties come from metadata alone, getcontenttype from the extension as for GET: weed opens no file to answer.</td>
 </tr>
 <tr>
 <td>PROPPATCH</td>

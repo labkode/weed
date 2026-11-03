@@ -29,7 +29,9 @@ A worker starts with the first request of its account, and stops after `unix_use
 
 At most `unix_users.max_workers` (default 256) workers take requests. When they are all busy, weed stops the idlest one to make room; when none is idle, requests of other accounts get 503, with Retry-After. Raise the limit if your site has more active accounts than that.
 
-A worker serves at most `unix_users.max_requests` (default 4000) requests at once. It counts each until it has finished it, also once its client has gone, and answers its account's requests beyond with 503 and Retry-After. A request whose storage does not answer stays in progress until the storage does, with one of the worker's threads: the limit keeps such threads from piling up until the worker cannot make more, and dies.
+A worker serves at most `unix_users.max_requests` (default 4000) requests at once. It counts each until it has finished it, also once its client has gone, and answers its account's requests beyond with 503 and Retry-After.
+
+Of those, at most `unix_users.max_storage_calls` (default 256) call the storage at once: an open, a stat, a batch of a listing, one read or write of a transfer, the fsync and rename that end an upload. Each call holds one of the worker's threads until the storage answers. Other requests wait for a call to end, without a thread, and stop waiting when their client goes. So a worker has no more threads than that, plus one per CPU and the few tens that Go uses besides, however many requests it serves and however slow its storage is. Without the bound, a worker serving thousands of requests ends up with a thread for each, and one whose storage does not answer piles them up until it cannot make more, and dies. Raise it for storage that serves many calls at once, such as NFS or a parallel filesystem, when the worker's threads in /status (`blocked_threads`) often reach it while the storage keeps up. [Performance](performance.html) says when to change these limits, and what else limits how much weed serves.
 
 Before it serves, weed starts a worker as nobody, to find problems before the first request. Each worker checks that all its threads run as its account, without capabilities and with no_new_privs, and refuses to serve otherwise. Workers get none of weed's environment, and ignore SIGHUP, which is for weed.
 
@@ -44,7 +46,7 @@ Workers are started from /proc/self/exe: the binary that weed itself runs, even 
 Beyond the permissions of its account, three things confine a worker.
 
 Symbolic links
-:   Workers open every name beneath the exported directory, and follow a link only when it is relative and stays inside. A link that leads outside, and every absolute link (even one to a file inside), gets 403, is left out of listings, and is logged as *refused a name that leads outside the exported directory*. Otherwise, a user who can make links there, over ssh or NFS, could have weed read whatever the account can, such as /etc.
+:   Workers open every name beneath the exported directory with openat2(2), and follow no symbolic link, wherever it is in the name and wherever it points. A name with a link in it gets 403 and is logged as *refused a name with a symbolic link in it*, and links are left out of listings. Otherwise, a user who can make links there, over ssh or NFS, could have weed read whatever the account can, such as /etc; and a link in a directory would take a token or macaroon for that directory wherever it points. To serve a directory from elsewhere, bind-mount it: a mount point is not a link. openat2 came with Linux 5.6; a worker refuses to serve if a seccomp filter, such as a container's, refuses it.
 
 Landlock
 :   weed confines itself and each worker with Landlock as it starts it, and does not start without it: it needs Linux 5.19 or later, with landlock among the security modules (lsm=). Whatever a bug in a worker tries, it may write beneath the exported directory alone, and read only beneath it and /etc, /usr, /lib, /proc and /sys/fs/cgroup (and `tpc.ca_path`, SSL_CERT_FILE and SSL_CERT_DIR), whatever the permissions. It may execute weed alone (and, for a build with cgo, its dynamic loader, which can run other programs, confined the same); it cannot make symbolic links, devices, sockets or FIFOs. From Linux 6.7, it binds no TCP port, and connects to none unless `tpc.enabled`, for third-party copies (Landlock does not confine UDP, nor MPTCP: see seccomp below). From Linux 6.12, it signals no process (but on RHEL 9's kernels, which lack that) and connects to no abstract Unix socket outside its confinement. Each worker checks that it is confined, and refuses to serve otherwise. Landlock does not cover stat, chmod, chown, utime and extended attributes: on files outside the exported directory, permissions alone keep those.
@@ -105,26 +107,6 @@ With `unix_users.cgroups`, the workers of each account run in a cgroup of their 
     [unix_users]
     cgroup_limits = ["memory.max=8G", "pids.max=5000", "cpu.weight=100"]
 
-pids.max counts the worker's threads, and a worker that cannot make a thread dies, with all its requests. Each request waiting for its files has a thread, so keep pids.max above `unix_users.max_requests`, with room for the few tens that Go uses besides.
+pids.max counts the worker's threads, and a worker that cannot make a thread dies, with all its requests. Each call to the storage holds a thread, so keep pids.max above `unix_users.max_storage_calls`, with room for a thread per CPU and the few tens that Go uses besides.
 
 weed checks that each limit has the form file=value when it reads the configuration; the kernel checks the values when weed writes them, when a worker of the account starts and when weed reloads. *weed check* does not set cgroups up, since that would move the process it runs in, so it does not try the values.
-
-## Performance
-
-Downloads relayed from workers run at about 92% of the speed of serving files directly, and uploads at the same speed (1 GiB files over loopback without TLS: about 5200 MB/s against 5600 MB/s). That needs 1 MiB socket buffers, which root gets. If weed runs as another account, also raise net.core.wmem_max and net.core.rmem_max to 1048576, or downloads lose a third:
-
-    # sysctl -w net.core.wmem_max=1048576 net.core.rmem_max=1048576
-
-A client that reads slower than weed sends, as a job across a WAN does, keeps those buffers full: each such download holds about 2.7 MB of memory, in the kernel and in weed. Clients that hold a connection and make small requests cost much less: 8192 clients each making a GET of a 4 KiB file every second got 8172 requests/s, p99 35 ms, from weed using 2.7 CPUs and 1.6 GB, 196 kB per client (one account, through TLS, in a container of 8 CPUs and 8 GB).
-
-Every connection is an open file: Go raises weed's soft limit of open files to the hard one (systemd's default: 524288).
-
-### Measuring a server {#stress}
-
-test/stress finds what a server sustains. For each kind of request (small files read, written and listed, new TLS connections, downloads and uploads of large files, each authentication method, many accounts), it doubles the clients until throughput stops growing, more than 1% of requests fail, or the p99 latency passes 2 seconds. Two more grow a crowd of up to 8192 clients that each hold a connection, the small GETs and slow downloads above, and report the memory that each client adds. Run weed as it will serve, and stress from another machine, as an account that may write the directory it is given; stress works in a directory of its own below it, and removes it:
-
-    $ go build -o stress ./test/stress
-    $ ./stress -url https://weed.example.org/webdav/home/alice \
-          -cert usercert.pem -key userkey.pem -ca /etc/grid-security/certificates
-
-*stress -h* lists the kinds of requests and options; `-json` writes the results. From a checkout of weed, `make find-limits` runs it on weed's machine against weed serving one account, and `make find-limits-users` against weed serving many accounts to crowds of thousands of clients, in a Podman container.

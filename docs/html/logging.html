@@ -54,6 +54,7 @@
 			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
+			<li><a href="performance.html">Performance</a></li>
 		</ul>
 	</div>
 	<div class="nav">
@@ -100,11 +101,14 @@
 <header id="title-block-header">
 <h1 class="title">Logging</h1>
 </header>
-<p>weed logs to standard error, which systemd sends to the journal, or to <code>server.log_file</code>. Workers log through weed, so that everything is in one place.</p>
+<p>weed logs to standard error, which systemd sends to the journal, or to <code>server.log_file</code>. Workers log through weed, so that everything is in one place. Log to a file, to keep every record (see <a href="#file">below</a>):</p>
 <pre><code>[server]
-log_file = &quot;/var/log/weed.log&quot;
+log_file = &quot;/var/log/weed/weed.log&quot;
 log_level = &quot;info&quot;
 log_format = &quot;text&quot;</code></pre>
+<h2 id="file">A file keeps every record</h2>
+<p>The journal keeps so many lines of a service every 30 seconds, and drops the others until the 30 seconds are over: 10000 by default (RateLimitBurst= in journald.conf), a few times more on a disk with much free space. weed logs a record of every request, so a server that answers more than a few hundred a second loses records in the journal, and its errors with them: they reach the journal at the same priority as the requests. Of a service that wrote 25000 lines a second, as weed does answering 25000 requests a second, the journal kept those of the first 1.5 seconds, and dropped those of the next 8.5.</p>
+<p>A file keeps them all. With the unit of <a href="installation.html#systemd">Installation</a>, systemd makes /var/log/weed (<code>LogsDirectory=weed</code>), which weed may write also when sandboxed. The record of a request takes some 270 bytes: 2.3 GB a day at 100 requests a second, 23 GB at 1000. Rotate the file (see <a href="#rotation">Rotation</a>), keeping as many days as the disk allows. Writing the records costs weed little: some 4% of the requests it answers at 60000 a second, less at fewer.</p>
 <h2 id="format">Format</h2>
 <p>One record per line: key=value (<code>log_format = "text"</code>), or JSON (<code>"json"</code>) for a log collector. The records are the same; JSON nests the attributes that text joins with dots.</p>
 <pre><code>time=2026-10-29T09:06:57.571Z level=INFO msg=request method=PUT path=/webdav/alice/hosts proto=HTTP/1.1 status=201 bytes=0 duration=27.850916ms user=alice remote=192.0.2.7:43784 user_agent=curl/7.76.1 request_id=ea9b00ce
@@ -174,7 +178,7 @@ how each request was authenticated, and which methods were tried. For finding a 
 </tbody>
 </table>
 <p>To follow one request, look for its ID:</p>
-<pre><code># grep request_id=869537c9 /var/log/weed.log</code></pre>
+<pre><code># grep request_id=869537c9 /var/log/weed/weed.log</code></pre>
 <p>A third-party copy is a single COPY request, logged when it ends, which may be hours after it started. Its "third-party copy started" and "third-party copy completed" (or "failed") records say what was copied, how many bytes, and how long it took.</p>
 <h2 id="authentication">Refused credentials</h2>
 <p>Every credential that weed refuses is logged at info, as "authentication failed", with the method and why. The request's record follows, with the same request_id:</p>
@@ -187,7 +191,7 @@ level=INFO msg=request method=PUT path=/webdav/cms/hosts proto=HTTP/1.1 status=4
 level=INFO msg=&quot;worker stopped&quot; worker.user=alice worker.pid=127</code></pre>
 <h2 id="rotation">Rotation</h2>
 <p>On SIGHUP, weed reopens its log file. With logrotate, /etc/logrotate.d/weed:</p>
-<pre><code>/var/log/weed.log {
+<pre><code>/var/log/weed/weed.log {
     daily
     rotate 30
     compress
@@ -198,7 +202,7 @@ level=INFO msg=&quot;worker stopped&quot; worker.user=alice worker.pid=127</code
         systemctl reload weed &gt;/dev/null 2&gt;&amp;1 || true
     endscript
 }</code></pre>
-<p>The reload also re-reads the credential files (see <a href="reloading.html">Reloading</a>), which does no harm. Without <code>server.log_file</code>, the journal rotates the log itself:</p>
+<p>The reload also re-reads the credential files (see <a href="reloading.html">Reloading</a>), which does no harm. Without <code>server.log_file</code>, the journal rotates the log itself, but does not keep every record (see <a href="#file">above</a>):</p>
 <pre><code># journalctl -u weed -f
 # journalctl -u weed --since today -g &#39;level=ERROR&#39;</code></pre>
 </div>

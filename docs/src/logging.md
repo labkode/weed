@@ -2,12 +2,18 @@
 title: 'Logging'
 ---
 
-weed logs to standard error, which systemd sends to the journal, or to `server.log_file`. Workers log through weed, so that everything is in one place.
+weed logs to standard error, which systemd sends to the journal, or to `server.log_file`. Workers log through weed, so that everything is in one place. Log to a file, to keep every record (see [below](#file)):
 
     [server]
-    log_file = "/var/log/weed.log"
+    log_file = "/var/log/weed/weed.log"
     log_level = "info"
     log_format = "text"
+
+## A file keeps every record {#file}
+
+The journal keeps so many lines of a service every 30 seconds, and drops the others until the 30 seconds are over: 10000 by default (RateLimitBurst= in journald.conf), a few times more on a disk with much free space. weed logs a record of every request, so a server that answers more than a few hundred a second loses records in the journal, and its errors with them: they reach the journal at the same priority as the requests. Of a service that wrote 25000 lines a second, as weed does answering 25000 requests a second, the journal kept those of the first 1.5 seconds, and dropped those of the next 8.5.
+
+A file keeps them all. With the unit of [Installation](installation.html#systemd), systemd makes /var/log/weed (`LogsDirectory=weed`), which weed may write also when sandboxed. The record of a request takes some 270 bytes: 2.3 GB a day at 100 requests a second, 23 GB at 1000. Rotate the file (see [Rotation](#rotation)), keeping as many days as the disk allows. Writing the records costs weed little: some 4% of the requests it answers at 60000 a second, less at fewer.
 
 ## Format
 
@@ -55,7 +61,7 @@ Every request to the main port is logged once, when it ends, as a "request" reco
 
 To follow one request, look for its ID:
 
-    # grep request_id=869537c9 /var/log/weed.log
+    # grep request_id=869537c9 /var/log/weed/weed.log
 
 A third-party copy is a single COPY request, logged when it ends, which may be hours after it started. Its "third-party copy started" and "third-party copy completed" (or "failed") records say what was copied, how many bytes, and how long it took.
 
@@ -79,7 +85,7 @@ The records of workers carry worker.user and worker.pid, and the request_id of t
 
 On SIGHUP, weed reopens its log file. With logrotate, /etc/logrotate.d/weed:
 
-    /var/log/weed.log {
+    /var/log/weed/weed.log {
         daily
         rotate 30
         compress
@@ -91,7 +97,7 @@ On SIGHUP, weed reopens its log file. With logrotate, /etc/logrotate.d/weed:
         endscript
     }
 
-The reload also re-reads the credential files (see [Reloading](reloading.html)), which does no harm. Without `server.log_file`, the journal rotates the log itself:
+The reload also re-reads the credential files (see [Reloading](reloading.html)), which does no harm. Without `server.log_file`, the journal rotates the log itself, but does not keep every record (see [above](#file)):
 
     # journalctl -u weed -f
     # journalctl -u weed --since today -g 'level=ERROR'

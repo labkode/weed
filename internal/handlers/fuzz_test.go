@@ -1,6 +1,9 @@
 package handlers
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func FuzzParseIfHeader(f *testing.F) {
 	for _, s := range []string{
@@ -42,6 +45,32 @@ func FuzzParseISODuration(f *testing.F) {
 		d, err := parseISODuration(s)
 		if err == nil && d <= 0 {
 			t.Fatalf("%q: non-positive duration %v accepted", s, d)
+		}
+	})
+}
+
+// parsePropfind asks for one of allprop (with include, alone), propname and prop, or
+// fails, whatever the body
+func FuzzParsePropfind(f *testing.F) {
+	for _, s := range []string{
+		"", davixPropfind, `<D:propfind xmlns:D="DAV:"><D:allprop/><D:include><D:x/></D:include></D:propfind>`,
+		`<D:propfind xmlns:D="DAV:"><D:propname/></D:propfind>`, `<propfind xmlns="DAV:"><prop><a>b<c/></a></prop></propfind>`,
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		pf, err := parsePropfind(strings.NewReader(s))
+		if err != nil {
+			return
+		}
+		modes := 0
+		for _, m := range []bool{pf.allprop, pf.propname, len(pf.prop) > 0} {
+			if m {
+				modes++
+			}
+		}
+		if modes != 1 || len(pf.include) > 0 && !pf.allprop {
+			t.Fatalf("%q: %+v", s, pf)
 		}
 	})
 }

@@ -20,6 +20,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/labkode/weed/internal/davfs"
 	"github.com/labkode/weed/internal/fsuser"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/metrics"
@@ -84,6 +85,10 @@ func Attach() (*Child, error) {
 	// Nor may it open other sockets than its own (see sockets)
 	if s := sockets(&child.Settings.Config); !seccomp.Filtered(s) {
 		return nil, child.Fail(fmt.Errorf("refusing to serve: started to open %s sockets alone (seccomp), and opens others", s))
+	}
+	// It opens every file with openat2, through no symbolic link (see davfs)
+	if err := davfs.Check(); err != nil {
+		return nil, child.Fail(fmt.Errorf("refusing to serve: %w", err))
 	}
 	// Workers are started from /proc/self/exe: the front process's binary, unless it
 	// was overwritten in place, which the front process detects from the build

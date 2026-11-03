@@ -157,16 +157,17 @@ func TestPropfindDepth(t *testing.T) {
 	}
 }
 
-// A symbolic link that leads out of the exported directory leads nowhere: what is
-// outside is neither read nor written through it (403), nor listed, nor its digest
-// told; a relative link that stays inside is followed
-func TestSymlinkOutsideRefused(t *testing.T) {
+// A symbolic link leads nowhere, wherever it points: neither what is outside the
+// exported directory nor what is inside is read or written through it (403), nor
+// is the link listed, nor a digest told
+func TestSymlinkRefused(t *testing.T) {
 	n := newNode(t, nil)
 	outside := t.TempDir()
 	os.WriteFile(filepath.Join(outside, "secret"), []byte("secret"), 0o644)
 	n.write("/d/f", "x")
 	os.Symlink(outside, filepath.Join(n.dir, "d", "out"))
 	os.Symlink("f", filepath.Join(n.dir, "d", "in"))
+	os.Symlink(".", filepath.Join(n.dir, "d", "here"))
 
 	for _, c := range []struct{ method, path, body string }{
 		{"GET", "/d/out/secret", ""},
@@ -175,6 +176,11 @@ func TestSymlinkOutsideRefused(t *testing.T) {
 		{"MKCOL", "/d/out/dir", ""},
 		{"DELETE", "/d/out/secret", ""},
 		{"PROPFIND", "/d/out/", ""},
+		{"GET", "/d/in", ""},
+		{"GET", "/d/here/f", ""},
+		{"PUT", "/d/in", "over the link"},
+		{"PROPFIND", "/d/in", ""},
+		{"DELETE", "/d/in", ""},
 	} {
 		if code := n.status(c.method, c.path, c.body, "Depth", "0", "Want-Repr-Digest", "adler=1"); code != 403 {
 			t.Errorf("%s %s: %d, want 403", c.method, c.path, code)
@@ -186,17 +192,42 @@ func TestSymlinkOutsideRefused(t *testing.T) {
 	if code := n.status("COPY", "/d/f", "", "Destination", n.url("/d/out/copy")); code != 403 {
 		t.Errorf("COPY to outside: %d, want 403", code)
 	}
+	if code := n.status("MOVE", "/d/in", "", "Destination", n.url("/d/moved")); code != 403 {
+		t.Errorf("MOVE of a link: %d, want 403", code)
+	}
 	entries, _ := os.ReadDir(outside)
 	if len(entries) != 1 {
 		t.Errorf("outside: %v, want only secret", entries)
 	}
-
-	if resp, body := n.do("GET", "/d/in", ""); resp.StatusCode != 200 || body != "x" {
-		t.Errorf("GET through a link inside: %d %q", resp.StatusCode, body)
+	if target, err := os.Readlink(filepath.Join(n.dir, "d", "in")); err != nil || target != "f" {
+		t.Errorf("the link d/in: %q, %v; want it as it was", target, err)
 	}
+
 	resp, body := n.do("PROPFIND", "/d/", "", "Depth", "1")
-	if resp.StatusCode != 207 || !strings.Contains(body, "/webdav/d/in") || strings.Contains(body, "/webdav/d/out") {
-		t.Errorf("listing: %d %s, want d/in and not d/out", resp.StatusCode, body)
+	if resp.StatusCode != 207 || !strings.Contains(body, "/webdav/d/f") || strings.Contains(body, "/webdav/d/in") ||
+		strings.Contains(body, "/webdav/d/out") || strings.Contains(body, "/webdav/d/here") {
+		t.Errorf("listing: %d %s, want d/f alone", resp.StatusCode, body)
+	}
+}
+
+// A credential for a directory does not reach another through a link inside it:
+// the path caveats of macaroons, and the scopes of tokens, name the paths of
+// requests, which a link would not keep to
+func TestSymlinkDoesNotWidenScope(t *testing.T) {
+	n := newNode(t, nil)
+	n.write("/pub/f", "public")
+	n.write("/priv/secret", "secret")
+	os.Symlink("../priv", filepath.Join(n.dir, "pub", "x"))
+
+	bearer := "Bearer " + func() string { tok, _ := n.mint("/pub/", `{"caveats":["activity:DOWNLOAD,LIST"]}`); return tok }()
+	if resp, body := n.do("GET", "/pub/f", "", "Authorization", bearer); resp.StatusCode != 200 || body != "public" {
+		t.Fatalf("GET within the caveat: %d %q", resp.StatusCode, body)
+	}
+	if code := n.status("GET", "/priv/secret", "", "Authorization", bearer); code != 403 {
+		t.Fatalf("GET outside the caveat: %d", code)
+	}
+	if resp, body := n.do("GET", "/pub/x/secret", "", "Authorization", bearer); resp.StatusCode != 403 {
+		t.Errorf("GET through a link to outside the caveat: %d %q, want 403", resp.StatusCode, body)
 	}
 }
 

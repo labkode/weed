@@ -86,7 +86,11 @@ Storage guarantees
 * LOCKs are honoured by every write, including PUT and TPC pull.
 * MOVE overwrites by default, as RFC 4918 requires; COPY or MOVE of a collection onto
   itself or into one of its descendants is refused (403).
-* PROPFIND with Depth: infinity (or no Depth) is refused (403).
+* PROPFIND with Depth: infinity (or no Depth) is refused (403). PROPFIND opens no
+  file: its properties come from metadata.
+* A file's content type (GET's Content-Type, PROPFIND's getcontenttype) comes from
+  its name's extension, by the system's MIME types and Go's, and is
+  application/octet-stream otherwise; weed does not read files to guess it.
 * Paths with encoded dot segments ("%2e%2e") are refused.
 
 
@@ -351,7 +355,12 @@ unix_users.idle_timeout (default 10m) without one; a worker that dies is replace
 the next request. At most unix_users.max_workers (default 256) take requests; when
 they are all busy, requests of other accounts get 503. Each worker serves at most
 unix_users.max_requests (default 4000) requests at once; beyond, its account's
-requests get 503 (see "Storage that does not answer" below). Workers log through weed,
+requests get 503 (see "Storage that does not answer" below). Of those, at most
+unix_users.max_storage_calls (default 256) call the storage at once (an open, a stat,
+a batch of a listing, one read or write): each call holds a thread until the storage
+answers, and the requests beyond wait for one to end without a thread, until their
+clients go. A worker thus has no more threads than that, plus one per CPU and the
+few tens of Go's, however many requests it serves. Workers log through weed,
 their records marked worker.user=alice worker.pid=1630 (see Logging). Each worker
 checks that all its threads run as the account, with no capabilities and
 no_new_privs, and refuses to serve otherwise; weed starts one as nobody (65534) at
@@ -380,9 +389,14 @@ capabilities, or it does not start ("weed must run as root, ..."):
 
     User=weed
     AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE
-    Delegate=yes           # for unix_users.cgroups
-    RuntimeDirectory=weed  # for admin.socket (see Banning users)
-    StateDirectory=weed    # for admin.bans
+    # for unix_users.cgroups
+    Delegate=yes
+    # for admin.socket (see Banning users)
+    RuntimeDirectory=weed
+    # for admin.bans
+    StateDirectory=weed
+    # for server.log_file (see Logging)
+    LogsDirectory=weed
 
 Downloads relayed from workers run at ~92% of the speed of serving files directly,
 and uploads at the same speed (Linux, 1 GiB files over loopback without TLS:
@@ -408,12 +422,14 @@ Operations the filesystem refuses get 403. As with local tools:
 
 What workers reach. Beyond the permissions of its account, two things keep a worker
 to the exported directory:
-* Symbolic links: workers open every name beneath the exported directory (Go's
-  os.Root), and follow a link only when it is relative and stays inside. A link
-  that leads outside, and every absolute link (even one to a file inside), gets 403,
-  is left out of listings, and is logged ("refused a name that leads outside the
-  exported directory"). Otherwise, a user who can make links there (over ssh, NFS)
-  could have weed read whatever the account can, such as /etc.
+* Symbolic links: workers open every name beneath the exported directory with
+  openat2(2), and follow no symbolic link, wherever it is in the name and wherever
+  it points. A name with a link in it gets 403 and is logged ("refused a name with a
+  symbolic link in it"), and links are left out of listings. Otherwise, a user who
+  can make links there (over ssh, NFS) could have weed read whatever the account
+  can, such as /etc, and a link in a directory would take a token or macaroon for
+  that directory wherever it points. Bind-mount a directory to serve it from
+  elsewhere.
 * Landlock (Linux 5.19 or later, with landlock among the security modules, lsm=):
   weed confines itself and each worker as it starts it, and does not start without
   it. Whatever a bug in a worker tries, it may write beneath the exported directory
@@ -470,8 +486,9 @@ Two more are not part of weed:
 * systemd's sandboxing confines weed and its workers together, as Landlock does weed's
   own process, and with directives that Landlock does not have: for instance
   ProtectSystem=strict (all read-only, but /dev, /proc, /sys and the directories of
-  RuntimeDirectory=weed and StateDirectory=weed, which admin.socket and admin.bans
-  need), ReadWritePaths=/data (the exported directory; and that of server.log_file),
+  RuntimeDirectory=weed, StateDirectory=weed and LogsDirectory=weed, which
+  admin.socket, admin.bans and server.log_file need), ReadWritePaths=/data (the
+  exported directory),
   ProtectHome=yes (unless the exported directory is below /home), PrivateTmp=yes.
   ReadWritePaths= makes writable what /data is as weed starts, as Landlock does; weed
   starts again when that changes (above). It does not separate the accounts from each
@@ -489,7 +506,7 @@ unix_users.cgroup_limits writes limits into the cgroup of every account:
     cgroup_limits = ["memory.max=8G", "pids.max=5000", "cpu.weight=100"]
 
 pids.max counts threads, and a worker that cannot make one dies: keep it above
-unix_users.max_requests. The Go runtime of a worker keeps below 90% of the lower of
+unix_users.max_storage_calls, plus the CPUs, plus a hundred. The Go runtime of a worker keeps below 90% of the lower of
 its cgroup's memory.max and memory.high (GOMEMLIMIT prevails), which it reads when it
 starts and when weed reloads.
 
@@ -516,13 +533,16 @@ accounts apart.
 Storage that does not answer. A request whose file system does not answer (a hung NFS
 server, a failing disk) waits in the kernel with one of its worker's threads, which
 nothing interrupts, not even SIGKILL, and which the request keeps after its client
-has gone. The worker's other requests go on, and so do other accounts' workers; weed
+has gone. The worker's other requests go on, as long as fewer than
+unix_users.max_storage_calls of its calls are stuck: beyond, all of them wait, without
+a thread, until a call returns or their clients go. Other accounts' workers go on; weed
 itself never touches the files, but /healthz, which makes one stat of the exported
 directory at a time, and the look of Landlock at it every 5 seconds (from one
 goroutine, with what the kernel has cached): until it has first answered, requests
 that would start a worker get 503. So that stuck threads cannot pile up until the
-Go runtime stops the worker (at 10000), a worker counts its requests until it has
-finished them, and refuses those beyond unix_users.max_requests with 503; an idle
+Go runtime stops the worker (at 10000), a worker has at most
+unix_users.max_storage_calls of them; it counts its requests until it has finished
+them, and refuses those beyond unix_users.max_requests with 503; an idle
 worker with stuck threads is kept rather than replaced by a new one, which could get
 stuck too. /status (blocked_threads of each worker) and weed_worker_blocked_threads
 count the threads waiting in the kernel. A worker killed meanwhile, by a ban or as
@@ -613,7 +633,14 @@ worker.user and worker.pid. Values are quoted or escaped, so clients cannot forg
 records with crafted paths or headers, and X-Forwarded-For is logged as
 forwarded_for, never in place of the client's address. On SIGHUP weed reopens
 server.log_file, so that logrotate can move it (postrotate: systemctl kill -s HUP
-weed); under systemd, standard error goes to the journal.
+weed); under systemd, standard error goes to the journal. Log to a file to keep every
+record: the journal keeps so many lines of a service every 30 seconds (10000 by
+default) and drops the others until the 30 seconds are over, weed's errors with its
+requests, so a server answering more than a few hundred requests a second loses
+records there. With server.log_file = "/var/log/weed/weed.log" and LogsDirectory=weed
+in the unit, the file keeps them all, some 270 bytes a request (23 GB a day at 1000
+requests a second); writing them costs weed some 4% of its requests at 60000 a
+second.
 
 
 Monitoring
@@ -719,18 +746,26 @@ line up to date:
 
     [Unit]
     After=network-online.target remote-fs.target
-    StartLimitIntervalSec=0          # restart for ever
+    # restart for ever
+    StartLimitIntervalSec=0
 
     [Service]
     # systemd >= 253; before, Type=notify and ExecReload=kill -HUP $MAINPID
     Type=notify-reload
     ExecStartPre=/usr/local/bin/weed check -config /etc/weed/weed.toml
     ExecStart=/usr/local/bin/weed -config /etc/weed/weed.toml
-    Restart=on-failure               # also on status 75 (the exported directory moved)
-    RestartSec=2s                    # then up to a minute apart (systemd >= 254)
+    # also on status 75 (the exported directory moved); then up to a minute apart
+    # (RestartSteps=: systemd >= 254)
+    Restart=on-failure
+    RestartSec=2s
     RestartSteps=5
     RestartMaxDelaySec=1min
-    OOMPolicy=continue               # a worker killed for memory does not stop weed
+    # a worker killed for memory does not stop weed
+    OOMPolicy=continue
+    # weed bounds its threads itself (see Performance)
+    TasksMax=infinity
+    # /var/log/weed, for server.log_file
+    LogsDirectory=weed
 
     $ systemctl status weed
     ...
@@ -807,6 +842,39 @@ download that its client reads slower than weed sends, as across a WAN, holds ab
 2.7 MB in the kernel and in weed. Each connection is an open file: Go raises weed's
 soft limit to the hard one (524288 under systemd). test/stress measures a server (see
 Testing).
+
+What limits what, on a laptop of 12 cores (24 threads) with an NVMe SSD (btrfs),
+weed serving one account through TLS to a client certificate, and test/stress on the
+same machine over loopback:
+  PROPFIND Depth 1    24800/s of 100 entries, 5100/s of 1000, 560/s of 10000: the
+                      CPUs, ~2 µs an entry in the worker
+  GET of 4 KiB        60500/s: the CPUs, 3/4 in weed's process (TLS, auth, relay)
+  PUT of 4 KiB        4400/s: the disk, two fsyncs each (the file, its directory)
+  new connections     4400/s, stress taking half the CPUs: ~2 ms of weed's CPU each
+                      with an RSA 2048 host key, half of it the signature (RSA 4096
+                      signs in 4.5 ms, ECDSA P-256 in 0.02 ms)
+  Basic, password     a bcrypt check per request, 40 ms or more: <= 25/s per core;
+                      app tokens are looked up, bearer tokens checked in ~30 µs
+  GET of 1 GiB        2500 MB/s for one client, 5400 MB/s in all: the CPUs (TLS)
+  PUT of 64 MiB       900 MB/s for one client, 1300-1700 MB/s in all: the disk
+  8192 clients        21400 PROPFIND/s, p99 1.25 s (unix_users.max_requests 20000)
+
+Tuning, which the guide's Performance page explains:
+- unix_users.max_requests (4000 a worker), max_workers (256) and tpc.max_transfers
+  (32) answer 503 beyond; max_storage_calls (256) bounds a worker's threads, and is
+  for storage that serves many calls at once (NFS) to raise.
+- systemd's TasksMax= defaults to 15% of kernel.threads-max (71736 on the laptop),
+  and 256 workers of 285 threads, as they are when the storage hangs, are 73000: a
+  process that cannot make a thread dies, weed's own too. The unit sets
+  TasksMax=infinity, and cgroup_limits' pids.max bounds each account.
+- Across long distances, a TCP connection carries at most one buffer each round
+  trip: 4 MiB by default when sending, 42 MB/s at 100 ms. Raise the maximum of
+  net.ipv4.tcp_wmem and tcp_rmem to twice bandwidth × RTT (256 MiB for 10 Gb/s at
+  100 ms); net.core.wmem_max and rmem_max bound only what programs set themselves.
+- With conntrack (firewalld), nf_conntrack_max bounds the connections, each kept 120 s
+  after it closes: 262144 entries hold ~2000 new connections a second.
+- The listen queue is net.core.somaxconn (4096); raise it only if nstat's
+  TcpExtListenOverflows grows (it stayed 0 with 8192 clients).
 
 
 Testing

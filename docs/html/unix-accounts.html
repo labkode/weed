@@ -54,6 +54,7 @@
 			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
+			<li><a href="performance.html">Performance</a></li>
 		</ul>
 	</div>
 	<div class="nav">
@@ -116,7 +117,8 @@ alice       1630     812 weed worker alice
 cms001      1702     812 weed worker cms001</code></pre>
 <p>A worker starts with the first request of its account, and stops after <code>unix_users.idle_timeout</code> (default 10m) without one, unless threads of its requests still wait for its storage (see <a href="troubleshooting.html#hung-storage">Troubleshooting</a>). A worker that dies is replaced at the next request. /status lists the workers, with their pids and how many requests each is serving (see <a href="monitoring.html#status">Monitoring</a>).</p>
 <p>At most <code>unix_users.max_workers</code> (default 256) workers take requests. When they are all busy, weed stops the idlest one to make room; when none is idle, requests of other accounts get 503, with Retry-After. Raise the limit if your site has more active accounts than that.</p>
-<p>A worker serves at most <code>unix_users.max_requests</code> (default 4000) requests at once. It counts each until it has finished it, also once its client has gone, and answers its account's requests beyond with 503 and Retry-After. A request whose storage does not answer stays in progress until the storage does, with one of the worker's threads: the limit keeps such threads from piling up until the worker cannot make more, and dies.</p>
+<p>A worker serves at most <code>unix_users.max_requests</code> (default 4000) requests at once. It counts each until it has finished it, also once its client has gone, and answers its account's requests beyond with 503 and Retry-After.</p>
+<p>Of those, at most <code>unix_users.max_storage_calls</code> (default 256) call the storage at once: an open, a stat, a batch of a listing, one read or write of a transfer, the fsync and rename that end an upload. Each call holds one of the worker's threads until the storage answers. Other requests wait for a call to end, without a thread, and stop waiting when their client goes. So a worker has no more threads than that, plus one per CPU and the few tens that Go uses besides, however many requests it serves and however slow its storage is. Without the bound, a worker serving thousands of requests ends up with a thread for each, and one whose storage does not answer piles them up until it cannot make more, and dies. Raise it for storage that serves many calls at once, such as NFS or a parallel filesystem, when the worker's threads in /status (<code>blocked_threads</code>) often reach it while the storage keeps up. <a href="performance.html">Performance</a> says when to change these limits, and what else limits how much weed serves.</p>
 <p>Before it serves, weed starts a worker as nobody, to find problems before the first request. Each worker checks that all its threads run as its account, without capabilities and with no_new_privs, and refuses to serve otherwise. Workers get none of weed's environment, and ignore SIGHUP, which is for weed.</p>
 <p>Workers log through weed: their records carry worker.user and worker.pid, and the request_id of the request they serve (see <a href="logging.html">Logging</a>). They report their metrics to weed, which serves them. <code>tpc.max_transfers</code> bounds the third-party copies of all accounts together.</p>
 <h2 id="same-build">Workers run weed's build</h2>
@@ -126,7 +128,7 @@ cms001      1702     812 weed worker cms001</code></pre>
 <dl>
 <dt>Symbolic links</dt>
 <dd>
-Workers open every name beneath the exported directory, and follow a link only when it is relative and stays inside. A link that leads outside, and every absolute link (even one to a file inside), gets 403, is left out of listings, and is logged as <em>refused a name that leads outside the exported directory</em>. Otherwise, a user who can make links there, over ssh or NFS, could have weed read whatever the account can, such as /etc.
+Workers open every name beneath the exported directory with openat2(2), and follow no symbolic link, wherever it is in the name and wherever it points. A name with a link in it gets 403 and is logged as <em>refused a name with a symbolic link in it</em>, and links are left out of listings. Otherwise, a user who can make links there, over ssh or NFS, could have weed read whatever the account can, such as /etc; and a link in a directory would take a token or macaroon for that directory wherever it points. To serve a directory from elsewhere, bind-mount it: a mount point is not a link. openat2 came with Linux 5.6; a worker refuses to serve if a seccomp filter, such as a container's, refuses it.
 </dd>
 <dt>Landlock</dt>
 <dd>
@@ -172,19 +174,8 @@ Unit weed.service (/system.slice/weed.service):
 <p><code>unix_users.cgroup_limits</code> writes limits into the cgroup of every account (and implies cgroups), unless the limits file sets others for the account (see <a href="limits.html">Limits per account</a>):</p>
 <pre><code>[unix_users]
 cgroup_limits = [&quot;memory.max=8G&quot;, &quot;pids.max=5000&quot;, &quot;cpu.weight=100&quot;]</code></pre>
-<p>pids.max counts the worker's threads, and a worker that cannot make a thread dies, with all its requests. Each request waiting for its files has a thread, so keep pids.max above <code>unix_users.max_requests</code>, with room for the few tens that Go uses besides.</p>
+<p>pids.max counts the worker's threads, and a worker that cannot make a thread dies, with all its requests. Each call to the storage holds a thread, so keep pids.max above <code>unix_users.max_storage_calls</code>, with room for a thread per CPU and the few tens that Go uses besides.</p>
 <p>weed checks that each limit has the form file=value when it reads the configuration; the kernel checks the values when weed writes them, when a worker of the account starts and when weed reloads. <em>weed check</em> does not set cgroups up, since that would move the process it runs in, so it does not try the values.</p>
-<h2 id="performance">Performance</h2>
-<p>Downloads relayed from workers run at about 92% of the speed of serving files directly, and uploads at the same speed (1 GiB files over loopback without TLS: about 5200 MB/s against 5600 MB/s). That needs 1 MiB socket buffers, which root gets. If weed runs as another account, also raise net.core.wmem_max and net.core.rmem_max to 1048576, or downloads lose a third:</p>
-<pre><code># sysctl -w net.core.wmem_max=1048576 net.core.rmem_max=1048576</code></pre>
-<p>A client that reads slower than weed sends, as a job across a WAN does, keeps those buffers full: each such download holds about 2.7 MB of memory, in the kernel and in weed. Clients that hold a connection and make small requests cost much less: 8192 clients each making a GET of a 4 KiB file every second got 8172 requests/s, p99 35 ms, from weed using 2.7 CPUs and 1.6 GB, 196 kB per client (one account, through TLS, in a container of 8 CPUs and 8 GB).</p>
-<p>Every connection is an open file: Go raises weed's soft limit of open files to the hard one (systemd's default: 524288).</p>
-<h3 id="stress">Measuring a server</h3>
-<p>test/stress finds what a server sustains. For each kind of request (small files read, written and listed, new TLS connections, downloads and uploads of large files, each authentication method, many accounts), it doubles the clients until throughput stops growing, more than 1% of requests fail, or the p99 latency passes 2 seconds. Two more grow a crowd of up to 8192 clients that each hold a connection, the small GETs and slow downloads above, and report the memory that each client adds. Run weed as it will serve, and stress from another machine, as an account that may write the directory it is given; stress works in a directory of its own below it, and removes it:</p>
-<pre><code>$ go build -o stress ./test/stress
-$ ./stress -url https://weed.example.org/webdav/home/alice \
-      -cert usercert.pem -key userkey.pem -ca /etc/grid-security/certificates</code></pre>
-<p><em>stress -h</em> lists the kinds of requests and options; <code>-json</code> writes the results. From a checkout of weed, <code>make find-limits</code> runs it on weed's machine against weed serving one account, and <code>make find-limits-users</code> against weed serving many accounts to crowds of thousands of clients, in a Podman container.</p>
 </div>
 <!-- end content -->
 </body>

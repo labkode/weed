@@ -33,9 +33,9 @@ None of these require authentication: serve them on localhost or a management ne
 
 | Method | Notes |
 |----|----|
-| GET, HEAD | Range requests; Repr-Digest or Digest when asked for (Want-Repr-Digest, Want-Digest), if weed stored one when it wrote the file. |
+| GET, HEAD | Range requests; Repr-Digest or Digest when asked for (Want-Repr-Digest, Want-Digest), if weed stored one when it wrote the file. Content-Type from the name's extension: application/octet-stream when the system's MIME types (shared-mime-info or /etc/mime.types) and Go's do not know it. Directories, FIFOs and devices get 405. |
 | PUT | Written to a temporary file, renamed into place when complete; verified against Repr-Digest; If-Match and If-None-Match. |
-| PROPFIND | Depth 0 and 1; Depth: infinity is refused (403). |
+| PROPFIND | Depth 0 and 1; Depth: infinity is refused (403). Properties come from metadata alone, getcontenttype from the extension as for GET: weed opens no file to answer. |
 | PROPPATCH | Stores nothing: every property is refused (403) in the 207 answer. |
 | MKCOL, DELETE, MOVE | As RFC 4918. |
 | COPY | Within weed, or a third-party copy: with Source (pull), or with a Destination on another server (push). See [Third-party copy](tpc.html). |

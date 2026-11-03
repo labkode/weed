@@ -35,6 +35,7 @@ SRC += unix-accounts.md
 SRC += limits.md
 SRC += tpc.md
 SRC += storage.md
+SRC += performance.md
 SRC += what-runs.md
 SRC += upgrading.md
 SRC += reloading.md

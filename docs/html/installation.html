@@ -54,6 +54,7 @@
 			<li><a href="limits.html">Limits per account</a></li>
 			<li><a href="tpc.html">Third-party copy</a></li>
 			<li><a href="storage.html">Storage and checksums</a></li>
+			<li><a href="performance.html">Performance</a></li>
 		</ul>
 	</div>
 	<div class="nav">
@@ -181,6 +182,12 @@ RestartSteps=5
 RestartMaxDelaySec=1min
 # A worker that the kernel kills for its memory does not stop weed
 OOMPolicy=continue
+# weed bounds its threads itself, and those of each account with pids.max:
+# systemd&#39;s default can be fewer than its workers hold when the storage hangs
+# (see Performance)
+TasksMax=infinity
+# /var/log/weed, for server.log_file (see Logging)
+LogsDirectory=weed
 
 [Install]
 WantedBy=multi-user.target</code></pre>
@@ -204,7 +211,7 @@ ProtectSystem=strict
 # /run/weed for admin.socket, /var/lib/weed for admin.bans
 RuntimeDirectory=weed
 StateDirectory=weed
-# The exported directory, and that of server.log_file
+# The exported directory (/var/log/weed, of LogsDirectory=, is writable too)
 ReadWritePaths=/data
 # Unless the exported directory is below /home
 ProtectHome=yes
@@ -275,8 +282,8 @@ WantedBy=sockets.target</code></pre>
 <td>weed listens on its ports itself. Supervisors that pass sockets as systemd does (LISTEN_FDS) work too.</td>
 </tr>
 <tr>
-<td>The journal</td>
-<td>weed logs to standard error, or to <code>server.log_file</code>.</td>
+<td>The journal, <code>LogsDirectory=</code></td>
+<td>weed logs to standard error, or to <code>server.log_file</code>, which keeps every record: the journal drops those beyond its rate limit (see <a href="logging.html#file">Logging</a>).</td>
 </tr>
 <tr>
 <td><code>ExecStartPre=weed check</code></td>
@@ -301,7 +308,7 @@ RuntimeDirectory=weed
 RuntimeDirectoryMode=0700
 StateDirectory=weed
 StateDirectoryMode=0700</code></pre>
-<p>RuntimeDirectory and StateDirectory create /run/weed and /var/lib/weed for that account. The account must be able to read the configuration file and every file it names, the host key included. Without the capabilities, weed does not start:</p>
+<p>RuntimeDirectory and StateDirectory create /run/weed and /var/lib/weed for that account, as LogsDirectory, in the unit, does /var/log/weed. The account must be able to read the configuration file and every file it names, the host key included. Raise net.core.wmem_max and rmem_max as well, or downloads lose a third (see <a href="performance.html#socket-buffers">Performance</a>). Without the capabilities, weed does not start:</p>
 <pre><code>level=ERROR msg=&quot;cannot start&quot; error=&quot;cannot start the worker processes, which access files as Unix accounts: cannot start a worker for nobody: fork/exec /proc/self/exe: operation not permitted (weed must run as root, or with CAP_SETUID and CAP_SETGID)&quot;</code></pre>
 <h2 id="network">Network</h2>
 <p>Open the port of weed (<code>server.port</code>, 443 in production) to your clients and to the other storage endpoints, which connect to it for third-party copies. Keep the metrics address (<code>server.metrics_address</code>) local or on a management network: /metrics and /status need no authentication.</p>

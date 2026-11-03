@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>weed administration guide – Performance</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="weed.css" />
+</head>
+<body>
+<div class="header">
+	<a href="index.html"><span>weed administration guide</span></a>
+	<a class="version" href="changelog.html">for the development version</a>
+</div>
+<div class="sidebar">
+	<div class="nav">
+		<h3>Guide</h3>
+		<ul>
+			<li><a href="index.html">Introduction</a></li>
+			<li><a href="installation.html">Installation</a></li>
+			<li><a href="getting-started.html">Getting started</a></li>
+			<li><a href="configuration.html">Configuration</a></li>
+			<li><a href="authentication.html">Authentication</a>
+				<ul>
+					<li><a href="authentication.html#x509">X.509</a></li>
+					<li><a href="authentication.html#tokens">Tokens</a></li>
+					<li><a href="authentication.html#oidc">OIDC login</a></li>
+					<li><a href="authentication.html#macaroons">Macaroons</a></li>
+					<li><a href="authentication.html#basic">Passwords</a></li>
+					<li><a href="authentication.html#anonymous">Anonymous</a></li>
+				</ul>
+			</li>
+			<li><a href="unix-accounts.html">Unix accounts</a></li>
+			<li><a href="limits.html">Limits per account</a></li>
+			<li><a href="tpc.html">Third-party copy</a></li>
+			<li><a href="storage.html">Storage and checksums</a></li>
+			<li><a href="performance.html">Performance</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Operations</h3>
+		<ul>
+			<li><a href="what-runs.html">What runs</a></li>
+			<li><a href="upgrading.html">Upgrading</a></li>
+			<li><a href="reloading.html">Reloading</a></li>
+			<li><a href="logging.html">Logging</a></li>
+			<li><a href="monitoring.html">Monitoring</a></li>
+			<li><a href="banning.html">Banning users</a></li>
+			<li><a href="troubleshooting.html">Troubleshooting</a></li>
+		</ul>
+	</div>
+	<div class="nav">
+		<h3>Reference</h3>
+		<ul>
+			<li><a href="commands.html">Commands</a>
+				<ul>
+					<li><a href="commands.html#weed">weed</a></li>
+					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#config">config</a></li>
+					<li><a href="commands.html#version">version</a></li>
+					<li><a href="commands.html#ban">utils ban</a></li>
+					<li><a href="commands.html#unban">utils unban</a></li>
+					<li><a href="commands.html#bans">utils bans</a></li>
+					<li><a href="commands.html#password">utils password</a></li>
+					<li><a href="commands.html#token">utils token</a></li>
+					<li><a href="commands.html#cert">utils cert</a></li>
+				</ul>
+			</li>
+			<li><a href="options.html">Configuration options</a></li>
+			<li><a href="metrics.html">Metrics</a></li>
+			<li><a href="http.html">HTTP endpoints</a></li>
+			<li><a href="files.html">Files</a></li>
+			<li><a href="changelog.html">Changelog</a></li>
+		</ul>
+	</div>
+</div>
+<!-- end sidebar -->
+
+<!-- begin content -->
+<div class="content">
+<header id="title-block-header">
+<h1 class="title">Performance</h1>
+</header>
+<p>weed spends the machine's CPUs on most requests, its storage on uploads, and the network on large transfers. Its own limits, systemd's and the kernel's can stop it before it runs out of any of them. This page says what limits each kind of request, which settings to change, and how to measure a server. The numbers are of one machine: measure yours before and after a change (see <a href="#stress">Measuring a server</a>).</p>
+<h2 id="limits">What limits each kind of request</h2>
+<p>test/stress measured these on a laptop of 12 cores (24 threads), 62.8 GB of memory and an NVMe SSD with btrfs. weed served one account through TLS, authenticated by a client certificate, and stress ran on the same machine, over loopback:</p>
+<table>
+<thead>
+<tr>
+<th>Requests</th>
+<th>Served</th>
+<th>Limited by</th>
+<th>What helps</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Listings (PROPFIND, Depth 1)</td>
+<td>24800/s of a directory of 100 entries, 5100/s of 1000, 560/s of 10000</td>
+<td>the CPUs: some 2 µs for each entry, in the worker</td>
+<td>more cores; directories of fewer entries</td>
+</tr>
+<tr>
+<td>Small downloads (GET of 4 KiB)</td>
+<td>60500/s</td>
+<td>the CPUs, three quarters of them in weed's own process: TLS, authentication, relaying to the worker</td>
+<td>more cores</td>
+</tr>
+<tr>
+<td>Small uploads (PUT of 4 KiB)</td>
+<td>4400/s</td>
+<td>the storage: an upload ends with two fsyncs, of the file and of its directory</td>
+<td>storage that syncs fast (<a href="#storage">below</a>)</td>
+</tr>
+<tr>
+<td>New connections (GET of 4 KiB, each on a new connection)</td>
+<td>4400/s, with stress taking half the CPUs</td>
+<td>the CPUs: a TLS handshake each, some 2 ms of weed's CPU</td>
+<td>clients that keep their connections; an ECDSA host key (<a href="#authentication">below</a>)</td>
+</tr>
+<tr>
+<td>Passwords (Basic)</td>
+<td>some 25/s for each core</td>
+<td>the CPUs: a bcrypt check for each request</td>
+<td>app tokens, bearer tokens or certificates (<a href="#authentication">below</a>)</td>
+</tr>
+<tr>
+<td>Large downloads (a file of 1 GiB)</td>
+<td>2500 MB/s for one client, 5400 MB/s in all</td>
+<td>the CPUs: TLS, some 460 MB/s for each core; then the network</td>
+<td>TCP buffers sized for the distance (<a href="#tcp-buffers">below</a>)</td>
+</tr>
+<tr>
+<td>Large uploads (files of 64 MiB)</td>
+<td>900 MB/s for one client, 1300 to 1700 MB/s in all</td>
+<td>the storage; then checksums and the network</td>
+<td>faster storage; TCP buffers sized for the distance</td>
+</tr>
+<tr>
+<td>8192 clients listing at once (100 entries)</td>
+<td>21400/s, p99 1.25 s</td>
+<td>the CPUs</td>
+<td><code>unix_users.max_requests</code> above the clients of an account (<a href="#settings">below</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>On a machine with SMT, count cores: the laptop's CPUs were full with 19 of its 24 threads busy. weed uses all of them, or those of its cgroup's cpu.max.</p>
+<h2 id="settings">weed's limits</h2>
+<p>weed bounds what it takes on, and answers 503 with Retry-After beyond (see <a href="troubleshooting.html#unavailable">Troubleshooting</a>):</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Raise it when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>unix_users.max_requests</code></td>
+<td>4000</td>
+<td>an account has more requests in progress at once, from more clients: its requests beyond get 503. 8192 clients of one account need 8192.</td>
+</tr>
+<tr>
+<td><code>unix_users.max_workers</code></td>
+<td>256</td>
+<td>more accounts are active at once: the requests of others get 503 once all workers are busy.</td>
+</tr>
+<tr>
+<td><code>unix_users.max_storage_calls</code></td>
+<td>256</td>
+<td>the storage serves many calls at once (NFS, a parallel filesystem), and <code>blocked_threads</code> in /status often reaches it while the storage keeps up. Each call holds a thread: lowered to 64, it cost the laptop 4 to 11% of the listings it answers, with 96 threads in the worker instead of 285.</td>
+</tr>
+<tr>
+<td><code>tpc.max_transfers</code></td>
+<td>32</td>
+<td>third-party copies get 503 (<code>weed_tpc_rejected_total</code>) while the network has room.</td>
+</tr>
+</tbody>
+</table>
+<p><code>server.log_file</code> keeps every record, which the journal does not beyond a few hundred requests a second, for some 4% of the requests weed answers at 60000 a second (see <a href="logging.html#file">Logging</a>). In <code>unix_users.cgroup_limits</code>, keep pids.max above <code>unix_users.max_storage_calls</code>, plus the CPUs, plus a hundred (see <a href="unix-accounts.html#cgroups">Unix accounts</a>).</p>
+<h2 id="memory">Memory</h2>
+<p>Clients that hold a connection cost little: 8192 clients each making a GET of a 4 KiB file every second got 8172 requests/s, p99 35 ms, from weed using 2.7 CPUs and 1.6 GB, 196 kB per client (one account, through TLS, in a container of 8 CPUs and 8 GB). A client that reads slower than weed sends, as a job across a WAN does, keeps the buffers between weed and the worker full: each such download holds about 2.7 MB of memory, in the kernel and in weed.</p>
+<h2 id="systemd">systemd</h2>
+<p>systemd limits the threads of a service, of all its processes together, to TasksMax=. Its default is 15% of kernel.threads-max, which the kernel sets from the machine's memory: 71736 on the laptop. A worker has up to <code>unix_users.max_storage_calls</code> threads waiting for the storage, plus one per CPU and a few more, and there are up to <code>unix_users.max_workers</code> workers. When the storage stops answering, they all fill up: with the defaults, on the laptop's 24 CPUs, 256 workers of 285 threads, 73000. A process that cannot make a thread dies: a worker, with all its requests, or weed's own process, which counts in the same limit, and with it every request. The unit of <a href="installation.html#systemd">Installation</a> lifts the limit, since weed bounds its threads itself; pids.max in <code>unix_users.cgroup_limits</code> bounds those of each account:</p>
+<pre><code>TasksMax=infinity</code></pre>
+<p>Check what systemd allows weed, and how many threads it has:</p>
+<pre><code># systemctl show -p TasksMax -p TasksCurrent weed</code></pre>
+<p>Every connection is an open file: Go raises weed's soft limit of open files to the hard one (systemd's default: 524288), so leave LimitNOFILE= alone.</p>
+<h2 id="kernel">The kernel</h2>
+<p>Put the settings below in a file of /etc/sysctl.d, which the system applies at boot, and apply them at once with <em>sysctl --system</em>:</p>
+<pre><code># cat /etc/sysctl.d/90-weed.conf
+net.ipv4.tcp_rmem = 4096 131072 268435456
+net.ipv4.tcp_wmem = 4096 16384 268435456
+# sysctl --system</code></pre>
+<h3 id="tcp-buffers">Transfers across long distances</h3>
+<p>A TCP connection carries at most one buffer of data each round trip. weed leaves the size of the buffers to the kernel, which grows those of each connection as it needs, up to the third value of net.ipv4.tcp_wmem for what weed sends (downloads, third-party copies pushed) and of net.ipv4.tcp_rmem for what it receives (uploads, copies pulled). By default, a connection sends at most 4 MiB ahead: a download to a client 100 ms away then runs at 42 MB/s at most, however fast the network. Raise the maximums to twice the bandwidth times the round trip of your longest paths, since the kernel keeps its bookkeeping in the buffers too: for 10 Gb/s and 100 ms, 125 MB in flight, so 256 MiB, as above. The client's buffers bound a transfer as much as weed's.</p>
+<p>The buffers grow only for the connections that need them; net.ipv4.tcp_mem bounds the memory of all connections together. net.core.rmem_max and wmem_max do not bound them: they bound the sizes that programs set themselves, as weed does for its workers (below). Over paths that lose packets, BBR congestion control (net.ipv4.tcp_congestion_control = bbr, with net.core.default_qdisc = fq) keeps more of the bandwidth than the default, cubic: measure both.</p>
+<h3 id="socket-buffers">Without root</h3>
+<p>Downloads relayed from workers run at about 92% of the speed of serving files directly, and uploads at the same speed (1 GiB files over loopback without TLS: about 5200 MB/s against 5600 MB/s). That needs 1 MiB buffers on the sockets between weed and its workers, more than net.core.wmem_max and rmem_max allow by default (212992 bytes), which root may exceed. If weed runs as an account of its own (see <a href="installation.html#without-root">Installation</a>), raise net.core.wmem_max and net.core.rmem_max to 1048576, or downloads lose a third:</p>
+<pre><code>net.core.wmem_max = 1048576
+net.core.rmem_max = 1048576</code></pre>
+<h3 id="conntrack">Connection tracking</h3>
+<p>When the firewall tracks connections, as firewalld does, the kernel keeps an entry for each, up to net.netfilter.nf_conntrack_max, until 120 seconds after it closes. Beyond, it drops new connections, and logs "nf_conntrack: table full, dropping packet". Clients that make a connection for each request fill it: 262144 entries hold some 2000 new connections a second. Compare the count with the maximum under load, and raise the maximum in /etc/sysctl.d, e.g. <code>net.netfilter.nf_conntrack_max = 1048576</code>. The setting exists once the module is loaded: load it at boot, before the settings are applied:</p>
+<pre><code># sysctl net.netfilter.nf_conntrack_count net.netfilter.nf_conntrack_max
+net.netfilter.nf_conntrack_count = 170
+net.netfilter.nf_conntrack_max = 262144
+# echo nf_conntrack &gt;/etc/modules-load.d/nf_conntrack.conf</code></pre>
+<h3 id="backlog">Listen queue</h3>
+<p>New connections wait for weed to accept them in a queue of net.core.somaxconn connections (4096 by default), or of Backlog= in weed.socket. When it is full, the kernel drops them, and counts them:</p>
+<pre><code># nstat -az TcpExtListenOverflows TcpExtListenDrops
+#kernel
+TcpExtListenOverflows           0                  0.0
+TcpExtListenDrops               0                  0.0</code></pre>
+<p>Raise net.core.somaxconn and net.ipv4.tcp_max_syn_backlog only if these grow: on the laptop, they stayed at 0 with 8192 clients.</p>
+<h2 id="authentication">Authentication</h2>
+<p>A client certificate is verified once for each connection, in the TLS handshake, and a bearer token for each request, with a signature check of some tens of microseconds. A new connection costs weed a TLS handshake: some 2 ms of a core with an RSA 2048 host key, half of it the key's signature. An RSA 4096 key signs in 4.5 ms, an ECDSA P-256 key in 0.02 ms: if your CA issues ECDSA host certificates, new connections cost a fraction. Clients that keep their connections pay it once.</p>
+<p>A password is checked for each request, with bcrypt, which is slow by design so that stolen hashes are slow to crack: 40 ms of a core or more, so at most 25 requests a second for each core. weed keeps no cache of checked passwords. Give scripts and services that make many requests an app token instead (<em>weed utils token</em>, see <a href="authentication.html#basic">Authentication</a>), which weed looks up, or a bearer token or a certificate.</p>
+<h2 id="storage">Storage</h2>
+<p>An upload ends with an fsync of the file and of its directory, so that a completed upload survives a crash (see <a href="storage.html">Storage and checksums</a>): small uploads run at the speed at which the storage completes them. Checksums are computed as the data is written; md5 is the slow one, at about 650 MB/s for each upload on an M1 Pro. A listing costs CPU for each entry, and weed refuses Depth: infinity.</p>
+<p>On NFS and parallel filesystems, each call to the storage waits for the network: raise <code>unix_users.max_storage_calls</code> (<a href="#settings">above</a>), and see <a href="troubleshooting.html#hung-storage">Troubleshooting</a> for a storage that stops answering.</p>
+<h2 id="stress">Measuring a server</h2>
+<p>test/stress finds what a server sustains. For each kind of request (small files read, written and listed, new TLS connections, downloads and uploads of large files, each authentication method, many accounts), it doubles the clients until throughput stops growing, more than 1% of requests fail, or the p99 latency passes 2 seconds. Two more grow a crowd of up to 8192 clients that each hold a connection, the small GETs and slow downloads above, and report the memory that each client adds. Run weed as it will serve, and stress from another machine, as an account that may write the directory it is given; stress works in a directory of its own below it, and removes it:</p>
+<pre><code>$ go build -o stress ./test/stress
+$ ./stress -url https://weed.example.org/webdav/home/alice \
+      -cert usercert.pem -key userkey.pem -ca /etc/grid-security/certificates</code></pre>
+<p><em>stress -h</em> lists the kinds of requests and options; <code>-json</code> writes the results. From a checkout of weed, <code>make find-limits</code> runs it on weed's machine against weed serving one account, and <code>make find-limits-users</code> against weed serving many accounts to crowds of thousands of clients, in a Podman container. On weed's machine, stress takes CPUs from weed.</p>
+<p>While it runs, watch what limits weed: the dashboard and /status (requests in progress, blocked threads; see <a href="monitoring.html">Monitoring</a>), the pressure files of the workers' cgroups (see <a href="troubleshooting.html#slow">Troubleshooting</a>), <em>systemctl show -p TasksCurrent weed</em>, and the counters of the kernel above.</p>
+</div>
+<!-- end content -->
+</body>
+</html>
