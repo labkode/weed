@@ -154,8 +154,9 @@ jobs:
         uses: actions/deploy-pages@v5
 
   # A release, for a tag vMAJOR.MINOR.PATCH once every other job has passed: weed
-  # built on AlmaLinux 10 on a runner of each architecture (release/dist.sh), tested
-  # there as the guide installs it, then the release on GitHub (README.txt, Releases)
+  # built on AlmaLinux 10 on a runner of each architecture (release/dist.sh), and its
+  # RPM (release/rpm.sh), which is tested there as the guide installs it, then the
+  # release on GitHub (README.txt, Releases)
   dist:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [test, build, vulncheck, fuzz, interop, systemd, docs]
@@ -169,7 +170,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: almalinux:10
     steps:
-      - run: dnf -y -q install gcc git-core tar gzip gawk # git first: checkout then clones
+      # git first: checkout then clones
+      - run: dnf -y -q install gcc git-core tar gzip gawk rpm-build systemd-rpm-macros
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # the tag, which gives weed its version
@@ -180,10 +182,13 @@ jobs:
       - run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           release/dist.sh
+          release/rpm.sh dist/weed-*-linux-${{ matrix.arch }}.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.arch }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.rpm
 
   # Podman, which the job container of dist has not
   dist-test:
@@ -204,10 +209,8 @@ jobs:
           path: dist
       - name: Podman
         run: command -v podman >/dev/null || { sudo apt-get -q update && sudo apt-get -q install -y podman; }
-      - name: The release's weed as the guide installs it (make test-systemd)
-        run: |
-          tar -xzf dist/weed-*-linux-${{ matrix.arch }}.tar.gz -C "$RUNNER_TEMP"
-          WEED=$(echo "$RUNNER_TEMP"/weed-*/weed) test/systemd/systemd.sh
+      - name: The release's RPM as the guide installs it (make test-systemd)
+        run: RPM=$(echo dist/weed-*.rpm) test/systemd/systemd.sh
 
   release:
     needs: dist-test
@@ -226,6 +229,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          (cd dist && sha256sum weed-*.tar.gz >SHA256SUMS && cat SHA256SUMS)
+          (cd dist && sha256sum weed-*.tar.gz weed-*.rpm >SHA256SUMS && cat SHA256SUMS)
           release/notes.sh "$TAG" >"$RUNNER_TEMP/notes.md"
           gh release create "$TAG" --verify-tag --title "weed $TAG" --notes-file "$RUNNER_TEMP/notes.md" dist/*

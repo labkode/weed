@@ -43,12 +43,12 @@ The accounts need search permission on /data and its parents. weed refuses root 
 weed serves HTTPS with the host certificate, and checks client certificates against the CAs, as other grid services do:
 
     /etc/grid-security/hostcert.pem
-    /etc/grid-security/hostkey.pem              (mode 0400)
+    /etc/grid-security/hostkey.pem              (group weed, mode 0440)
     /etc/grid-security/certificates/            the IGTF CAs (e.g. the ca-policy-egi-core
                                                 package), and their CRLs, kept current
                                                 by fetch-crl
 
-By default weed refuses certificates whose CA has no current CRL, so run fetch-crl regularly (its packages do) and see [Reloading](reloading.html#crls).
+weed runs as the account weed (see [Installation](installation.html#without-root)), which must read the key: `chgrp weed hostkey.pem && chmod 0440 hostkey.pem`, or give weed a copy of its own. By default weed refuses certificates whose CA has no current CRL, so run fetch-crl regularly (its packages do) and see [Reloading](reloading.html#crls).
 
 ### 3. The grid-mapfile
 
@@ -95,9 +95,9 @@ Only the certificates whose DN the grid-mapfile lists are accepted, as the accou
     enabled = true
     secret_key = "...the output of: openssl rand -hex 32..."
 
-The file holds a secret, so make it readable by root only: weed refuses a file with secrets that every user can read.
+The file holds a secret, so make it readable by root and the account weed only, as the RPM's is: weed refuses a file with secrets that every user can read.
 
-    # chmod 600 /etc/weed/weed.toml
+    # chgrp weed /etc/weed/weed.toml && chmod 640 /etc/weed/weed.toml
 
 The grid-mapfile is at its default path, /etc/grid-security/grid-mapfile. `tpc.ca_path` lets weed verify the other storage endpoints with the IGTF CAs, and macaroons let gfal2 and FTS hand out credentials for third-party copies. *weed config* prints every option, with its default and what it does; [Configuration options](options.html) lists them.
 
@@ -171,9 +171,10 @@ Each file belongs to the account that wrote it, and *ps* shows a worker for each
 
     $ ps -o user,pid,ppid,args -C weed
     USER         PID    PPID COMMAND
-    root          95       1 weed -config /etc/weed/weed.toml
-    alice        127      95 weed worker alice
-    cms001       166      95 weed worker cms001
+    weed          95       1 /usr/bin/weed -config /etc/weed/weed.toml
+    weed          98      95 weed starter -config /etc/weed/weed.toml
+    alice        127      98 weed worker alice
+    cms001       166      98 weed worker cms001
 
 A certificate that the grid-mapfile does not list gets 403, and the log says why:
 

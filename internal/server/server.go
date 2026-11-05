@@ -55,7 +55,7 @@ type Server struct {
 
 	limits  atomic.Pointer[limits.Limits] // what accounts are allowed, replaced on reload
 	cgroups bool                          // the workers of each account have a cgroup
-	moved   chan error                    // the exported directory is out of reach (see Run)
+	lost    chan error                    // the starter of workers has gone (see Run)
 	// unmounted is set while the storage of the exported directory is not mounted
 	// (see worker.UnmountedError): requests get 503
 	unmounted atomic.Pointer[unmounted]
@@ -518,18 +518,10 @@ func (s *Server) SetupTLS() (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
-// ErrRestart is returned by Run when weed must be started again: confined with
-// Landlock to the exported directory as it was, it no longer reaches it
-var ErrRestart = errors.New("weed exits, to be started again")
-
-// RestartStatus is weed's exit status after ErrRestart (EX_TEMPFAIL), on which
-// supervisors start it again (systemd: Restart=on-failure)
-const RestartStatus = 75
-
 // Run serves until ctx is cancelled, then shuts down gracefully: new connections are
 // refused, in-flight requests get shutdownGrace to finish, and whatever is still
 // running after that (e.g. long third-party copies) is cancelled. It does so too,
-// returning ErrRestart, once the exported directory is out of its reach.
+// returning why, once the starter of workers has gone: workers no longer start.
 func (s *Server) Run(ctx context.Context) error {
 	address := fmt.Sprintf("%s:%d", s.Config.Address, s.Config.Port)
 	mux := s.SetupRoutes()
@@ -647,14 +639,13 @@ func (s *Server) Run(ctx context.Context) error {
 		}()
 	}
 
-	var restart error
+	var lost error
 	select {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-	case restart = <-s.moved:
-		slog.Warn("weed exits, to be started again by its supervisor, confined to the exported directory as it now is",
-			"status", RestartStatus, "error", restart)
+	case lost = <-s.lost:
+		slog.Error("weed exits: workers no longer start", "error", lost)
 	}
 
 	systemd.Stopping()
@@ -667,10 +658,7 @@ func (s *Server) Run(ctx context.Context) error {
 		s.server.Close()
 	}
 	s.Close()
-	if restart != nil {
-		return fmt.Errorf("%w: %w", ErrRestart, restart)
-	}
-	return nil
+	return lost
 }
 
 // passedListeners are the sockets that systemd passed (socket activation), by port

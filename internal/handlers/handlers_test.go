@@ -1,9 +1,16 @@
 package handlers
 
 import (
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/labkode/weed/internal/config"
 )
 
 func TestParseISODuration(t *testing.T) {
@@ -75,5 +82,40 @@ func TestPutPreconditions(t *testing.T) {
 		if got := putPreconditionsHold(r, c.exists, etag); got != c.want {
 			t.Errorf("%s: %s (exists=%v) = %v, want %v", c.header, c.value, c.exists, got, c.want)
 		}
+	}
+}
+
+// removingReader removes dir once its reader has given all it has
+type removingReader struct {
+	io.Reader
+	dir string
+}
+
+func (r *removingReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if err == io.EOF {
+		os.RemoveAll(r.dir)
+	}
+	return n, err
+}
+
+func (*removingReader) Close() error { return nil }
+
+// An upload whose collection is removed while it is written gets 409, as one into a
+// collection that does not exist does: a conflict between requests, which weed logs
+// as a warning, not a failure of the storage (500)
+func TestPutIntoRemovedCollection(t *testing.T) {
+	root := t.TempDir()
+	os.Mkdir(filepath.Join(root, "d"), 0o755)
+	h := NewWebDAVHandler(root, &config.Config{WorkerMaxStorageCalls: 8}, nil)
+	r := httptest.NewRequest("PUT", "/webdav/d/f", nil)
+	r.Body = &removingReader{Reader: strings.NewReader("late"), dir: filepath.Join(root, "d")}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("%d %s, want 409", w.Code, w.Body)
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 0 {
+		t.Errorf("left behind: %v", entries)
 	}
 }

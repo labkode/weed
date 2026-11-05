@@ -118,7 +118,7 @@ restart_pending
 :   why a restart would change what runs, by reason: config, binary. Empty when nothing would change.
 
 storage_unmounted
-:   since when the storage that the exported directory was on when weed started is not mounted, absent while it is: requests get 503 (see [Installation](installation.html#mounted)).
+:   since when the storage that the exported directory was on is not mounted, absent while it is: requests get 503 (see [Installation](installation.html#mounted)).
 
 workers
 :   each worker: its account, its pid, since when it runs, and how many requests weed waits for it to answer. A retired worker finishes its requests and takes no new ones, e.g. after its account's groups changed. blocked_threads are the worker's threads that wait in the kernel, uninterruptibly: for a moment while they read or write files, and for long when its storage does not answer, also once their clients have gone (see [Troubleshooting](troubleshooting.html#hung-storage)).

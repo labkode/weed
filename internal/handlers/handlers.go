@@ -437,6 +437,13 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request, tree *
 	} else if err == nil {
 		err = af.Commit()
 	}
+	if errors.Is(err, fs.ErrNotExist) {
+		// Its collection was removed (DELETE, MOVE) while it was being written, with
+		// the temporary file in it: a conflict between requests, not a fault of weed
+		slog.WarnContext(ctx, "upload's collection removed while it was written", "path", r.URL.Path, "error", err)
+		http.Error(w, "The parent collection was removed during the upload", http.StatusConflict)
+		return
+	}
 	if err != nil {
 		slog.ErrorContext(ctx, "cannot store an upload", "path", r.URL.Path, "error", err)
 		http.Error(w, "Failed to store file", http.StatusInternalServerError)

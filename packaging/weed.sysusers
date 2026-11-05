@@ -1,0 +1,2 @@
+# The account that weed runs as (weed.service)
+u weed - "weed WebDAV server" /var/lib/weed /usr/sbin/nologin

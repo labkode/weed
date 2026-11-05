@@ -132,7 +132,7 @@ func (c *Config) sections() []section {
 			{"marker_interval", "interval between performance markers", &c.TPCMarkerInterval},
 			{"stall_timeout", `abort a copy that transfers no data for this long ("0s" disables)`, &c.TPCStallTimeout},
 		}},
-		{"unix_users", "Unix accounts: every request accesses files as the Unix account its credentials map to (anonymous ones: nobody), from a worker process running as that account; an identity without an account gets 403. weed runs on Linux, as root (or with CAP_SETUID and CAP_SETGID)", []option{
+		{"unix_users", "Unix accounts: every request accesses files as the Unix account its credentials map to (anonymous ones: nobody), from a worker process running as that account; an identity without an account gets 403. weed runs on Linux, as root, or as an account of its own with CAP_SETUID, CAP_SETGID and CAP_KILL", []option{
 			{"idle_timeout", "stop the worker process of an account once it has served no request for this long", &c.WorkerIdleTimeout},
 			{"max_workers", "at most this many worker processes take requests; once they are all busy, requests of other accounts get 503", &c.MaxWorkers},
 			{"max_requests", "at most this many requests in progress in each worker process, counted until the worker has finished them, also once their clients have gone; beyond, requests of its account get 503", &c.WorkerMaxRequests},
@@ -306,6 +306,9 @@ const usage = `usage: weed [-config weed.toml]
                       check that weed would start with a configuration, without serving
        weed version   print the version, commit and build of weed
        weed config    print a configuration file with every option and its default
+       weed limits [-config weed.toml] [-dir DIR]
+                      what weed can serve on this machine, and the settings of weed,
+                      systemd and the kernel that would let it serve more (root)
        weed utils     helpers for passwords, app tokens and certificates, and
                       ban, unban and bans for the running weed
 
@@ -313,7 +316,7 @@ Options are set in the configuration file. Without one, weed serves the current
 directory at http://127.0.0.1:9000/webdav/ to local clients, without authentication,
 as the Unix account nobody, and its metrics, status and dashboard at
 http://127.0.0.1:9000/metrics, /status and /dashboard/. weed runs on Linux,
-as root.
+as root, or as an account of its own with CAP_SETUID, CAP_SETGID and CAP_KILL.
 `
 
 // ErrUsage is returned for a command line that the usage has been printed for

@@ -750,8 +750,9 @@ func TestWorkersShareTPCLimit(t *testing.T) {
 	}
 }
 
-// weed may run as an unprivileged account with only CAP_SETUID and CAP_SETGID, as
-// systemd's AmbientCapabilities= gives them; its workers must not inherit them
+// weed may run as an unprivileged account with only CAP_SETUID, CAP_SETGID and
+// CAP_KILL, as systemd's AmbientCapabilities= gives them; its workers must not inherit
+// them
 func TestWorkersOfUnprivilegedFront(t *testing.T) {
 	if os.Getenv("WEED_TEST_FRONT") == "" {
 		if os.Geteuid() != 0 {
@@ -762,7 +763,7 @@ func TestWorkersOfUnprivilegedFront(t *testing.T) {
 		cmd.Env = append(os.Environ(), "WEED_TEST_FRONT=1")
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Credential:  &syscall.Credential{Uid: 6009, Gid: 6009, Groups: []uint32{6009}},
-			AmbientCaps: []uintptr{unix.CAP_SETUID, unix.CAP_SETGID},
+			AmbientCaps: []uintptr{unix.CAP_SETUID, unix.CAP_SETGID, unix.CAP_KILL},
 		}
 		out, err := cmd.CombinedOutput()
 		if err != nil || !strings.Contains(string(out), "--- PASS: TestWorkersOfUnprivilegedFront") {
@@ -771,7 +772,7 @@ func TestWorkersOfUnprivilegedFront(t *testing.T) {
 		return
 	}
 
-	if status := procStatus(os.Getpid()); status["Uid"] != "6009\t6009\t6009\t6009" || status["CapAmb"] != "00000000000000c0" {
+	if status := procStatus(os.Getpid()); status["Uid"] != "6009\t6009\t6009\t6009" || status["CapAmb"] != "00000000000000e0" {
 		t.Fatalf("not running as intended: uid %q, ambient capabilities %q", status["Uid"], status["CapAmb"])
 	}
 	n := newWorkerNode(t, nil)
@@ -814,7 +815,7 @@ func TestUnprivilegedFront(t *testing.T) {
 		return
 	}
 	err := New(&config.Config{Directory: t.TempDir()}).Initialize()
-	if err == nil || strings.Count(err.Error(), "weed must run as root, or with CAP_SETUID and CAP_SETGID") != 1 {
+	if err == nil || strings.Count(err.Error(), "weed must run as root, or with the capabilities CAP_SETUID, CAP_SETGID and CAP_KILL") != 1 {
 		t.Errorf("starting without privileges: %v", err)
 	}
 }

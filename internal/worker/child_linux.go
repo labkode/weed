@@ -51,8 +51,9 @@ type Child struct {
 }
 
 // Attach takes over the control socket that the front process passed as file
-// descriptor 3, reads the settings and checks that every thread of the process runs
-// as the account and with no privileges
+// descriptor 3, reads the settings that the process that started it (see launcher)
+// passed as file descriptor 4, and checks that every thread of the process runs as
+// the account and with no privileges
 func Attach() (*Child, error) {
 	f := os.NewFile(3, "control")
 	c, err := net.FileConn(f)
@@ -65,13 +66,14 @@ func Attach() (*Child, error) {
 		c.Close()
 		return nil, errors.New("weed worker is started by weed, not by hand")
 	}
-	buf := make([]byte, maxMessage)
-	n, err := ctl.Read(buf)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read the settings: %w", err)
-	}
 	child := &Child{ctl: ctl}
-	if err := json.Unmarshal(buf[:n], &child.Settings); err != nil {
+	settings := os.NewFile(4, "settings")
+	b, err := io.ReadAll(io.LimitReader(settings, maxMessage))
+	settings.Close()
+	if err != nil {
+		return nil, child.Fail(fmt.Errorf("cannot read the settings: %w", err))
+	}
+	if err := json.Unmarshal(b, &child.Settings); err != nil {
 		return nil, child.Fail(fmt.Errorf("invalid settings: %w", err))
 	}
 	if err := checkConfinement(&child.Settings.User); err != nil {
@@ -83,7 +85,7 @@ func Attach() (*Child, error) {
 		return nil, child.Fail(errors.New("refusing to serve: started to be confined with Landlock, and is not"))
 	}
 	// Nor may it open other sockets than its own (see sockets)
-	if s := sockets(&child.Settings.Config); !seccomp.Filtered(s) {
+	if s := Sockets(&child.Settings.Config); !seccomp.Filtered(s) {
 		return nil, child.Fail(fmt.Errorf("refusing to serve: started to open %s sockets alone (seccomp), and opens others", s))
 	}
 	// It opens every file with openat2, through no symbolic link (see davfs)

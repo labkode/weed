@@ -1,0 +1,35 @@
+# weed's configuration. "weed config" prints every option, with its default; the
+# guide is in /usr/share/doc/weed/guide/ and at https://labkode.github.io/weed/.
+#
+# weed runs as the account weed (weed.service), which must be able to read this
+# file and every file it names: the files of /etc/weed belong to its group. As it
+# is, weed serves /srv/weed to this machine alone, on port 8080, to the users of
+# /etc/weed/.htpasswd: add one with
+#
+#     cd /etc/weed && weed utils password alice 'her password'
+#
+# then "systemctl reload weed". Each user reaches what their Unix account may, in
+# /srv/weed: mkdir /srv/weed/alice && chown alice: /srv/weed/alice
+#
+# In production, serve HTTPS on port 443 to every interface: set address = "",
+# port = 443, and enable [tls] with the host certificate and key, which the
+# account weed must be able to read (chgrp weed hostkey.pem; chmod 0640
+# hostkey.pem). Then X.509 client certificates ([x509]), tokens ([tokens]), and
+# third-party copies ([tpc]), as "weed config" shows.
+
+[server]
+address = "127.0.0.1"
+port = 8080
+dir = "/srv/weed"
+# /metrics, /status and a dashboard, without authentication: keep it local
+metrics_address = "127.0.0.1:9100"
+
+[basic]
+enabled = true
+htpasswd = "/etc/weed/.htpasswd"
+app_tokens = "/etc/weed/.app-tokens"
+
+[unix_users]
+# A cgroup for the workers of each account, which systemd shows (weed.service
+# has Delegate=yes)
+cgroups = true

@@ -2,11 +2,46 @@
 title: 'Installation'
 ---
 
-weed is a single binary, without runtime dependencies. You download a release, or build it from source with Go, install it, and run it as a systemd service, or under another supervisor (see [Without systemd](#without-systemd)).
+weed is a single binary, without runtime dependencies. On AlmaLinux, Rocky Linux or RHEL 10 and later, install its RPM, which sets it up as this page does ([The RPM](#rpm)). Elsewhere, download a release or build it from source with Go, install it, and run it as a systemd service, or under another supervisor (see [Without systemd](#without-systemd)).
+
+## The RPM {#rpm}
+
+Each release on [GitHub](https://github.com/labkode/weed/releases) has an RPM for EL10 (AlmaLinux, Rocky Linux, RHEL 10 and later), for x86_64 and aarch64:
+
+    # v=1.2.0
+    # dnf install https://github.com/labkode/weed/releases/download/v$v/weed-$v-1.el10.x86_64.rpm
+
+| It installs | What |
+|----|----|
+| /usr/bin/weed | weed, the release's (below) |
+| /usr/lib/systemd/system/weed.service | [the unit](#systemd), which runs weed as the account weed |
+| /usr/lib/sysusers.d/weed.conf | the account weed and its group, which the RPM makes |
+| /usr/lib/sysctl.d/60-weed.conf | net.core.wmem_max and rmem_max of 1 MiB, which the RPM applies (see [Performance](performance.html#socket-buffers)) |
+| /etc/weed/weed.toml | a configuration that serves /srv/weed on 127.0.0.1:8080 to the users of /etc/weed/.htpasswd, and the metrics on 127.0.0.1:9100; root:weed, 0640 |
+| /etc/weed/.htpasswd, .app-tokens | empty: no one logs in yet; root:weed, 0640 |
+| /srv/weed | the exported directory |
+| /usr/share/doc/weed/ | README.txt, CHANGELOG.md, and this guide (guide/) |
+
+It neither enables nor starts weed. Add a user, give them a directory, and start weed:
+
+    # cd /etc/weed && weed utils password alice 'her password'
+    # mkdir /srv/weed/alice && chown alice: /srv/weed/alice
+    # systemctl enable --now weed
+    $ curl -u alice -T notes.txt http://127.0.0.1:8080/webdav/alice/notes.txt
+
+Then set it up for production in /etc/weed/weed.toml, as the file says: HTTPS on port 443 to every interface, X.509 certificates or tokens (see [Getting started](getting-started.html) and [Configuration](configuration.html)). The account weed must be able to read every file that the configuration names, the host key included (`chgrp weed hostkey.pem && chmod 0640 hostkey.pem`). Change the unit with a drop-in (*systemctl edit weed*), not in /usr/lib: an upgrade replaces the unit, and keeps the files of /etc/weed that you changed.
+
+An upgrade does not restart weed: check the configuration with the new version, then restart it (see [Upgrading](upgrading.html)):
+
+    # dnf upgrade https://github.com/labkode/weed/releases/download/v1.3.0/weed-1.3.0-1.el10.x86_64.rpm
+    # weed check -config /etc/weed/weed.toml
+    # systemctl restart weed
+
+Removing the RPM stops weed. It leaves the account weed, /srv/weed, and what weed wrote in /var/lib/weed and /var/log/weed; the files of /etc/weed that you changed are kept as .rpmsave.
 
 ## Releases {#releases}
 
-Each release on [GitHub](https://github.com/labkode/weed/releases) has an archive for linux/amd64 and one for linux/arm64, with weed, README.txt, CHANGELOG.md, LICENSE and this guide (guide/), and SHA256SUMS:
+Each release on [GitHub](https://github.com/labkode/weed/releases) has an archive for linux/amd64 and one for linux/arm64, with weed, README.txt, CHANGELOG.md, LICENSE and this guide (guide/), the RPMs (above), and SHA256SUMS of them all:
 
     $ v=v1.2.0
     $ curl -fLO https://github.com/labkode/weed/releases/download/$v/weed-$v-linux-amd64.tar.gz
@@ -16,7 +51,7 @@ Each release on [GitHub](https://github.com/labkode/weed/releases) has an archiv
     $ tar -xzf weed-$v-linux-amd64.tar.gz
     $ weed-$v-linux-amd64/weed version
 
-Its weed is built with cgo on AlmaLinux 10, which weed targets: it looks accounts up as the system does (see [Building](#building)). Read the release's [Changelog](changelog.html) section before installing it over another version (see [Upgrading](upgrading.html#versions)).
+Its weed, the RPM's too, is built with cgo on AlmaLinux 10, which weed targets: it looks accounts up as the system does (see [Building](#building)). Read the release's [Changelog](changelog.html) section before installing it over another version (see [Upgrading](upgrading.html#versions)).
 
 ## Building {#building}
 
@@ -37,7 +72,11 @@ How weed finds accounts depends on how it is built. With cgo (the default when a
 
 ## Installing
 
+Without the RPM, install weed, make the account that it runs as, and /etc/weed for its configuration, which that account may read:
+
     # install -m 0755 weed /usr/local/bin/weed
+    # useradd -r -U -d /var/lib/weed -s /usr/sbin/nologin weed
+    # install -d -m 0750 -g weed /etc/weed
 
 Keep the binary readable and executable by everyone (0755): the workers that run as the users are started from it.
 
@@ -45,22 +84,24 @@ weed reads and writes these, which [Files](files.html) lists in full:
 
 | Path | What |
 |----|----|
-| /etc/weed/weed.toml | the configuration file; mode 0600 if it holds secrets, which weed requires |
+| /etc/weed/weed.toml | the configuration file, root:weed 0640; weed refuses one that others may read if it holds secrets |
 | /etc/weed/issuers.json | the token issuers, if you accept tokens |
 | /etc/grid-security/ | the host certificate and key, the CA certificates and CRLs, the grid-mapfile |
 | /run/weed/admin.sock | the control plane's socket, which weed creates (see [Banning users](banning.html)) |
 | /var/lib/weed/bans.json | the banned users, written by weed at the first ban |
 
-Create /etc/weed. weed creates /run/weed and /var/lib/weed when it needs them.
+The unit (below) makes /run/weed, /var/lib/weed and /var/log/weed for the account weed. Raise the socket buffers that weed may ask for to 1 MiB, or downloads lose a third of their speed (see [Performance](performance.html#socket-buffers)):
 
-    # mkdir -m 0755 /etc/weed
+    # printf 'net.core.wmem_max = 1048576\nnet.core.rmem_max = 1048576\n' >/etc/sysctl.d/60-weed.conf
+    # sysctl --system
 
 ## The systemd service {#systemd}
 
-weed is a notify service: it tells systemd when it is ready (once it listens), when it reloads and when it stops, and keeps its status line current. Write /etc/systemd/system/weed.service:
+weed is a notify service: it tells systemd when it is ready (once it listens), when it reloads and when it stops, and keeps its status line current. It runs as the account weed, with the capabilities that starting workers as other accounts needs (see [The account weed](#without-root)). Write /etc/systemd/system/weed.service, the RPM's unit:
 
     [Unit]
     Description=weed WebDAV server
+    Documentation=https://labkode.github.io/weed/
     After=network-online.target remote-fs.target
     Wants=network-online.target
     # Restart= for ever, not 5 times in 10 seconds and then never again
@@ -71,8 +112,8 @@ weed is a notify service: it tells systemd when it is ready (once it listens), w
     Type=notify-reload
     ExecStartPre=/usr/local/bin/weed check -config /etc/weed/weed.toml
     ExecStart=/usr/local/bin/weed -config /etc/weed/weed.toml
-    # After a crash, and when weed exits to start again (status 75): in 2 seconds, and
-    # up to a minute apart while it keeps failing (RestartSteps=: systemd 254)
+    # After a crash: in 2 seconds, and up to a minute apart while it keeps failing
+    # (RestartSteps=: systemd 254)
     Restart=on-failure
     RestartSec=2s
     RestartSteps=5
@@ -83,8 +124,39 @@ weed is a notify service: it tells systemd when it is ready (once it listens), w
     # systemd's default can be fewer than its workers hold when the storage hangs
     # (see Performance)
     TasksMax=infinity
-    # /var/log/weed, for server.log_file (see Logging)
+    # A cgroup for the workers of each account (unix_users.cgroups)
+    Delegate=yes
+    # weed runs as an account of its own. The starter of its workers keeps CAP_SETUID,
+    # CAP_SETGID and CAP_KILL, to start them as their accounts and to kill them; weed
+    # itself keeps CAP_NET_BIND_SERVICE alone, for ports below 1024
+    User=weed
+    Group=weed
+    AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL CAP_NET_BIND_SERVICE
+    CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL CAP_NET_BIND_SERVICE
+    # /run/weed for admin.socket, /var/lib/weed for admin.bans, /var/log/weed for
+    # server.log_file (see Logging)
+    RuntimeDirectory=weed
+    RuntimeDirectoryMode=0700
+    StateDirectory=weed
+    StateDirectoryMode=0700
     LogsDirectory=weed
+    LogsDirectoryMode=0750
+    # Sandboxing, beyond Landlock and seccomp, which weed applies itself
+    ProtectSystem=full
+    PrivateTmp=yes
+    ProtectKernelTunables=yes
+    ProtectKernelModules=yes
+    ProtectKernelLogs=yes
+    ProtectClock=yes
+    ProtectHostname=yes
+    RestrictRealtime=yes
+    # Not RestrictSUIDSGID= nor RestrictNamespaces=: their seccomp filters refuse
+    # openat2(2), which workers open files with, and clone3(2), which starts each in its
+    # cgroup
+    LockPersonality=yes
+    MemoryDenyWriteExecute=yes
+    SystemCallArchitectures=native
+    RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 
     [Install]
     WantedBy=multi-user.target
@@ -105,38 +177,36 @@ If weed cannot start, the journal says why, also when weed logs to a file (`serv
 
 On stop, weed stops taking connections, and gives the requests in progress 30 seconds to finish (so do the workers). Transfers still running after that are cancelled; an upload that is cancelled never replaces a file.
 
-weed starts again on its own: after a crash, and after it exited because a storage was mounted over the exported directory (below). While it keeps failing to start, such as while its storage is not mounted (`require_mount`, below), systemd tries again ever less often, every minute at last, and never gives up. With OOMPolicy=continue, a worker that the kernel kills for its memory is one that weed starts again at the account's next request, and the other accounts do not notice; without it, systemd would stop weed as a whole (its default, except with Delegate=yes). Limit the memory of each account (`memory.max` in `unix_users.cgroup_limits`, see [Limits per account](limits.html)): an account that reaches it has its worker killed within its own cgroup, never weed's own process.
+weed starts again on its own after a crash. While it keeps failing to start, such as while its storage is not mounted (`require_mount`, below), systemd tries again ever less often, every minute at last, and never gives up. With OOMPolicy=continue, a worker that the kernel kills for its memory is one that weed starts again at the account's next request, and the other accounts do not notice; without it, systemd would stop weed as a whole (its default, except with Delegate=yes). Limit the memory of each account (`memory.max` in `unix_users.cgroup_limits`, see [Limits per account](limits.html)): an account that reaches it has its worker killed within its own cgroup, never weed's own process.
 
-Add `Delegate=yes` to \[Service\] if you run each worker in a cgroup of its own (`unix_users.cgroups`, see [Unix accounts](unix-accounts.html#cgroups)).
+`Delegate=yes` gives weed its cgroup, so that each account's workers may run in a cgroup of their own (`unix_users.cgroups`, see [Unix accounts](unix-accounts.html#cgroups)).
 
 ### Sandboxing {#sandboxing}
 
-systemd can confine weed and its workers together, beyond what weed does for workers (see [Unix accounts](unix-accounts.html#confinement)), so also the process that terminates TLS and authenticates requests, as root. For instance, in \[Service\]:
+The unit confines weed and its workers together, beyond what weed does itself (see [Unix accounts](unix-accounts.html#confinement)): /usr, /boot and /etc read-only, a /tmp of their own, no kernel tunables, modules or logs, no memory both writable and executable, and sockets of the families that weed opens alone. Unless the exported directory is below /home, confine them further with a drop-in (*systemctl edit weed*). For instance, in \[Service\]:
 
-    # All read-only, but /dev, /proc, /sys, and RuntimeDirectory= and StateDirectory=
+    # All read-only, but /dev, /proc, /sys, and the directories of RuntimeDirectory=,
+    # StateDirectory= and LogsDirectory=
     ProtectSystem=strict
-    # /run/weed for admin.socket, /var/lib/weed for admin.bans
-    RuntimeDirectory=weed
-    StateDirectory=weed
-    # The exported directory (/var/log/weed, of LogsDirectory=, is writable too)
+    # The exported directory
     ReadWritePaths=/data
     # Unless the exported directory is below /home
     ProtectHome=yes
-    PrivateTmp=yes
 
-weed confines itself with Landlock as well (see [Unix accounts](unix-accounts.html#process)). ReadWritePaths= makes writable what /data is as weed starts, as Landlock does: weed starts again when it changes (below).
+weed confines itself with Landlock as well, and each worker to the exported directory (see [Unix accounts](unix-accounts.html#process)). A storage mounted at /data after weed started is writable, as it is mounted.
 
 ### A storage mounted at the exported directory {#mounted}
 
-weed is confined to the exported directory as it was when weed started (see [Unix accounts](unix-accounts.html#process)), and looks at it every 5 seconds:
+Each worker is confined to the exported directory as it was when the worker started (see [Unix accounts](unix-accounts.html#mounted)), and weed looks at the directory every 5 seconds:
 
-- When the storage that the directory was on is no longer mounted, so that the directory is on the file system of / again, or gone (a storage mounted above it), weed blocks. Requests get 503, /healthz too, and weed never serves the directory beneath: uploads there would fill the root file system, and be hidden once the storage is back. weed goes on running: `systemctl status weed` says since when it is blocked, /status has `storage_unmounted`, and the metric `weed_storage_unmounted` is 1 (see [Metrics](metrics.html)).
-- When a storage is mounted over the directory or in its place, a remount, the storage mounted again after it was lost, or one mounted after weed started, weed lets the requests in progress finish (30 seconds at most), and exits with status 75. systemd starts it again (Restart=on-failure), confined to what is there then; meanwhile, requests get 503.
+- When the storage that the directory was on, at startup or mounted since, is no longer mounted, so that the directory is on the file system of / again, or gone (a storage mounted above it), weed blocks. Requests get 503, /healthz too, and weed never serves the directory beneath: uploads there would fill the root file system, and be hidden once the storage is back. weed goes on running: `systemctl status weed` says since when it is blocked, /status has `storage_unmounted`, and the metric `weed_storage_unmounted` is 1 (see [Metrics](metrics.html)).
+- When a storage is mounted over the directory or in its place, a remount, the storage mounted again after it was lost, or one mounted after weed started, weed replaces its workers: those confined to the directory as it was finish their requests and stop, and the next requests get workers confined to what is there now.
 
-A storage that comes back thus needs no one: weed serves it again within seconds.
+A storage that comes back thus needs no one: weed serves it again within seconds, without restarting.
 
-    level=ERROR msg="the storage of the exported directory is no longer mounted: workers do not start, until it is again" error="the storage that the exported directory /data was on when weed started is no longer mounted: ..."
-    level=WARN msg="weed exits, to be started again by its supervisor, confined to the exported directory as it now is" status=75 error="weed may no longer open the exported directory /data, a storage mounted over it or in its place since weed started: ..."
+    level=ERROR msg="the storage of the exported directory is no longer mounted: workers do not start, until it is again" error="the storage that the exported directory /data was on is no longer mounted: ..."
+    level=INFO msg="the storage of the exported directory is mounted again: workers start" dir=/data
+    level=INFO msg="the exported directory has changed since the worker started (mounted again?): replacing the worker" worker=alice/1630 dir=/data
 
 weed knows that there was a storage only while it runs. One that starts while the storage is not mounted, after a boot where the mount failed, a crash, or `systemctl restart`, serves the directory beneath. If the exported directory is on a storage of its own, mounted at it or above it (NFS, a file system of its own), set `require_mount`, which refuses to serve it from the file system of /:
 
@@ -148,7 +218,7 @@ weed then does not start while the storage is not mounted, and starts once it is
 
 ### Socket activation {#socket-activation}
 
-With a socket unit, systemd listens on weed's ports and passes the sockets to weed: while weed restarts, after a crash, a remount or an upgrade, clients wait in the queue instead of being refused, and weed binds no port (as an account of its own, it needs no CAP_NET_BIND_SERVICE). Write /etc/systemd/system/weed.socket, with the ports of `server.port` and `server.metrics_address`:
+With a socket unit, systemd listens on weed's ports and passes the sockets to weed: while weed restarts, after a crash or an upgrade, clients wait in the queue instead of being refused, and weed binds no port, so it keeps no capability (CAP_NET_BIND_SERVICE). Write /etc/systemd/system/weed.socket, with the ports of `server.port` and `server.metrics_address`:
 
     [Unit]
     Description=weed WebDAV server's sockets
@@ -172,9 +242,19 @@ weed takes the socket of each of its ports, by port, and listens itself on any t
 
 systemd starts weed at the first connection if it does not run: *systemctl stop weed.socket weed* stops both.
 
+### As root {#root}
+
+weed needs no root (see [The account weed](#without-root)). Where the account weed cannot be given what weed reads, such as a host key that must stay root's alone, run it as root, with a drop-in (*systemctl edit weed*):
+
+    [Service]
+    User=root
+    Group=root
+
+weed then gives up root's capabilities as it starts, as it does those of the account weed: its starter of workers keeps CAP_SETUID, CAP_SETGID and CAP_KILL, and weed itself none. As root, it owns root's files, but reaches only what Landlock lets it.
+
 ### Testing the service {#test-systemd}
 
-*make test-systemd* runs weed as this page installs it, in an AlmaLinux 10 container that boots systemd (Podman): the units above with the sandboxing and `Delegate=yes`, as root, and then as an account of its own (below). It checks that weed serves uploads, downloads and third-party copies, reloads, bans, restarts after a crash, and stops with its workers; that weed may write only what the sandboxing allows; that it starts again on its own when a storage is mounted over the exported directory; that it blocks while its storage is unmounted, writing nothing beneath, and serves it again once it is mounted; that with `require_mount` it does not start while the storage is not mounted; that a worker killed for its memory leaves weed serving; and that with weed.socket, a restart refuses no connection. Try other directives with *weed check* and a few requests of each kind, uploads and third-party copies included.
+*make test-systemd* builds the RPM, and runs weed as it installs it, in an AlmaLinux 10 container that boots systemd (Podman): the unit above as the account weed, with the sandboxing of the drop-in above and `unix_users.cgroups`, then as root. It checks that the RPM makes the account, its files and the unit of this page; that weed serves uploads, downloads and third-party copies, reloads, bans, restarts after a crash, and stops with its workers; that weed has no capabilities and its starter only its three; that a ban stops the user's workers at once; that weed may write only what the sandboxing allows; that a storage mounted over the exported directory is served by the same weed; that it blocks while its storage is unmounted, writing nothing beneath, and serves it again once it is mounted; that with `require_mount` it does not start while the storage is not mounted; that a worker killed for its memory leaves weed serving; and that with weed.socket, a restart refuses no connection. Try other directives with *weed check* and a few requests of each kind, uploads and third-party copies included.
 
 ## Without systemd {#without-systemd}
 
@@ -185,7 +265,9 @@ weed does not need systemd: it is a process that serves in the foreground, which
 | `Type=notify-reload`: systemd knows when weed is ready, reloading, stopping | weed tells systemd only when NOTIFY_SOCKET is set. Elsewhere, wait for /healthz to answer 200. |
 | `systemctl reload` | SIGHUP: weed reopens its log file and reloads its credentials. |
 | `systemctl stop` | SIGTERM or SIGINT: weed stops taking requests, and waits up to 30 seconds for those in progress. |
-| `Restart=on-failure` | Start weed again when it exits with a status other than 0: 75 when a storage was mounted over the exported directory, so that it is confined to the directory as it now is. |
+| `Restart=on-failure` | Start weed again when it exits with a status other than 0. |
+| `User=weed`, `AmbientCapabilities=` | Run weed as root, or as an account of its own with CAP_SETUID, CAP_SETGID and CAP_KILL in its ambient set (and CAP_NET_BIND_SERVICE for a port below 1024): `setpriv --reuid=weed --regid=weed --init-groups --inh-caps=+setuid,+setgid,+kill --ambient-caps=+setuid,+setgid,+kill weed ...`. |
+| /usr/lib/sysctl.d/60-weed.conf | Set net.core.wmem_max and rmem_max to 1048576 (see [Performance](performance.html#socket-buffers)). |
 | weed.socket | weed listens on its ports itself. Supervisors that pass sockets as systemd does (LISTEN_FDS) work too. |
 | The journal, `LogsDirectory=` | weed logs to standard error, or to `server.log_file`, which keeps every record: the journal drops those beyond its rate limit (see [Logging](logging.html#file)). |
 | `ExecStartPre=weed check` | Run *weed check* before starting weed. |
@@ -194,20 +276,20 @@ weed does not need systemd: it is a process that serves in the foreground, which
 
 *make interop* runs weed that way, started from a script in a container.
 
-## Running without root {#without-root}
+## The account weed {#without-root}
 
-weed needs root only to start workers as other accounts. It can run as an account of its own with the CAP_SETUID and CAP_SETGID capabilities, and CAP_NET_BIND_SERVICE for port 443 unless systemd listens on it ([socket activation](#socket-activation)). Its workers get none of them. Add to \[Service\]:
+weed needs root only to start workers as other accounts, and it does not keep it. The unit runs it as the account weed, with three capabilities, in its ambient set so that weed keeps them as it executes:
 
     User=weed
-    AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE
-    RuntimeDirectory=weed
-    RuntimeDirectoryMode=0700
-    StateDirectory=weed
-    StateDirectoryMode=0700
+    Group=weed
+    AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL CAP_NET_BIND_SERVICE
+    CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL CAP_NET_BIND_SERVICE
 
-RuntimeDirectory and StateDirectory create /run/weed and /var/lib/weed for that account, as LogsDirectory, in the unit, does /var/log/weed. The account must be able to read the configuration file and every file it names, the host key included. Raise net.core.wmem_max and rmem_max as well, or downloads lose a third (see [Performance](performance.html#socket-buffers)). Without the capabilities, weed does not start:
+As it starts, weed starts a process of its own, the starter of workers, which keeps CAP_SETUID and CAP_SETGID, to start workers as their accounts, and CAP_KILL, to stop them; weed itself gives them up, and keeps CAP_NET_BIND_SERVICE alone, if it listens on a port below 1024 ([socket activation](#socket-activation) needs none). Workers get none (see [Unix accounts](unix-accounts.html#process)). The starter can become any account, root too: it is as trusted as root, but it reads no request.
 
-    level=ERROR msg="cannot start" error="cannot start the worker processes, which access files as Unix accounts: cannot start a worker for nobody: fork/exec /proc/self/exe: operation not permitted (weed must run as root, or with CAP_SETUID and CAP_SETGID)"
+RuntimeDirectory, StateDirectory and LogsDirectory make /run/weed, /var/lib/weed and /var/log/weed for the account. It must be able to read the configuration file and every file that it names, the host key included. Without the capabilities, weed does not start:
+
+    level=ERROR msg="cannot start" error="cannot start the worker processes, which access files as Unix accounts: weed must run as root, or with the capabilities CAP_SETUID, CAP_SETGID and CAP_KILL (systemd: AmbientCapabilities=)"
 
 ## Network
 

@@ -8,13 +8,15 @@ page), macaroons or passwords.
 
 Every request accesses files as the Unix account that its credentials map to, from a
 worker process running as that account (see Unix accounts), so weed serves on Linux,
-and runs as root. It targets AlmaLinux 10 (EL10), which its tests run on; weed and
-its helpers (weed utils) build and run on Linux alone. weed does not need systemd:
-any supervisor runs it, SIGHUP reloads it, SIGTERM stops it, and it exits with status
-75 to be started again (see the guide's Installation, Without systemd). Releases, on
+as root or as an account of its own with CAP_SETUID, CAP_SETGID and CAP_KILL, and
+keeps none of it once started. It targets AlmaLinux 10 (EL10), which its tests run
+on; weed and its helpers (weed utils) build and run on Linux alone. weed does not
+need systemd: any supervisor runs it, SIGHUP reloads it, SIGTERM stops it (see the
+guide's Installation, Without systemd). Releases, on
 https://github.com/labkode/weed/releases, have weed for linux/amd64 and linux/arm64,
-and CHANGELOG.md what each version changed, incompatible changes first (see
-Releases).
+an RPM for EL10 that installs it as a systemd service running as the account weed
+(packaging/), and CHANGELOG.md what each version changed, incompatible changes first
+(see Releases).
 
     go build && sudo ./weed
 
@@ -27,6 +29,7 @@ can), with its metrics, status and dashboard at http://127.0.0.1:9000/metrics,
     ./weed check -config weed.toml   would weed start with it? (see What runs)
     ./weed -config weed.toml
     ./weed version
+    sudo ./weed limits -config weed.toml   what can weed serve here? (see Tuning)
 
 Helpers:
 
@@ -383,26 +386,40 @@ so they trust the identity weed states in request headers (headers of the same n
 sent by clients are dropped). They report their metrics back to weed, which serves
 them; tpc.max_transfers bounds the copies of all accounts together.
 
-weed runs as root, which it needs to start workers as other accounts, and which the
-systemd unit in What runs does. Otherwise, it needs the CAP_SETUID and CAP_SETGID
-capabilities, or it does not start ("weed must run as root, ..."):
+Starting workers as other accounts needs root, or the capabilities CAP_SETUID and
+CAP_SETGID, and stopping them CAP_KILL; weed does not start without them ("weed must
+run as root, or with the capabilities ..."). The RPM's unit, packaging/weed.service,
+runs weed as the account weed with them:
 
     User=weed
-    AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_NET_BIND_SERVICE
+    AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL CAP_NET_BIND_SERVICE
+    CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL CAP_NET_BIND_SERVICE
     # for unix_users.cgroups
     Delegate=yes
-    # for admin.socket (see Banning users)
+    # admin.socket, admin.bans and server.log_file
     RuntimeDirectory=weed
-    # for admin.bans
     StateDirectory=weed
-    # for server.log_file (see Logging)
     LogsDirectory=weed
+
+weed keeps none of them (internal/worker/starter_linux.go). Before it reads a
+request, it starts its starter of workers, "weed starter" with weed's arguments, over
+a socket pair, from a thread that keeps CAP_SETUID, CAP_SETGID and CAP_KILL alone,
+with no_new_privs, and seccomp's filter of the workers. Then weed gives up its
+capabilities (but CAP_NET_BIND_SERVICE, for a port below 1024) and confines itself.
+The starter reads the configuration itself, and checks that its SHA-256 is weed's. It
+starts and kills the workers that weed asks for, messages of JSON with the worker's
+two sockets as SCM_RIGHTS: it looks the account up itself, and refuses root, and an
+account other than weed has it. It sends weed its log, and when the exported
+directory changes. It is not confined with Landlock, which it applies to each worker,
+so that it reaches the exported directory as storage comes and goes. If it exits,
+weed exits with status 1, and systemd starts both again.
 
 Downloads relayed from workers run at ~92% of the speed of serving files directly,
 and uploads at the same speed (Linux, 1 GiB files over loopback without TLS:
 ~5200 against ~5600 MB/s; WEED_BENCH_MIB=1024 make bench-workers measures it). That
-needs 1 MiB socket buffers, which root gets; as another user, also raise
-net.core.wmem_max and net.core.rmem_max to 1048576, or downloads lose a third.
+needs 1 MiB socket buffers: raise net.core.wmem_max and net.core.rmem_max to 1048576
+(the RPM's packaging/weed.sysctl does), or downloads lose a third; weed, as root too,
+has not the CAP_NET_ADMIN that exceeds them.
 Larger buffers would gain a few percent of one stream, but a client that reads
 slower than its worker keeps them full: 4 MiB took 7 MB of memory per slow client,
 1 MiB takes 2.7 MB (test/stress, slow-download).
@@ -456,24 +473,24 @@ to the exported directory:
   sockets. Neither has io_uring, which opens sockets without socket(2). weed logs
   them (sockets=), and refuses to start if it is not filtered; each worker checks
   that it is, and refuses to serve otherwise. The filters are of amd64 and arm64.
-And weed's own process, which terminates TLS and authenticates requests, as root: it
-may write the exported directory, the directories of server.log_file, admin.socket
-and admin.bans, and its cgroup, and read only those, the system's files (as workers)
-and the files that its configuration names; from Linux 6.7, it binds only its ports,
+And weed's own process, which terminates TLS and authenticates requests, without
+capabilities: it may write the directories of server.log_file, admin.socket and
+admin.bans, and read only those, the system's files (as workers) and the files that
+its configuration names, not the exported directory; from Linux 6.7, it binds only its ports,
 and connects only to token issuers and for third-party copies. Landlock confines a
 thread and what it executes, so weed executes itself again, from a thread that it
 confines; it logs the rules as it does ("weed confines itself with Landlock"), and
-refuses to start if it then is not confined. Confined to /, weed would reach
-everything: it does not export /. Landlock confines to plain directories and to mount
-points alike: a rule names the directory that its path leads to as weed starts (the
-root of the storage mounted at /data, or the plain directory /data), and covers what
-is beneath, storage mounted below it later included; not a storage mounted over it or
-above it later (a remount), nor the directory beneath a storage that is unmounted.
-weed looks at the directory every 5 seconds. When a storage is there in its place,
-weed lets the requests in progress finish and exits with status 75, for its
-supervisor to start it again, confined to it (systemd: Restart=on-failure);
-meanwhile, requests get 503. When the storage that weed started on is no longer
-mounted, weed does not exit: it refuses requests (503, /healthz too, the metric
+refuses to start if it then is not confined, or has capabilities. Confined to /,
+weed would reach everything: it does not export /. Landlock confines to plain
+directories and to mount points alike: a rule names the directory that its path leads
+to as a worker starts (the root of the storage mounted at /data, or the plain
+directory /data), and covers what is beneath, storage mounted below it later
+included; not a storage mounted over it or above it later (a remount), nor the
+directory beneath a storage that is unmounted. The starter looks at the directory
+every 5 seconds. When a storage is there in its place, weed retires the workers
+confined to the directory as it was, which finish their requests, and the next
+requests get workers confined to the storage. When the storage that the directory was
+on, at startup or mounted since, is no longer mounted, weed does not exit: it refuses requests (503, /healthz too, the metric
 weed_storage_unmounted is 1) until the storage is back, never serving the directory
 beneath, which would take the uploads. A weed that starts while the storage is not
 mounted would serve it: with server.require_mount, weed does not start while the
@@ -490,15 +507,15 @@ Two more are not part of weed:
   admin.socket, admin.bans and server.log_file need), ReadWritePaths=/data (the
   exported directory),
   ProtectHome=yes (unless the exported directory is below /home), PrivateTmp=yes.
-  ReadWritePaths= makes writable what /data is as weed starts, as Landlock does; weed
-  starts again when that changes (above). It does not separate the accounts from each
+  The RPM's unit has ProtectSystem=full and the directives that need no path (see
+  the guide's Installation, Sandboxing). It does not separate the accounts from each
   other. make test-systemd runs weed with these directives (see Testing); try others
   with weed check and a few requests of each kind.
 
 cgroups. With unix_users.cgroups, the workers of each account run in a cgroup of
 their own below weed's, which must be delegated to weed (systemd's Delegate=yes;
-cgroup v2): weed moves into <its cgroup>/main and starts the workers of alice in <its
-cgroup>/worker-alice, with the cpu, io, memory and pids controllers when they are
+cgroup v2): the starter moves itself and weed into <its cgroup>/main and starts the
+workers of alice in <its cgroup>/worker-alice, with the cpu, io, memory and pids controllers when they are
 available. systemd-cgtop and systemd-cgls then show what each account uses, and
 unix_users.cgroup_limits writes limits into the cgroup of every account:
 
@@ -744,28 +761,20 @@ listens (so systemctl start fails when weed cannot start, and units ordered afte
 weed start once it serves), when it reloads, and when it stops, and keeps a status
 line up to date:
 
-    [Unit]
-    After=network-online.target remote-fs.target
-    # restart for ever
-    StartLimitIntervalSec=0
-
     [Service]
     # systemd >= 253; before, Type=notify and ExecReload=kill -HUP $MAINPID
     Type=notify-reload
-    ExecStartPre=/usr/local/bin/weed check -config /etc/weed/weed.toml
-    ExecStart=/usr/local/bin/weed -config /etc/weed/weed.toml
-    # also on status 75 (the exported directory moved); then up to a minute apart
-    # (RestartSteps=: systemd >= 254)
+    ExecStartPre=/usr/bin/weed check -config /etc/weed/weed.toml
+    ExecStart=/usr/bin/weed -config /etc/weed/weed.toml
+    # after a crash, up to a minute apart, for ever (StartLimitIntervalSec=0)
     Restart=on-failure
-    RestartSec=2s
-    RestartSteps=5
-    RestartMaxDelaySec=1min
     # a worker killed for memory does not stop weed
     OOMPolicy=continue
     # weed bounds its threads itself (see Performance)
     TasksMax=infinity
-    # /var/log/weed, for server.log_file
-    LogsDirectory=weed
+
+packaging/weed.service is the whole unit, which the guide's Installation shows (make
+test-systemd checks that they are the same).
 
     $ systemctl status weed
     ...
@@ -859,7 +868,11 @@ same machine over loopback:
   PUT of 64 MiB       900 MB/s for one client, 1300-1700 MB/s in all: the disk
   8192 clients        21400 PROPFIND/s, p99 1.25 s (unix_users.max_requests 20000)
 
-Tuning, which the guide's Performance page explains:
+Tuning, which the guide's Performance page explains. weed limits (as root) measures
+weed on its machine, with a weed of its own on 127.0.0.1 and a load that grows until
+weed or the machine gives, and suggests which of these to change: a weed.toml, a file
+of /etc/sysctl.d and a drop-in of weed's unit, to review and install. It changes
+nothing.
 - unix_users.max_requests (4000 a worker), max_workers (256) and tpc.max_transfers
   (32) answer 503 beyond; max_storage_calls (256) bounds a worker's threads, and is
   for storage that serves many calls at once (NFS) to raise.
@@ -885,15 +898,16 @@ Testing
                        accounts and mounts (uses sudo)
     make test-cgroups  the cgroups of worker processes, as root in a cgroup of their
                        own (sudo, systemd-run)
-    make test-systemd  weed as the service of the guide (Installation): its unit,
-                       with Delegate=yes and the sandboxing above, as root and as an
-                       account of its own, and storage unmounted from and mounted
-                       over the exported directory, in a privileged AlmaLinux 10
-                       container that boots systemd (test/systemd/systemd.sh, Podman)
+    make test-systemd  weed's RPM, built and installed as the guide says
+                       (Installation): its unit, as the account weed, with the
+                       sandboxing above, then as root, and storage unmounted from
+                       and mounted over the exported directory, in a privileged
+                       AlmaLinux 10 container that boots systemd
+                       (test/systemd/systemd.sh, Podman); WEED= or RPM= tests those
     make interop       interoperability tests (test/interop/interop.sh, Podman)
-    make find-limits   the limits of weed on this machine, serving one account: a load
-                       that grows until weed or the machine gives (test/limits/host.sh,
-                       sudo); ARGS="..." go to test/stress
+    make find-limits   weed limits on this machine (sudo): CONFIG=, DATA= the storage
+                       (/var/tmp), ACCOUNT= (yours); the results are in
+                       test/limits/out; ARGS="..." go to weed limits
     make find-limits-users
                        the same with USERS accounts (100), and crowds of thousands of
                        clients spread over them (test/limits/users.sh, Podman)
@@ -936,10 +950,11 @@ They report what each client adds to weed's memory and to the machine's, and sto
 when clients fall behind, or the machine has used 90% of its memory. It works in a
 directory of its own below the URL it is given, and removes it.
 
-make find-limits runs it on this machine against weed serving one account, which
-authenticates with a certificate, a token and a password, in a unit of its own whose
-CPU and memory stress reports; make find-limits-users against weed serving many
-accounts in a Podman container, with the crowds spread over them (-crowd-accounts).
+weed limits runs it on weed's machine against a weed of its own, serving one account,
+which authenticates with a certificate, a token and a password, in a systemd scope of
+its own whose CPU and memory stress reports; make find-limits-users against weed
+serving many accounts in a Podman container, with the crowds spread over them
+(-crowd-accounts).
 On weed's machine, the load shares the CPUs with weed. To measure the machine that
 will serve, run weed there as it will serve, and stress from another machine:
 
@@ -972,11 +987,13 @@ github.com/labkode/weed/v2), which Go needs to take the tag for weed's version:
 
 CI then runs as for every commit and, once it passes, release/dist.sh builds weed for
 linux/amd64 and linux/arm64 with cgo on AlmaLinux 10, each on a runner of its
-architecture, test/systemd/systemd.sh tests it as the guide installs it, and the
-release on GitHub gets the archives (weed, README.txt, CHANGELOG.md, LICENSE and the
-guide), SHA256SUMS, and the version's section of the changelog as its notes. Pushing
+architecture, release/rpm.sh makes its RPM (packaging/weed.spec, of that weed),
+test/systemd/systemd.sh tests the RPM as the guide installs it, and the release on
+GitHub gets the archives (weed, README.txt, CHANGELOG.md, LICENSE and the guide), the
+RPMs, SHA256SUMS, and the version's section of the changelog as its notes. Pushing
 main with the tag publishes the release's guide on GitHub Pages. make dist builds the
-archive of a tagged commit on an EL10 machine, for its architecture.
+archive of a tagged commit on an EL10 machine, for its architecture, and
+release/rpm.sh dist/weed-*.tar.gz its RPM (rpm-build and systemd-rpm-macros).
 
 
 Not implemented

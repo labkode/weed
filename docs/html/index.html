@@ -76,6 +76,7 @@
 				<ul>
 					<li><a href="commands.html#weed">weed</a></li>
 					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#limits">limits</a></li>
 					<li><a href="commands.html#config">config</a></li>
 					<li><a href="commands.html#version">version</a></li>
 					<li><a href="commands.html#ban">utils ban</a></li>
@@ -104,7 +105,7 @@
 <p>weed, the WEbdav Exporter Daemon, exports a directory of a Linux server over WebDAV for the clients and services of the WLCG: gfal2, davix, FTS, Rucio and XRootD, and plain curl. It implements HTTP third-party copy (TPC) in both directions, and verifies checksums from end to end.</p>
 <p>This guide is for the administrators who install and run weed. It explains how weed works, how to configure it, and how to operate it: what it logs and measures, how to change credentials while it runs, how to upgrade it, and how to stop a user at once. Its header says which version of weed it is for, and the <a href="changelog.html">Changelog</a> what each version changed.</p>
 <h2 id="how-weed-works">How weed works</h2>
-<p>weed is one binary. It runs as root and listens on one port, normally with HTTPS. For each request, it:</p>
+<p>weed is one binary. It runs as an account of its own, without root, and listens on one port, normally with HTTPS. For each request, it:</p>
 <ol type="1">
 <li>authenticates the client, with an X.509 certificate or proxy, a WLCG or SciTokens bearer token, a macaroon or a password;</li>
 <li>maps the identity to a local Unix account: the grid-mapfile does it for certificates, the token issuer's rules for tokens;</li>
@@ -114,15 +115,16 @@
 <p>A worker runs as its account, with the account's groups, without capabilities and without any way to gain privileges. The kernel checks every file access as for that user, new files belong to whoever wrote them, and <em>ps</em> shows who is doing what:</p>
 <pre><code>$ ps -o user,pid,ppid,args -C weed
 USER         PID    PPID COMMAND
-root         812       1 weed -config /etc/weed/weed.toml
-alice       1630     812 weed worker alice
-cms001      1702     812 weed worker cms001</code></pre>
-<p>weed itself never opens the exported files: it terminates TLS, authenticates and forwards. A worker starts with the first request of its account, and stops when the account has been idle for a while. See <a href="unix-accounts.html">Unix accounts</a>.</p>
+weed         812       1 /usr/bin/weed -config /etc/weed/weed.toml
+weed         815     812 weed starter -config /etc/weed/weed.toml
+alice       1630     815 weed worker alice
+cms001      1702     815 weed worker cms001</code></pre>
+<p>weed itself never opens the exported files: it terminates TLS, authenticates and forwards, without capabilities. The starter of workers keeps the capabilities that starting workers as their accounts needs, and does nothing else. A worker starts with the first request of its account, and stops when the account has been idle for a while. See <a href="unix-accounts.html">Unix accounts</a>.</p>
 <p>weed is made so that nothing changes by surprise while it runs. It says which build runs, since when and with which configuration, and whether a restart would change any of it (<a href="what-runs.html">What runs</a>). Credential files are re-read without a restart, and a file that cannot be read keeps its previous contents (<a href="reloading.html">Reloading</a>). Every request is logged once, with the account it ran as (<a href="logging.html">Logging</a>).</p>
 <h2 id="what-you-need">What you need</h2>
 <ul>
 <li>A Linux server: weed targets AlmaLinux 10 (and other EL10, such as RHEL 10 and Rocky Linux 10), which its tests run on. weed and its helpers (<em>weed utils</em>) build and run on Linux alone.</li>
-<li>root, or the CAP_SETUID and CAP_SETGID capabilities, to start workers as other accounts.</li>
+<li>root, or the capabilities CAP_SETUID, CAP_SETGID and CAP_KILL for the account that weed runs as, which the RPM's unit gives the account weed: to start workers as other accounts, and to stop them.</li>
 <li>Linux 5.19 or later, with landlock among the security modules: weed confines itself and its workers with Landlock, and does not start without it (see <a href="unix-accounts.html#confinement">Unix accounts</a>). AlmaLinux 10's kernel (6.12) has it by default, with its rules for TCP.</li>
 <li>A local account for every user, in /etc/passwd or in a directory (LDAP, SSSD) that the system's user database reaches.</li>
 <li>For a grid storage node: a host certificate, the IGTF CA certificates in /etc/grid-security/certificates kept current by fetch-crl, a grid-mapfile, and the token issuers of your communities.</li>

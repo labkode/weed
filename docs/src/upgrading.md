@@ -31,7 +31,11 @@ Between releases, the main branch is the development version, which the header o
 
         $ make build && ./weed version
 
-2.  Install it by replacing the file: *install* and *mv* do, as package managers do. (Linux refuses to write into a binary that runs: *cp* onto it fails with "Text file busy".)
+2.  Install it by replacing the file: the RPM's *dnf upgrade* does, which does not restart weed, as *install* and *mv* do. (Linux refuses to write into a binary that runs: *cp* onto it fails with "Text file busy".)
+
+        # dnf upgrade https://github.com/labkode/weed/releases/download/v1.3.0/weed-1.3.0-1.el10.x86_64.rpm
+
+    or, without the RPM:
 
         # install -m 0755 weed /usr/local/bin/weed
 

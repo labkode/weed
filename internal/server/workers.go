@@ -2,20 +2,25 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/labkode/weed/internal/auth"
 	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/davreq"
 	"github.com/labkode/weed/internal/handlers"
+	"github.com/labkode/weed/internal/limits"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/systemd"
 	"github.com/labkode/weed/internal/worker"
 	"github.com/labkode/weed/internal/x509utils"
+	"golang.org/x/sys/unix"
 )
 
 // WebDAV requests are served by a worker process per Unix account (see
@@ -31,18 +36,17 @@ func (s *Server) startWorkers() error {
 	if _, err := s.loadLimits(); err != nil {
 		return err
 	}
-	s.cgroups = s.Config.WorkerCgroups || len(s.Config.WorkerCgroupLimits) > 0 || s.limits.Load().HasCgroupLimits()
-	s.moved = make(chan error, 1)
+	s.cgroups = wantCgroups(s.Config, s.limits.Load())
+	s.lost = make(chan error, 1)
 	opts := worker.Options{
 		Config:       workerConfig(s.Config, dir),
 		IdleTimeout:  s.Config.WorkerIdleTimeout,
 		MaxWorkers:   s.Config.MaxWorkers,
 		Cgroups:      s.cgroups,
 		CgroupLimits: s.cgroupLimits,
-		Confined:     confined,
-		Moved: func(err error) {
+		Lost: func(err error) {
 			select {
-			case s.moved <- err:
+			case s.lost <- err:
 			default:
 			}
 		},
@@ -64,6 +68,9 @@ func (s *Server) startWorkers() error {
 		// which would then refuse weed (systemd: ExecStartPre) or the shell weed check
 		// runs in
 		opts.Cgroups = false
+	} else if starter != nil {
+		// weed itself, which has given up its privileges to the starter (see Confine)
+		opts.Starter, opts.ConfigSHA256 = starter, s.run.source.SHA256
 	}
 	pool, err := worker.New(opts)
 	if err != nil {
@@ -78,6 +85,12 @@ func (s *Server) startWorkers() error {
 		"idle_timeout", s.Config.WorkerIdleTimeout, "max_workers", s.Config.MaxWorkers, "max_requests", s.Config.WorkerMaxRequests,
 		"max_storage_calls", s.Config.WorkerMaxStorageCalls, "cgroups", s.cgroups)
 	return nil
+}
+
+// wantCgroups says whether the workers of each account get a cgroup of their own: when
+// the configuration asks for them, or sets cgroup limits, or the limits file does
+func wantCgroups(c *config.Config, l *limits.Limits) bool {
+	return c.WorkerCgroups || len(c.WorkerCgroupLimits) > 0 || l.HasCgroupLimits()
 }
 
 // workerConfig is the configuration that workers serve dir with: what serving files
@@ -130,6 +143,55 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.Workers.ServeHTTP(w, r, info.Unix)
+}
+
+// ErrReported is in the errors of RunStarter that weed has logged already
+var ErrReported = worker.ErrReported
+
+// RunStarter is the main function of the starter ("weed starter <weed's arguments>"),
+// which weed starts before it confines itself (see Confine and worker.Starter): it
+// reads weed's configuration, and starts the workers that weed asks for, until weed
+// exits
+func RunStarter() error {
+	// systemd stops weed and its processes with SIGTERM: the starter stops once weed
+	// has, and its workers
+	signal.Ignore(syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	// Nor may weed, which runs as the same account, look into it
+	unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0)
+	level := new(slog.LevelVar)
+	sc, err := worker.AttachStarter(level)
+	if err != nil {
+		return err
+	}
+	cfg, src, err := config.FromArgs(os.Args[2:])
+	if err == nil {
+		err = cfg.Validate()
+	}
+	if err != nil {
+		return sc.Fail(fmt.Errorf("cannot read the configuration: %w", err))
+	}
+	if l, err := cfg.Level(); err == nil {
+		level.Set(l)
+	}
+	if err := worker.CheckStarter(worker.Sockets(cfg)); err != nil {
+		return sc.Fail(err)
+	}
+	dir, err := filepath.Abs(cfg.Directory)
+	if err != nil {
+		return sc.Fail(err)
+	}
+	l := &limits.Limits{Default: limits.Account{Cgroup: cfg.WorkerCgroupLimits}}
+	if cfg.LimitsFile != "" {
+		if l.Rules, err = limits.Load(cfg.LimitsFile); err != nil {
+			return sc.Fail(fmt.Errorf("failed to load the limits file (unix_users.limits): %w", err))
+		}
+	}
+	// Its paths read, it keeps no storage busy, as its workers
+	if err := os.Chdir("/"); err != nil {
+		return sc.Fail(err)
+	}
+	return sc.Serve(worker.StarterOptions{Config: workerConfig(cfg, dir), Cgroups: wantCgroups(cfg, l),
+		Front: sc.Front(), SHA256: src.SHA256})
 }
 
 // RunWorker is the main function of worker processes ("weed worker <account>"),

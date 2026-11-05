@@ -31,7 +31,7 @@ weed serves these metrics at /metrics on `server.metrics_address`, in the Promet
 | [`weed_workers`]{#weed_workers} | gauge |  | Worker processes, including those finishing requests after being replaced. |
 | [`weed_worker_starts_total`]{#weed_worker_starts_total} | counter | result | Worker processes started, by result (success, failure). |
 | [`weed_worker_exits_total`]{#weed_worker_exits_total} | counter | reason | Worker processes that exited, by reason: stopped when asked to (e.g. when idle), killed when their account was banned, failed otherwise. |
-| [`weed_storage_unmounted`]{#weed_storage_unmounted} | gauge |  | 1 while the storage that the exported directory was on when weed started is not mounted: requests get 503 until it is again, never served from the directory beneath (see [Installation](installation.html#mounted)). |
+| [`weed_storage_unmounted`]{#weed_storage_unmounted} | gauge |  | 1 while the storage that the exported directory was on is not mounted: requests get 503 until it is again, never served from the directory beneath (see [Installation](installation.html#mounted)). |
 | [`weed_worker_blocked_threads`]{#weed_worker_blocked_threads} | gauge |  | Threads of the worker processes that wait in the kernel, uninterruptibly: for a moment while they read or write files; for long while the storage does not answer, and then their requests do not end, nor do their workers exit, even when killed (see [Troubleshooting](troubleshooting.html#hung-storage)). |
 
 ## Network

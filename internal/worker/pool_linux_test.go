@@ -2,7 +2,9 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -33,18 +35,18 @@ func TestUnmounted(t *testing.T) {
 	storage := fileID{dev: 7, ino: 2, mnt: 30}
 	for _, c := range []struct {
 		name         string
-		started, now fileID
+		storage, now fileID
 		want         bool
 	}{
 		{"the storage unmounted: the directory beneath, on /", storage, fileID{dev: 1, ino: 40, mnt: 1}, true},
 		{"the storage above unmounted: the directory gone", storage, fileID{}, true},
 		{"another storage mounted in its place", storage, fileID{dev: 8, ino: 2, mnt: 31}, false},
 		{"the storage mounted again", storage, fileID{dev: 7, ino: 2, mnt: 32}, false},
-		{"a plain directory on /, replaced by another", fileID{dev: 1, ino: 40, mnt: 1}, fileID{dev: 1, ino: 41, mnt: 1}, false},
-		{"a plain directory on /, a storage mounted over it", fileID{dev: 1, ino: 40, mnt: 1}, storage, false},
-		{"a plain directory on /, gone", fileID{dev: 1, ino: 40, mnt: 1}, fileID{}, false},
+		{"never on a storage: a plain directory on /, replaced by another", fileID{}, fileID{dev: 1, ino: 41, mnt: 1}, false},
+		{"never on a storage: a storage mounted over it", fileID{}, storage, false},
+		{"never on a storage: gone", fileID{}, fileID{}, false},
 	} {
-		if got := unmounted(c.started, c.now, root); got != c.want {
+		if got := unmounted(c.storage, c.now, root); got != c.want {
 			t.Errorf("%s: unmounted = %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -70,9 +72,11 @@ func TestKilledWorkerThatDoesNotExit(t *testing.T) {
 	ready := make(chan struct{})
 	close(ready)
 	// exited is never closed, as for a process whose threads do not return
+	proc := &process{pid: cmd.Process.Pid, kill: cmd.Process.Kill, exited: make(chan struct{})}
 	wk := &worker{user: fsuser.User{Name: "alice", UID: 6001}, ready: ready, exited: make(chan struct{}),
-		cmd: cmd, pid: cmd.Process.Pid, ctl: ctl, transport: &http.Transport{}}
-	p := &Pool{workers: map[string]*worker{"alice": wk}, all: map[*worker]bool{wk: true}, done: make(chan struct{})}
+		proc: proc, pid: proc.pid, ctl: ctl, transport: &http.Transport{}}
+	p := &Pool{workers: map[string]*worker{"alice": wk}, all: map[*worker]bool{wk: true}, done: make(chan struct{}),
+		launch: noLauncher{}}
 
 	start := time.Now()
 	n, err := p.Kill("alice")
@@ -99,3 +103,12 @@ func TestKilledWorkerThatDoesNotExit(t *testing.T) {
 		t.Fatal("Close waits for a worker that does not exit")
 	}
 }
+
+// noLauncher starts no worker
+type noLauncher struct{}
+
+func (noLauncher) start(*fsuser.User, bool, *os.File, *os.File, []string) (*process, error) {
+	return nil, errors.New("no launcher")
+}
+func (noLauncher) setLimits(*fsuser.User, []string) error { return nil }
+func (noLauncher) close()                                 {}

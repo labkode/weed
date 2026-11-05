@@ -76,6 +76,7 @@
 				<ul>
 					<li><a href="commands.html#weed">weed</a></li>
 					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#limits">limits</a></li>
 					<li><a href="commands.html#config">config</a></li>
 					<li><a href="commands.html#version">version</a></li>
 					<li><a href="commands.html#ban">utils ban</a></li>
@@ -113,16 +114,28 @@
 </thead>
 <tbody>
 <tr>
-<td>/usr/local/bin/weed</td>
+<td>/usr/bin/weed (the RPM), /usr/local/bin/weed</td>
 <td></td>
 <td>root, 0755</td>
 <td>The binary. Replace it, do not write into it (see <a href="upgrading.html">Upgrading</a>).</td>
 </tr>
 <tr>
-<td>/etc/systemd/system/weed.service</td>
+<td>/usr/lib/systemd/system/weed.service (the RPM), /etc/systemd/system/weed.service</td>
 <td></td>
 <td>root, 0644</td>
-<td>The unit (see <a href="installation.html#systemd">Installation</a>).</td>
+<td>The unit (see <a href="installation.html#systemd">Installation</a>); change the RPM's with drop-ins, in /etc/systemd/system/weed.service.d/.</td>
+</tr>
+<tr>
+<td>/usr/lib/sysusers.d/weed.conf (the RPM)</td>
+<td></td>
+<td>root, 0644</td>
+<td>The account weed, which weed runs as (see <a href="installation.html#rpm">Installation</a>).</td>
+</tr>
+<tr>
+<td>/usr/lib/sysctl.d/60-weed.conf (the RPM), /etc/sysctl.d/60-weed.conf</td>
+<td></td>
+<td>root, 0644</td>
+<td>The socket buffers of 1 MiB that weed asks for (see <a href="performance.html#socket-buffers">Performance</a>).</td>
 </tr>
 <tr>
 <td>/etc/systemd/system/weed.socket</td>
@@ -133,13 +146,13 @@
 <tr>
 <td>/etc/weed/weed.toml</td>
 <td><code>-config</code></td>
-<td>root, 0600 if it holds secrets</td>
-<td>The configuration, read at startup.</td>
+<td>root:weed, 0640</td>
+<td>The configuration, read at startup; not readable by others if it holds secrets.</td>
 </tr>
 <tr>
 <td>/etc/grid-security/hostcert.pem, hostkey.pem</td>
 <td><code>tls.cert</code>, <code>tls.key</code></td>
-<td>root; the key 0400</td>
+<td>root; the key root:weed, 0440</td>
 <td>The host certificate and key, reloaded.</td>
 </tr>
 <tr>
@@ -161,9 +174,9 @@
 <td>Token issuers and their users rules, reloaded.</td>
 </tr>
 <tr>
-<td>/etc/weed/htpasswd, /etc/weed/app-tokens</td>
+<td>/etc/weed/.htpasswd, /etc/weed/.app-tokens</td>
 <td><code>basic.htpasswd</code>, <code>basic.app_tokens</code></td>
-<td>root, 0600</td>
+<td>root:weed, 0640</td>
 <td>Passwords and app tokens, reloaded.</td>
 </tr>
 <tr>
