@@ -1,0 +1,5 @@
+# Buffers of 1 MiB on the sockets between weed and its workers: with the kernel's
+# default (212992 bytes), downloads lose a third of their speed. A file of
+# /etc/sysctl.d that sorts after this one sets other values.
+net.core.wmem_max = 1048576
+net.core.rmem_max = 1048576

@@ -207,17 +207,21 @@ func (h *WebDAVHandler) serveFile(w http.ResponseWriter, r *http.Request, tree *
 }
 
 // serveDAV hands the request to x/net/webdav, on tree, turning the 404, 405, 409 and
-// 500 it answers when the filesystem refuses an operation into 403
+// 500 it answers when the filesystem refuses an operation into 403, and when the
+// storage refuses a write for lack of space (MKCOL, COPY, MOVE), into 507
 func (h *WebDAVHandler) serveDAV(w http.ResponseWriter, r *http.Request, tree *davfs.Tree) {
-	dw := &deniedWriter{ResponseWriter: w}
+	dw := &deniedWriter{ResponseWriter: w, r: r}
 	dav := *h.Handler
 	dav.FileSystem = tree
-	dav.ServeHTTP(dw, r.WithContext(davfs.TrackDenied(r.Context(), &dw.denied)))
+	ctx := davfs.TrackNoSpace(davfs.TrackDenied(r.Context(), &dw.denied), &dw.full)
+	dav.ServeHTTP(dw, r.WithContext(ctx))
 }
 
 type deniedWriter struct {
 	http.ResponseWriter
+	r         *http.Request
 	denied    atomic.Bool
+	full      atomic.Pointer[error]
 	rewritten bool
 }
 
@@ -225,14 +229,34 @@ func (d *deniedWriter) WriteHeader(code int) {
 	switch code {
 	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusConflict, http.StatusInternalServerError:
 		if d.denied.Load() {
-			d.rewritten = true
-			d.ResponseWriter.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			d.ResponseWriter.WriteHeader(http.StatusForbidden)
-			d.ResponseWriter.Write([]byte("Permission denied\n"))
+			d.rewrite(http.StatusForbidden, "Permission denied")
+			return
+		}
+		if err := d.full.Load(); err != nil {
+			davfs.NoteNoSpace(d.r.Context(), d.r.URL.Path, *err)
+			d.rewrite(http.StatusInsufficientStorage, insufficientStorage)
 			return
 		}
 	}
 	d.ResponseWriter.WriteHeader(code)
+}
+
+func (d *deniedWriter) rewrite(code int, text string) {
+	d.rewritten = true
+	d.ResponseWriter.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	d.ResponseWriter.WriteHeader(code)
+	d.ResponseWriter.Write([]byte(text + "\n"))
+}
+
+const insufficientStorage = "Insufficient storage: the storage is full, or the account over its quota"
+
+// noSpace answers 507 if the storage refused err for lack of space, and says whether
+func noSpace(w http.ResponseWriter, r *http.Request, err error) bool {
+	if davfs.NoteNoSpace(r.Context(), r.URL.Path, err) == "" {
+		return false
+	}
+	http.Error(w, insufficientStorage, http.StatusInsufficientStorage)
+	return true
 }
 
 func (d *deniedWriter) Write(b []byte) (int, error) {
@@ -394,6 +418,9 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request, tree *
 
 	af, err := tree.CreateAtomic(ctx, name, 0666)
 	if err != nil {
+		if noSpace(w, r, err) {
+			return
+		}
 		if os.IsNotExist(err) {
 			http.Error(w, "Parent collection does not exist", http.StatusConflict)
 			return
@@ -407,6 +434,9 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request, tree *
 	// adler32 is always computed: it is cheap and is the checksum WLCG asks for afterwards
 	hasher := digest.NewHasher(append([]string{digest.Adler}, expected.Algorithms()...)...)
 	n, readErr, writeErr := digest.Copy(af, r.Body, hasher)
+	if writeErr != nil && noSpace(w, r, writeErr) {
+		return
+	}
 	if writeErr != nil {
 		slog.ErrorContext(ctx, "cannot write an upload", "path", r.URL.Path, "bytes", n, "error", writeErr)
 		http.Error(w, "Failed to store file", http.StatusInternalServerError)
@@ -436,6 +466,16 @@ func (h *WebDAVHandler) handlePut(w http.ResponseWriter, r *http.Request, tree *
 		}
 	} else if err == nil {
 		err = af.Commit()
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		// Its collection was removed (DELETE, MOVE) while it was being written, with
+		// the temporary file in it: a conflict between requests, not a fault of weed
+		slog.WarnContext(ctx, "upload's collection removed while it was written", "path", r.URL.Path, "error", err)
+		http.Error(w, "The parent collection was removed during the upload", http.StatusConflict)
+		return
+	}
+	if err != nil && noSpace(w, r, err) {
+		return
 	}
 	if err != nil {
 		slog.ErrorContext(ctx, "cannot store an upload", "path", r.URL.Path, "error", err)

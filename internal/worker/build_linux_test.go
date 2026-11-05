@@ -3,14 +3,31 @@ package worker
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/labkode/weed/internal/config"
+	"github.com/labkode/weed/internal/seccomp"
 )
 
 func TestMain(m *testing.M) {
+	// TestStarter starts this binary as the starter, of the exported directory os.Args[2]
+	if len(os.Args) > 2 && os.Args[1] == "starter" {
+		sc, err := AttachStarter(new(slog.LevelVar))
+		if err == nil {
+			if err = CheckStarter(seccomp.UnixOnly); err != nil {
+				sc.Fail(err)
+			} else {
+				err = sc.Serve(StarterOptions{Config: config.Config{Directory: os.Args[2]}, Lookup: testAccounts})
+			}
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		os.Exit(0)
+	}
 	// The pool tests start this binary as their workers
 	if len(os.Args) > 1 && os.Args[1] == "worker" {
 		c, err := Attach()

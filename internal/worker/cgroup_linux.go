@@ -48,7 +48,9 @@ func Cgroup() string {
 	return ""
 }
 
-func newCgroups() (*cgroups, error) {
+// newCgroups moves the processes pids (this one if none) into a cgroup next to those
+// that workers will get, below this process's
+func newCgroups(pids ...int) (*cgroups, error) {
 	c := &cgroups{written: make(map[string]map[string]string), base: Cgroup()}
 	if c.base == "" {
 		return nil, errors.New("worker cgroups need the cgroup v2 hierarchy")
@@ -61,8 +63,13 @@ func newCgroups() (*cgroups, error) {
 	if err := os.Mkdir(main, 0755); err != nil && !errors.Is(err, fs.ErrExist) {
 		return nil, fmt.Errorf("cannot create cgroups in %s: %w%s", c.base, err, hint)
 	}
-	if err := os.WriteFile(filepath.Join(main, "cgroup.procs"), []byte(strconv.Itoa(os.Getpid())), 0); err != nil {
-		return nil, fmt.Errorf("cannot move weed to %s: %w%s", main, err, hint)
+	if len(pids) == 0 {
+		pids = []int{os.Getpid()}
+	}
+	for _, pid := range pids {
+		if err := os.WriteFile(filepath.Join(main, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0); err != nil {
+			return nil, fmt.Errorf("cannot move weed to %s: %w%s", main, err, hint)
+		}
 	}
 	available, err := os.ReadFile(filepath.Join(c.base, "cgroup.controllers"))
 	if err != nil {

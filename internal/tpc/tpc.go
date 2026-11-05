@@ -322,6 +322,7 @@ func (e *Engine) Serve(w http.ResponseWriter, r *http.Request, job *Job) {
 				if errors.Is(err, ErrChecksumMismatch) {
 					metrics.ChecksumMismatches.Inc("tpc_" + mode)
 				}
+				davfs.NoteNoSpace(r.Context(), r.URL.Path, err)
 				slog.WarnContext(r.Context(), "third-party copy failed", "mode", job.Mode, "bytes", n, "duration", time.Since(start), "error", err)
 				fmt.Fprintf(w, "failure: %s\n", oneLine(err.Error()))
 			} else {

@@ -31,7 +31,11 @@ Between releases, the main branch is the development version, which the header o
 
         $ make build && ./weed version
 
-2.  Install it by replacing the file: *install* and *mv* do, as package managers do. (Linux refuses to write into a binary that runs: *cp* onto it fails with "Text file busy".)
+2.  Install it by replacing the file: the RPM's *dnf upgrade* does, which does not restart weed, as *install* and *mv* do. (Linux refuses to write into a binary that runs: *cp* onto it fails with "Text file busy".)
+
+        # dnf upgrade https://github.com/labkode/weed/releases/download/v1.3.0/weed-1.3.0-1.el10.x86_64.rpm
+
+    or, without the RPM:
 
         # install -m 0755 weed /usr/local/bin/weed
 
@@ -39,10 +43,12 @@ Between releases, the main branch is the development version, which the header o
 
         level=WARN msg="restart pending: weed's executable /usr/local/bin/weed is now v1.3.0 (commit 9c1e0a2b77d4 of ...) go1.27.3 linux/amd64, build go:..." reason=binary
 
-3.  Check that the new version starts with your configuration. The new version may know options that the old one did not, or warn about others:
+3.  Check that the new version starts with your configuration. The new version may know options that the old one did not, or warn about others. The RPM's *dnf upgrade* does it, and says how it went (see [Installation](installation.html#rpm)); otherwise:
 
         # weed check -config /etc/weed/weed.toml
-        /etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0...)
+        /etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0...), as the account weed too (User= of weed.service)
+
+    Run by root, it checks as the account weed too, which may not read every file that root reads (see [Commands](commands.html#check)).
 
 4.  Restart, when the transfers in progress allow it (see [Monitoring](monitoring.html#in-progress)):
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"io/fs"
 	"os"
+	"path"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -91,25 +93,86 @@ func (f *File) Close() error {
 }
 
 // Readdir implements webdav.File. It leaves out in-progress uploads and symbolic
-// links. Tree.List lists without allocating for each entry.
+// links, and the names removed since the directory was read. Tree.List lists without
+// allocating for each entry.
+//
+// It stats each name relative to the directory (fstatat), rather than with
+// os.File.Readdir: up to Go 1.26.0, that stats f.Name()+"/"+name, a path, which is
+// the name in the tree, not in the process's file system, so that a listing missed
+// every entry, or stated another file, following its symbolic links.
 func (f *File) Readdir(count int) ([]os.FileInfo, error) {
 	if err := f.gate.enter(f.ctx); err != nil {
 		return nil, err
 	}
 	defer f.gate.leave()
 	for {
-		fis, err := f.f.Readdir(count)
-		kept := fis[:0]
-		for _, fi := range fis {
-			if !strings.HasPrefix(fi.Name(), TempPrefix) && fi.Mode()&fs.ModeSymlink == 0 {
-				kept = append(kept, fi)
+		names, err := f.f.Readdirnames(count)
+		fis := make([]os.FileInfo, 0, len(names))
+		for _, name := range names {
+			if strings.HasPrefix(name, TempPrefix) {
+				continue
+			}
+			fi := &statInfo{name: name}
+			serr := ignoringEINTR(func() error {
+				return unix.Fstatat(int(f.f.Fd()), name, &fi.st, unix.AT_SYMLINK_NOFOLLOW|unix.AT_NO_AUTOMOUNT)
+			})
+			if serr == unix.ENOENT {
+				continue
+			}
+			if serr != nil {
+				return fis, pathError("fstatat", path.Join(f.f.Name(), name), serr)
+			}
+			if fi.Mode()&fs.ModeSymlink == 0 {
+				fis = append(fis, fi)
 			}
 		}
 		// With count > 0 an empty result must carry an error; keep reading instead
-		if count <= 0 || len(kept) > 0 || err != nil {
-			return kept, err
+		if count <= 0 || len(fis) > 0 || err != nil {
+			return fis, err
 		}
 	}
+}
+
+// statInfo is the os.FileInfo of a name in a directory, as fstatat(2) gives it; Sys
+// is its *unix.Stat_t
+type statInfo struct {
+	name string
+	st   unix.Stat_t
+}
+
+func (s *statInfo) Name() string       { return s.name }
+func (s *statInfo) Size() int64        { return s.st.Size }
+func (s *statInfo) ModTime() time.Time { return time.Unix(s.st.Mtim.Unix()) }
+func (s *statInfo) IsDir() bool        { return s.Mode().IsDir() }
+func (s *statInfo) Sys() any           { return &s.st }
+
+// Mode is as os.Lstat makes it
+func (s *statInfo) Mode() fs.FileMode {
+	m := fs.FileMode(s.st.Mode & 0o777)
+	switch s.st.Mode & unix.S_IFMT {
+	case unix.S_IFBLK:
+		m |= fs.ModeDevice
+	case unix.S_IFCHR:
+		m |= fs.ModeDevice | fs.ModeCharDevice
+	case unix.S_IFDIR:
+		m |= fs.ModeDir
+	case unix.S_IFIFO:
+		m |= fs.ModeNamedPipe
+	case unix.S_IFLNK:
+		m |= fs.ModeSymlink
+	case unix.S_IFSOCK:
+		m |= fs.ModeSocket
+	}
+	if s.st.Mode&unix.S_ISGID != 0 {
+		m |= fs.ModeSetgid
+	}
+	if s.st.Mode&unix.S_ISUID != 0 {
+		m |= fs.ModeSetuid
+	}
+	if s.st.Mode&unix.S_ISVTX != 0 {
+		m |= fs.ModeSticky
+	}
+	return m
 }
 
 // Getxattr reads the extended attribute attr into dest

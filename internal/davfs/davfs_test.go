@@ -131,6 +131,38 @@ func TestCommitNoReplace(t *testing.T) {
 	}
 }
 
+// A collection removed while an upload into it is written takes the temporary file
+// with it: the commit fails as for a missing file, which weed answers with 409, not
+// as a fault of the storage
+func TestCommitIntoRemovedCollection(t *testing.T) {
+	ctx := context.Background()
+	for _, replace := range []bool{true, false} {
+		tree, dir := open(t)
+		if err := tree.Mkdir(ctx, "/d", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		af, err := tree.CreateAtomic(ctx, "/d/f", 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		af.Write([]byte("late"))
+		if err := tree.RemoveAll(ctx, "/d"); err != nil {
+			t.Fatal(err)
+		}
+		if replace {
+			err = af.Commit()
+		} else {
+			err = af.CommitNoReplace()
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("replace %v: %v, want an error for ErrNotExist", replace, err)
+		}
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Errorf("replace %v: left behind: %v", replace, entries)
+		}
+	}
+}
+
 // No symbolic link is followed, wherever it is in a name and wherever it points: out
 // of the tree, absolutely or relatively, or inside it
 func TestNoSymlinkFollowed(t *testing.T) {

@@ -5,23 +5,18 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/labkode/weed/internal/config"
@@ -64,36 +59,28 @@ type Options struct {
 	// Refused, if set, says which accounts get no worker: their requests get 403
 	// (banned users, see Kill)
 	Refused func(account string) bool
-	// Confined says that this process is confined with Landlock (see
-	// server.Confine), whose rules name the exported directory as it was when it
-	// started
-	Confined bool
-	// Moved, if set, is called once, when the exported directory is out of reach of
-	// this process, confined (see MovedError): only weed started again reaches it
-	Moved func(error)
+	// Starter, if set, starts the workers (see Starter); otherwise this process
+	// does, which needs the privileges to (see errPrivileges)
+	Starter *Starter
+	// Lost, if set, is called once the starter has gone: workers no longer start
+	Lost func(error)
+	// ConfigSHA256 is that of the configuration that this process read, which the
+	// starter must have read too
+	ConfigSHA256 string
 	// Unmounted, if set, is called with true once the storage that the exported
 	// directory was on is no longer mounted (see UnmountedError), and with false once
 	// it is again, and workers start
 	Unmounted func(bool)
 }
 
-// MovedError is why workers do not start once a storage is mounted over the exported
-// directory, or in its place, since this process was confined with Landlock to the
-// directory as it was then
-type MovedError struct{ Dir string }
-
-func (e *MovedError) Error() string {
-	return fmt.Sprintf("weed may no longer open the exported directory %s, a storage mounted over it or in its place since weed started: weed's own process is confined with Landlock to the directory as it was then", e.Dir)
-}
-
 // UnmountedError is why workers do not start once the storage that the exported
-// directory was on when weed started is no longer mounted: the directory is on the
+// directory was on, at startup or mounted since, is no longer mounted: the directory is on the
 // file system of / again, or gone. Never the directory beneath: it would take the
 // uploads, then hidden once the storage is mounted again.
 type UnmountedError struct{ Dir string }
 
 func (e *UnmountedError) Error() string {
-	return fmt.Sprintf("the storage that the exported directory %s was on when weed started is no longer mounted: requests get 503 until it is mounted again, never served from the directory beneath", e.Dir)
+	return fmt.Sprintf("the storage that the exported directory %s was on is no longer mounted: requests get 503 until it is mounted again, never served from the directory beneath", e.Dir)
 }
 
 // errRefused is the error of accounts that Options.Refused refuses
@@ -101,27 +88,17 @@ var errRefused = errors.New("the account is refused")
 
 // Pool runs the workers of the front process: one per account that is in use
 type Pool struct {
-	opts     Options
-	cgroups  *cgroups        // nil: workers stay in weed's cgroup
-	build    string          // of this executable, which workers must run (see version.Build)
-	landlock []landlock.Rule // nil: workers are not confined with Landlock
+	opts      Options
+	launch    launcher
+	closeOnce sync.Once // of launch, by the first Close that returns
+	build     string    // of this executable, which workers must run (see version.Build)
 
 	mu           sync.Mutex
 	workers      map[string]*worker // by account name: the workers taking new requests
 	all          map[*worker]bool   // every worker until it has exited, retired ones included
-	confined     *confinement       // with landlock, once the exported directory has answered
-	unconfinable error              // why workers cannot be confined with landlock, if they cannot
-	started      fileID             // the exported directory at the first look (of watchDir)
-	moved        sync.Once          // calls Options.Moved
+	unconfinable error              // why workers cannot start confined, if they cannot
 	closed       bool
 	done         chan struct{} // closed by Close
-}
-
-// confinement is the ruleset of Landlock that workers start with, of the exported
-// directory as it was when it was made
-type confinement struct {
-	dir   fileID
-	rules *landlock.Ruleset
 }
 
 // worker is one worker process, as seen from the front process
@@ -131,10 +108,11 @@ type worker struct {
 	err    error
 	exited chan struct{} // closed once the process has exited (or never started)
 
+	check     bool // the worker of Check, as nobody
 	pid       int
 	started   time.Time
-	dir       fileID // the exported directory when it started, with Landlock
-	cmd       *exec.Cmd
+	dir       fileID // the exported directory that it is confined to
+	proc      *process
 	ctl       *net.UnixConn
 	transport *http.Transport
 	proxy     *httputil.ReverseProxy
@@ -172,44 +150,23 @@ func New(opts Options) (*Pool, error) {
 	if p.build, err = version.ExecutableBuild(); err != nil {
 		return nil, fmt.Errorf("cannot identify the build of weed's executable, which workers must run: %w", err)
 	}
-	if opts.Cgroups {
-		cg, err := newCgroups()
+	if opts.Starter != nil {
+		sha, cgroups, err := opts.Starter.attach(p.applyDir, opts.Lost)
 		if err != nil {
 			return nil, err
 		}
-		p.cgroups = cg
-	}
-	// Workers are confined with Landlock to the exported directory, and to reading
-	// the system's files (see Rules)
-	if opts.Config.Directory == "/" {
-		return nil, errors.New("weed does not export /: its workers, confined with Landlock to the exported directory, would reach everything")
-	}
-	abi := landlock.ABI()
-	if abi < landlock.MinABI {
-		return nil, fmt.Errorf("weed confines its workers with Landlock, which this kernel does not have (Landlock ABI %d, and %d is needed: Linux 5.19 or later, with landlock in lsm=)",
-			abi, landlock.MinABI)
-	}
-	p.landlock = Rules(&opts.Config)
-	var desc []string
-	for _, r := range p.landlock {
-		desc = append(desc, r.String())
-	}
-	tcp := "not confined (Linux 6.7 or later)"
-	if abi >= landlock.TCPABI {
-		tcp = "no bind, no connect"
-		if p.network().Connect {
-			tcp = "no bind, connect (tpc.enabled)"
+		if sha != opts.ConfigSHA256 || cgroups != opts.Cgroups {
+			opts.Starter.close()
+			return nil, errors.New("the configuration or the limits file changed as weed started, between the reads of weed and of the starter of its workers: start weed again")
 		}
-	}
-	slog.Info("workers are confined with Landlock", "landlock_abi", abi, "rules", desc, "tcp", tcp,
-		"sockets", sockets(&opts.Config).String())
-	first := make(chan struct{})
-	go p.watchDir(first)
-	select {
-	case <-first:
-	case <-time.After(10 * time.Second):
-		slog.Warn("the exported directory does not answer: workers, confined to it with Landlock, start once it does",
-			"dir", opts.Config.Directory)
+		p.launch = opts.Starter
+	} else {
+		if err := privileged(); err != nil {
+			return nil, err
+		}
+		if p.launch, err = newLocal(opts.Config, opts.Cgroups, nil, p.applyDir); err != nil {
+			return nil, err
+		}
 	}
 	go p.reap()
 	return p, nil
@@ -225,8 +182,13 @@ func New(opts Options) (*Pool, error) {
 // execute, what the worker execs as it starts: weed itself, and its dynamic loader if
 // it is built with cgo; and /dev/null.
 func Rules(cfg *config.Config) []landlock.Rule {
+	return append([]landlock.Rule{{Path: cfg.Directory, Access: landlock.Write}}, SystemRules(cfg)...)
+}
+
+// SystemRules are the rules of Rules but the exported directory: what weed's own
+// process may reach of the system too
+func SystemRules(cfg *config.Config) []landlock.Rule {
 	rules := []landlock.Rule{
-		{Path: cfg.Directory, Access: landlock.Write},
 		{Path: "/etc", Access: landlock.Read},
 		{Path: "/proc", Access: landlock.Read},
 		{Path: "/sys/fs/cgroup", Access: landlock.Read},
@@ -265,111 +227,43 @@ func identify(dirfd int, path string) (fileID, error) {
 }
 
 // unmounted reports whether the exported directory, now (zero: gone), is no longer
-// on the storage that it was on when weed started: then not on the file system of
-// root, now on it
-func unmounted(started, now, root fileID) bool {
-	return started.dev != root.dev && (now == (fileID{}) || now.dev == root.dev)
+// on the storage that it was last on (zero: never on one), as at startup or mounted
+// since: on the file system of root, or gone
+func unmounted(storage, now, root fileID) bool {
+	return storage != (fileID{}) && storage.dev != root.dev && (now == (fileID{}) || now.dev == root.dev)
 }
 
-// dirCheckInterval is how often watchDir looks at the exported directory (a variable
-// for tests)
-var dirCheckInterval = 5 * time.Second
-
-// watchDir makes the ruleset that workers start with, and makes it again whenever the
-// exported directory is another than it was, then replacing the workers that started
-// before: the rules of Landlock name the directories themselves, and a storage
-// mounted again over the exported directory is one that they cannot reach. It alone
-// touches the exported directory, so that only it waits if the storage does not
-// answer, not the requests that start workers. first is closed after the first look.
-func (p *Pool) watchDir(first chan<- struct{}) {
-	t := time.NewTicker(dirCheckInterval)
-	defer t.Stop()
-	for {
-		p.checkDir()
-		if first != nil {
-			close(first)
-			first = nil
-		}
-		select {
-		case <-t.C:
-		case <-p.done:
-			p.mu.Lock()
-			if p.confined != nil {
-				p.confined.rules.Close()
-				p.confined = nil
-			}
-			p.mu.Unlock()
-			return
-		}
-	}
-}
-
-func (p *Pool) checkDir() {
-	dir := p.opts.Config.Directory
-	id, err := identify(unix.AT_FDCWD, dir)
+// applyDir learns of the exported directory that workers now start confined to, or
+// of why they cannot start (err), after each look at it (see confiner): workers that
+// started confined to another are replaced, and none serve while they cannot start
+func (p *Pool) applyDir(dir fileID, err error) {
 	p.mu.Lock()
-	c := p.confined
+	prev := p.unconfinable
+	p.unconfinable = err
 	p.mu.Unlock()
-	// Gone, as when the storage mounted above it is no longer
-	gone := errors.Is(err, unix.ENOENT) && c != nil && c.dir != (fileID{})
-	if c == nil || err == nil && id != c.dir || gone {
-		next, err := p.confine()
-		if err == nil && p.started == (fileID{}) {
-			p.started = next.dir
-		}
-		p.mu.Lock()
-		prev := p.unconfinable
-		p.unconfinable = err
-		p.mu.Unlock()
-		var now, before *UnmountedError
-		wasUnmounted := errors.As(prev, &before)
-		if err != nil {
-			switch {
-			case errors.As(err, &now):
-				if !wasUnmounted {
-					slog.Error("the storage of the exported directory is no longer mounted: workers do not start, until it is again", "error", err)
-					if p.opts.Unmounted != nil {
-						p.opts.Unmounted(true)
-					}
-				}
-			case prev == nil || prev.Error() != err.Error():
-				slog.Error("cannot confine workers with Landlock: they do not start", "error", err)
-			}
-			if moved := (*MovedError)(nil); errors.As(err, &moved) && p.opts.Moved != nil {
-				p.moved.Do(func() { p.opts.Moved(err) })
-			}
-			// Nor do those that started before serve: requests get 503, with err
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			if p.confined != nil {
-				p.confined.rules.Close()
-				p.confined = nil
-			}
-			for _, wk := range p.workers {
-				select {
-				case <-wk.ready:
-					if wk.err == nil {
-						p.retireLocked(wk)
-					}
-				default:
-				}
-			}
-			return
-		}
-		p.mu.Lock()
-		p.confined = next
-		p.mu.Unlock()
-		if c != nil {
-			c.rules.Close() // workers that start with it have a copy
-		}
+	var now, before *UnmountedError
+	wasUnmounted := errors.As(prev, &before)
+	switch {
+	case err == nil:
 		if wasUnmounted {
-			slog.Info("the storage of the exported directory is mounted again: workers start", "dir", dir)
+			slog.Info("the storage of the exported directory is mounted again: workers start", "dir", p.opts.Config.Directory)
 			if p.opts.Unmounted != nil {
 				p.opts.Unmounted(false)
 			}
 		}
+	case errors.As(err, &now):
+		if !wasUnmounted {
+			slog.Error("the storage of the exported directory is no longer mounted: workers do not start, until it is again", "error", err)
+			if p.opts.Unmounted != nil {
+				p.opts.Unmounted(true)
+			}
+		}
+	case prev == nil || prev.Error() != err.Error():
+		slog.Error("cannot confine workers with Landlock: they do not start", "error", err)
 	}
-	// Also those that started with the previous ruleset as this one was being made
+	// Nor do those that started before serve while workers cannot start (requests get
+	// 503, with err); also those that started with the previous ruleset as this one
+	// was being made
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, wk := range p.workers {
@@ -378,72 +272,26 @@ func (p *Pool) checkDir() {
 		default:
 			continue // starting
 		}
-		if wk.err == nil && wk.dir != p.confined.dir {
+		if wk.err != nil || err == nil && wk.dir == dir {
+			continue
+		}
+		if err == nil {
 			slog.Info("the exported directory has changed since the worker started (mounted again?): replacing the worker",
-				"worker", wk, "dir", dir)
-			p.retireLocked(wk)
+				"worker", wk, "dir", p.opts.Config.Directory)
 		}
+		p.retireLocked(wk)
 	}
 }
 
-// confine makes the ruleset of workers, with the exported directory as it now is (or
-// without it, if it cannot be opened)
-func (p *Pool) confine() (*confinement, error) {
-	c := &confinement{}
-	rules := slices.Clone(p.landlock)
-	fd, err := unix.Open(rules[0].Path, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		rules = rules[1:]
-	} else {
-		f := os.NewFile(uintptr(fd), rules[0].Path)
-		defer f.Close()
-		c.dir, _ = identify(fd, "")
-		rules[0].File = f
-	}
-	dir := p.opts.Config.Directory
-	if c.dir != p.started && p.started != (fileID{}) {
-		if root, err := identify(unix.AT_FDCWD, "/"); err == nil && unmounted(p.started, c.dir, root) {
-			return nil, &UnmountedError{Dir: dir}
-		}
-		// Rules name inodes, and not what is mounted over them: weed's own name the
-		// exported directory as watchDir first saw it
-		if p.opts.Confined {
-			if f, err := os.Open(dir); err == nil {
-				f.Close()
-			} else if errors.Is(err, fs.ErrPermission) {
-				return nil, &MovedError{Dir: dir}
-			}
-		}
-	}
-	if c.rules, err = landlock.New(rules, p.network()); err != nil {
-		return nil, err
-	}
-	path, err := c.rules.Unreachable(dir, "/proc/self/exe")
-	if err == nil && path != "" {
-		if exe, err := os.Readlink(path); err == nil && path == "/proc/self/exe" {
-			path = "weed's executable, " + exe + ","
-		}
-		err = fmt.Errorf("confined with Landlock, workers could not open %s which weed opens without: it is on a file system that Landlock cannot follow (such as Docker Desktop's mounts of the host): move it", path)
-	}
-	if err != nil {
-		c.rules.Close()
-		return nil, err
-	}
-	return c, nil
-}
-
-// sockets are what workers may open (see seccomp): Unix sockets alone, unless they
-// make third-party copies, which need TCP, and UDP to resolve names
-func sockets(c *config.Config) seccomp.Sockets {
+// Sockets are what workers may open (see seccomp), and so the starter, whose filter
+// they inherit: Unix sockets alone, unless they make third-party copies, which need
+// TCP, and UDP to resolve names
+func Sockets(c *config.Config) seccomp.Sockets {
 	if c.TPC {
 		return seccomp.TCPUDP
 	}
 	return seccomp.UnixOnly
 }
-
-// network is what workers may do of TCP: bind no port, as they listen on none, and
-// connect only to make third-party copies
-func (p *Pool) network() landlock.Net { return landlock.Net{Connect: p.opts.Config.TPC} }
 
 // Workers describes the worker processes that have started and not exited, by account
 func (p *Pool) Workers() []Info {
@@ -472,10 +320,7 @@ func (p *Pool) Workers() []Info {
 // Check starts a worker as nobody (65534) and stops it, so that what would keep
 // workers from starting shows at startup rather than on the first request
 func (p *Pool) Check() error {
-	wk := &worker{
-		user:  fsuser.User{Name: "nobody", UID: 65534, GID: 65534, Groups: []int{65534}},
-		ready: make(chan struct{}), exited: make(chan struct{}), retired: true,
-	}
+	wk := &worker{user: nobody, check: true, ready: make(chan struct{}), exited: make(chan struct{}), retired: true}
 	p.mu.Lock()
 	p.all[wk] = true
 	p.mu.Unlock()
@@ -526,7 +371,7 @@ func (p *Pool) acquire(u *fsuser.User) (*worker, error) {
 		return nil, errRefused
 	}
 	// Logged once, by checkDir, rather than a worker failing to start per request
-	if unmounted := (*UnmountedError)(nil); p.confined == nil && errors.As(p.unconfinable, &unmounted) {
+	if unmounted := (*UnmountedError)(nil); errors.As(p.unconfinable, &unmounted) {
 		err := p.unconfinable
 		p.mu.Unlock()
 		return nil, err
@@ -669,12 +514,12 @@ func (p *Pool) Reload() error {
 	}
 	p.mu.Unlock()
 	var errs []error
-	if p.cgroups != nil && p.opts.CgroupLimits != nil {
+	if p.opts.Cgroups && p.opts.CgroupLimits != nil {
 		done := make(map[string]bool)
 		for _, wk := range running {
 			if !done[wk.user.Name] {
 				done[wk.user.Name] = true
-				if err := p.cgroups.apply(&wk.user, p.opts.CgroupLimits(&wk.user)); err != nil {
+				if err := p.launch.setLimits(&wk.user, p.opts.CgroupLimits(&wk.user)); err != nil {
 					errs = append(errs, err)
 				}
 			}
@@ -733,6 +578,7 @@ func (p *Pool) Close(ctx context.Context) {
 	if _, err := kill(left); err != nil {
 		slog.Error("stopping without waiting for the workers that do not exit", "error", err)
 	}
+	p.closeOnce.Do(p.launch.close)
 }
 
 // kill kills the workers that have started, and waits for them to exit, for at most
@@ -744,7 +590,9 @@ func kill(wks []*worker) (int, error) {
 	for _, wk := range wks {
 		<-wk.ready
 		if wk.err == nil { // else it did not start
-			wk.cmd.Process.Kill()
+			if err := wk.proc.kill(); err != nil {
+				slog.Error("cannot kill a worker", "worker", wk, "error", err)
+			}
 			killed = append(killed, wk)
 		}
 	}
@@ -817,10 +665,6 @@ func (p *Pool) start(wk *worker) {
 
 // spawn starts the process of a worker and waits until it reports that it is ready
 func (p *Pool) spawn(wk *worker) (err error) {
-	settings, err := json.Marshal(Settings{User: wk.user, Config: p.opts.Config, Cgroup: p.cgroups != nil})
-	if err != nil {
-		return err
-	}
 	ctl, child, err := socketPair(unix.SOCK_SEQPACKET)
 	if err != nil {
 		return err
@@ -831,80 +675,28 @@ func (p *Pool) spawn(wk *worker) (err error) {
 			ctl.Close()
 		}
 	}()
-	extra := []*os.File{child} // file descriptor 3
-	p.mu.Lock()
-	c, why := p.confined, p.unconfinable
-	var rules *landlock.Ruleset
-	if c != nil {
-		wk.dir = c.dir
-		rules, err = c.rules.Dup()
-	}
-	p.mu.Unlock()
-	if c == nil && why != nil {
-		return fmt.Errorf("cannot confine the worker with Landlock: %w", why)
-	}
-	if c == nil {
-		return errors.New("the exported directory has not answered yet, and workers are confined to it with Landlock")
-	}
-	if err != nil {
-		return fmt.Errorf("cannot confine the worker with Landlock: %w", err)
-	}
-	defer rules.Close()
 	logs, logw, err := os.Pipe()
 	if err != nil {
 		return err
 	}
-	defer logw.Close()
-
-	groups := make([]uint32, len(wk.user.Groups))
-	for i, g := range wk.user.Groups {
-		groups[i] = uint32(g)
+	var limits []string
+	if p.opts.Cgroups && p.opts.CgroupLimits != nil {
+		limits = p.opts.CgroupLimits(&wk.user)
 	}
-	cmd := &exec.Cmd{
-		// The binary that is running, even if it has since been replaced on disk
-		Path:       "/proc/self/exe",
-		Args:       []string{"weed", "worker", wk.user.Name},
-		Env:        environment(),
-		Dir:        "/",
-		Stdout:     logw,
-		Stderr:     logw,
-		ExtraFiles: extra,
-		SysProcAttr: &syscall.SysProcAttr{
-			Credential: &syscall.Credential{Uid: uint32(wk.user.UID), Gid: uint32(wk.user.GID), Groups: groups},
-		},
-	}
-	if p.cgroups != nil {
-		var cgroupLimits []string
-		if p.opts.CgroupLimits != nil {
-			cgroupLimits = p.opts.CgroupLimits(&wk.user)
-		}
-		fd, err := p.cgroups.prepare(&wk.user, cgroupLimits)
-		if err != nil {
-			logs.Close()
-			return err
-		}
-		defer unix.Close(fd)
-		cmd.SysProcAttr.UseCgroupFD = true
-		cmd.SysProcAttr.CgroupFD = fd
-	}
-	if err := startConfined(cmd, rules, sockets(&p.opts.Config)); err != nil {
+	proc, err := p.launch.start(&wk.user, wk.check, child, logw, limits)
+	logw.Close()
+	if err != nil {
 		logs.Close()
-		if errors.Is(err, unix.EPERM) {
-			err = fmt.Errorf("%w (weed must run as root, or with CAP_SETUID and CAP_SETGID)", err)
-		}
 		return err
 	}
-	wk.cmd, wk.pid, wk.started = cmd, cmd.Process.Pid, time.Now()
+	wk.proc, wk.pid, wk.dir, wk.started = proc, proc.pid, proc.dir, time.Now()
 	go relayLog(logs, wk)
 	stop := func(err error) error {
-		cmd.Process.Kill()
-		cmd.Wait()
+		proc.kill()
+		<-proc.exited
 		return err
 	}
 
-	if _, err := ctl.Write(settings); err != nil {
-		return stop(err)
-	}
 	ctl.SetReadDeadline(time.Now().Add(startTimeout))
 	buf := make([]byte, maxMessage)
 	n, err := ctl.Read(buf)
@@ -965,11 +757,14 @@ func (p *Pool) watch(wk *worker) {
 		}
 		if err := wk.remote.Apply(buf[:n]); err != nil {
 			slog.Error("killing a worker that sent invalid metrics", "worker", wk, "error", err)
-			wk.cmd.Process.Kill()
+			if err := wk.proc.kill(); err != nil {
+				slog.Error("cannot kill a worker", "worker", wk, "error", err)
+			}
 			break
 		}
 	}
-	err := wk.cmd.Wait()
+	<-wk.proc.exited
+	err := wk.proc.err
 	wk.ctl.Close()
 	wk.transport.CloseIdleConnections()
 	wk.remote.Close()
@@ -982,9 +777,6 @@ func (p *Pool) watch(wk *worker) {
 	}
 	delete(p.all, wk)
 	p.mu.Unlock()
-	if p.cgroups != nil {
-		p.cgroups.remove(&wk.user)
-	}
 	switch {
 	case killed:
 		slog.Info("worker killed", "worker", wk)
@@ -1027,8 +819,9 @@ func (wk *worker) dial() (net.Conn, error) {
 // held 7 GB, for no more throughput than with 1 MiB (test/stress slow-download)
 const socketBuffer = 1 << 20
 
-// enlargeBuffers gives a socket buffers of socketBuffer bytes. Beyond
-// net.core.wmem_max and rmem_max, that needs CAP_NET_ADMIN, which root has.
+// enlargeBuffers gives a socket buffers of socketBuffer bytes, or of net.core.wmem_max
+// and rmem_max if they are smaller: beyond, that needs CAP_NET_ADMIN, which weed gives
+// up, as root too (the RPM raises them, see Performance)
 func enlargeBuffers(fd int) {
 	for _, opt := range [][2]int{{unix.SO_SNDBUFFORCE, unix.SO_SNDBUF}, {unix.SO_RCVBUFFORCE, unix.SO_RCVBUF}} {
 		if unix.SetsockoptInt(fd, unix.SOL_SOCKET, opt[0], socketBuffer) != nil {
@@ -1052,47 +845,6 @@ func socketPair(typ int) (*net.UnixConn, *os.File, error) {
 		return nil, nil, err
 	}
 	return c.(*net.UnixConn), os.NewFile(uintptr(fds[1]), "socket"), nil
-}
-
-// startConfined starts cmd from a thread that first gives up what workers must not
-// inherit: capabilities other than those needed to switch to the account (which the
-// kernel drops at execve), ambient and inheritable capabilities, and the ability to
-// gain privileges by executing files (no_new_privs, which also covers file
-// capabilities on the weed binary); and confines itself with Landlock to rules, and
-// with seccomp to the sockets s. These are attributes of threads, so the thread is
-// discarded afterwards rather than returned to the Go scheduler.
-func startConfined(cmd *exec.Cmd, rules *landlock.Ruleset, s seccomp.Sockets) error {
-	errc := make(chan error, 1)
-	go func() {
-		runtime.LockOSThread() // never unlocked: the thread ends with this goroutine
-		errc <- func() error {
-			if err := unix.Prctl(unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0); err != nil && err != unix.EINVAL {
-				return fmt.Errorf("cannot clear ambient capabilities: %w", err)
-			}
-			hdr := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
-			var data [2]unix.CapUserData
-			if err := unix.Capget(&hdr, &data[0]); err != nil {
-				return fmt.Errorf("cannot read capabilities: %w", err)
-			}
-			keep := data[0].Permitted & (1<<unix.CAP_SETUID | 1<<unix.CAP_SETGID)
-			data[0] = unix.CapUserData{Effective: keep, Permitted: keep}
-			data[1] = unix.CapUserData{}
-			if err := unix.Capset(&hdr, &data[0]); err != nil {
-				return fmt.Errorf("cannot drop capabilities: %w", err)
-			}
-			if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-				return fmt.Errorf("cannot set no_new_privs: %w", err)
-			}
-			if err := rules.Restrict(); err != nil {
-				return fmt.Errorf("cannot confine the worker with Landlock: %w", err)
-			}
-			if err := seccomp.Restrict(s); err != nil {
-				return fmt.Errorf("cannot confine the worker: %w", err)
-			}
-			return cmd.Start()
-		}()
-	}()
-	return <-errc
 }
 
 // environment is that of workers: none of weed's, which may hold secrets, only what

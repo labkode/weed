@@ -83,17 +83,18 @@ The records of workers carry worker.user and worker.pid, and the request_id of t
 
 ## Rotation
 
-On SIGHUP, weed reopens its log file. With logrotate, /etc/logrotate.d/weed:
+On SIGHUP, weed reopens its log file. The RPM installs /etc/logrotate.d/weed, which rotates it with logrotate; without the RPM, write it:
 
-    /var/log/weed/weed.log {
+    /var/log/weed/*.log {
         daily
         rotate 30
         compress
         delaycompress
         missingok
         notifempty
+        sharedscripts
         postrotate
-            systemctl reload weed >/dev/null 2>&1 || true
+            systemctl reload weed.service >/dev/null 2>&1 || true
         endscript
     }
 

@@ -76,6 +76,7 @@
 				<ul>
 					<li><a href="commands.html#weed">weed</a></li>
 					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#limits">limits</a></li>
 					<li><a href="commands.html#config">config</a></li>
 					<li><a href="commands.html#version">version</a></li>
 					<li><a href="commands.html#ban">utils ban</a></li>
@@ -129,8 +130,12 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <td>X.509 needs a grid-mapfile: create it, or set <code>x509.gridmap</code>.</td>
 </tr>
 <tr>
-<td><code>cannot start a worker for nobody: fork/exec /proc/self/exe: operation not permitted (weed must run as root, or with CAP_SETUID and CAP_SETGID)</code></td>
-<td>Run weed as root, or give it the capabilities (see <a href="installation.html#without-root">Installation</a>).</td>
+<td><code>weed must run as root, or with the capabilities CAP_SETUID, CAP_SETGID and CAP_KILL (systemd: AmbientCapabilities=)</code></td>
+<td>Give the account that weed runs as the capabilities, as the RPM's unit does, or run weed as root (see <a href="installation.html#without-root">Installation</a>).</td>
+</tr>
+<tr>
+<td><code>weed exits: workers no longer start</code> ... <code>the starter of workers has exited</code></td>
+<td>The process that starts weed's workers exited, or was killed: weed exits with it (status 1), and systemd starts both again. The error says how it ended; a signal is someone's kill, or the kernel's OOM killer (see the kernel's log).</td>
 </tr>
 <tr>
 <td><code>cannot confine weed with Landlock: weed confines itself and its workers with Landlock, which this kernel does not have (Landlock ABI 0, and 2 is needed: Linux 5.19 or later, with landlock in lsm=)</code></td>
@@ -147,6 +152,22 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <tr>
 <td><code>cannot confine the worker with Landlock: confined with Landlock, workers could not open /data which weed opens without: it is on a file system that Landlock cannot follow</code></td>
 <td>Landlock refuses every access on some file systems, whatever its rules, such as Docker Desktop's mounts of the host: put the exported directory and weed's binary on another (see <a href="unix-accounts.html#confinement">Unix accounts</a>).</td>
+</tr>
+<tr>
+<td><code>weed would start with /etc/weed/weed.toml as root, but not as the account weed that it runs as (User= of weed.service)</code> ... <code>permission denied</code></td>
+<td><em>weed check</em>, run by root: the account weed cannot read a file that the configuration names, which root can. Give it to the group weed: <code>chgrp weed FILE &amp;&amp; chmod 640 FILE</code> (see <a href="commands.html#check">Commands</a>).</td>
+</tr>
+<tr>
+<td><code>cannot read the htpasswd file: open /etc/weed/.htpasswd: permission denied</code></td>
+<td>The account that weed runs as cannot read the password file (or the app tokens file), and weed would start with nobody able to log in: <code>chgrp weed /etc/weed/.htpasswd &amp;&amp; chmod 640 /etc/weed/.htpasswd</code>. On a reload, weed keeps the users it has.</td>
+</tr>
+<tr>
+<td><code>a seccomp filter refuses openat2(2), with which weed's workers open files: systemd's RestrictSUIDSGID= does, ...</code></td>
+<td>A drop-in of weed's unit, often of a security baseline, sets RestrictSUIDSGID=, or a SystemCallFilter= without openat2: remove it (<em>systemctl cat weed</em> shows the unit and its drop-ins). weed opens every file with openat2, to follow no symbolic link (see <a href="unix-accounts.html#confinement">Unix accounts</a>).</td>
+</tr>
+<tr>
+<td><code>a seccomp filter refuses clone3(2), which starts each worker in its cgroup (unix_users.cgroups): systemd's RestrictNamespaces= does, ...</code></td>
+<td>As above, for RestrictNamespaces=, which refuses clone3 as it cannot look into its arguments.</td>
 </tr>
 <tr>
 <td><code>cannot read the banned users (admin.bans): open /var/lib/weed/bans.json: permission denied</code></td>
@@ -273,12 +294,28 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <td>The worker could not start: weed logs why, e.g. a failed cgroup limit, or a binary that changed in place (see <a href="upgrading.html#old-binary">Upgrading</a>).</td>
 </tr>
 <tr>
-<td><code>weed may no longer open the exported directory /data, a storage mounted over it or in its place since weed started ...</code></td>
-<td>weed, confined with Landlock, reaches the exported directory as it was when it started: it exits (status 75), and its supervisor starts it again (see <a href="installation.html#mounted">Installation</a>). If it does not come back, see why it does not start.</td>
+<td><code>cannot start a worker for alice: fork/exec /proc/self/exe: function not implemented</code></td>
+<td>A seccomp filter refuses clone3, which starts a worker in its cgroup (<code>unix_users.cgroups</code>): a container runtime's that predates it. weed says so as it starts when systemd's RestrictNamespaces= refuses it (above).</td>
 </tr>
 <tr>
-<td><code>the storage that the exported directory /data was on when weed started is no longer mounted ...</code></td>
-<td>The storage was unmounted, or the one above the exported directory: requests get 503 until it is mounted again, and weed then starts again, confined to it, within seconds (see <a href="installation.html#mounted">Installation</a>). weed never serves the directory beneath; to serve it instead, restart weed, without <code>server.require_mount</code>.</td>
+<td><code>refusing to serve: weed opens files with openat2(2), which this system refuses ...</code></td>
+<td>A seccomp filter refuses openat2: a container runtime's that predates it; update it. weed says so as it starts when systemd's RestrictSUIDSGID= refuses it (above).</td>
+</tr>
+<tr>
+<td><code>the storage is full: writes get 507 Insufficient Storage</code></td>
+<td>The file system of the exported directory is full (ENOSPC): uploads, MKCOL, COPY and third-party copies into it get 507, which clients tell from a fault of weed. weed logs it once a minute, with how many it did not log; <code>weed_storage_full_total</code> counts them all. Free space, or grow the file system.</td>
+</tr>
+<tr>
+<td><code>an account is over its quota on the storage: its writes get 507 Insufficient Storage</code></td>
+<td>The account's quota on the file system is used up (EDQUOT): the user's writes get 507 until they free space, or their quota grows.</td>
+</tr>
+<tr>
+<td><code>the exported directory has changed since the worker started (mounted again?): replacing the worker</code></td>
+<td>A storage was mounted over the exported directory, or in its place: workers, confined with Landlock to the directory as it was when they started, are replaced by workers confined to what is there now (see <a href="installation.html#mounted">Installation</a>). Nothing to do.</td>
+</tr>
+<tr>
+<td><code>the storage that the exported directory /data was on is no longer mounted ...</code></td>
+<td>The storage was unmounted, or the one above the exported directory: requests get 503 until it is mounted again, and weed then serves it again within seconds (see <a href="installation.html#mounted">Installation</a>). weed never serves the directory beneath; to serve it instead, restart weed, without <code>server.require_mount</code>.</td>
 </tr>
 <tr>
 <td><code>the exported directory /data is on the file system of /, not on a storage of its own (server.require_mount): is its storage mounted?</code></td>

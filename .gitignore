@@ -35,5 +35,6 @@ docs/src/build/
 # The archives of a release (make dist)
 dist/
 
-# The results of make find-limits and make find-limits-users
+# The results of make find-limits and make find-limits-users, and of weed limits
 test/limits/out/
+weed-limits/

@@ -60,15 +60,35 @@ weed logs the rules as it starts:
 
 ### weed's own process {#process}
 
-weed confines itself with Landlock too: the process that terminates TLS and authenticates requests, as root. It may write the exported directory, the directories of `server.log_file`, `admin.socket` and `admin.bans`, and its cgroup, and read only those, the system's files (as workers) and the files that its configuration names. From Linux 6.7, it binds only its ports, and connects only to token issuers and for third-party copies. With seccomp, it opens Unix, netlink, TCP and UDP sockets alone, and has no io_uring.
+weed runs as three kinds of process. weed itself terminates TLS, authenticates requests and relays them; the starter of workers starts the workers, as their accounts; each worker accesses the files of one account:
 
-Landlock and seccomp confine a thread and what it executes: weed executes itself again, from a thread that it confines, and refuses to start if it then is not confined. It logs the rules as it does:
+    # systemd-cgls -u weed.service
+    Unit weed.service (/system.slice/weed.service):
+    ├─main
+    │ ├─812 /usr/bin/weed -config /etc/weed/weed.toml  as weed: no capabilities
+    │ └─815 weed starter -config /etc/weed/weed.toml   as weed: CAP_SETUID CAP_SETGID CAP_KILL
+    ├─worker-alice
+    │ └─1630 weed worker alice                         as alice: no capabilities
+    └─worker-cms001
+      └─1702 weed worker cms001                        as cms001: no capabilities
 
-    INFO weed confines itself with Landlock, and executes itself again confined landlock_abi=6 rules="[write /data read /etc ... write and make sockets in /run/weed write /var/lib/weed write /sys/fs/cgroup/system.slice/weed.service]" tcp="bind 443 9100, connect (token issuers, tpc.enabled)" sockets="Unix, netlink, TCP and UDP"
+weed has no privileges: as it starts, before it reads a request, it starts the starter, then gives up its capabilities (but CAP_NET_BIND_SERVICE, to listen on a port below 1024), and confines itself with Landlock and seccomp. It may write the directories of `server.log_file`, `admin.socket` and `admin.bans`, and read only those, the system's files (as workers) and the files that its configuration names; not the exported directory, which workers alone reach. From Linux 6.7, it binds only its ports, and connects only to token issuers and for third-party copies. With seccomp, it opens Unix, netlink, TCP and UDP sockets alone, and has no io_uring. It is the same as root: a root without capabilities owns root's files, but reaches only what Landlock lets it.
 
-Confined to /, weed would reach everything: it does not export /, nor keep its files there.
+Landlock, seccomp and the capabilities of a process are those of a thread, and what it executes: weed executes itself again, from a thread that it confines, and refuses to start if it then is not confined, or has capabilities. It logs the rules as it does:
 
-Landlock confines to plain directories and to mount points alike. A rule names the directory that its path leads to as weed starts: with a storage mounted at /data, the root of that storage; without one, the directory /data itself. It covers everything beneath, storage mounted below it later included. It does not cover what is mounted over it, or above it, later, nor what replaces it: a storage mounted at /data after weed started, or the directory beneath once the storage is unmounted, is out of weed's reach. weed looks at the directory every 5 seconds. When a storage is there in its place, weed exits, to be started again by its supervisor, confined to it. When the storage that weed started on is no longer mounted, weed does not exit, and refuses requests until the storage is back: a weed started again would serve the directory beneath (see [Installation](installation.html#mounted)).
+    INFO weed confines itself with Landlock, and executes itself again confined, without privileges landlock_abi=6 rules="[read /etc read /proc ... write and make sockets in /run/weed write /var/lib/weed]" tcp="bind 443 9100, connect (token issuers, tpc.enabled)" sockets="Unix, netlink, TCP and UDP" capabilities=CAP_NET_BIND_SERVICE
+
+Confined to /, weed would reach everything: it does not keep its files there.
+
+### The starter of workers {#starter}
+
+The starter keeps the capabilities that starting workers needs, CAP_SETUID and CAP_SETGID, and CAP_KILL to stop them, and nothing else: it reads no request, and does nothing but start the workers that weed asks for, and kill them. weed sends it the name of an account and the two sockets of the worker; the starter looks the account up itself, and starts no worker as root, nor as an account that it finds other than weed does (its uid, gid and groups): an account changed since weed looked it up gets 503 until *systemctl reload weed* looks it up again. It may gain no privileges (no_new_privs), and seccomp lets it open only the sockets of its workers. weed cannot look into it: it is not dumpable, and has capabilities that weed has not.
+
+With CAP_SETUID, the starter can become any account, root too, so it is as trusted as root: it is small, and takes nothing but weed's messages, which it checks. It is not confined with Landlock, so that it follows the exported directory as storage comes and goes (below). Its log is weed's, with `process=starter`. If it exits, weed exits too (status 1), as it can start no worker; systemd starts both again.
+
+### Storage mounted later {#mounted}
+
+Landlock confines to plain directories and to mount points alike. A rule names the directory that its path leads to as the worker starts: with a storage mounted at /data, the root of that storage; without one, the directory /data itself. It covers everything beneath, storage mounted below it later included. It does not cover what is mounted over it, or above it, later, nor what replaces it: a storage mounted at /data after a worker started, or the directory beneath once the storage is unmounted, is out of the worker's reach. The starter looks at the directory every 5 seconds. When a storage is there in its place, the workers confined to the directory as it was finish their requests and stop, and the next requests get workers confined to the storage: weed goes on serving. When the storage that the directory was on, at startup or mounted since, is no longer mounted, no worker starts, and requests get 503 until the storage is back: weed started again would serve the directory beneath (see [Installation](installation.html#mounted)).
 
 Two more would confine workers further, and are not part of weed. A mount namespace per worker, holding only the exported directory and the system files a worker needs (pivot_root, as containers do), would hide what is outside even from stat; weed would need CAP_SYS_ADMIN, and storage mounted after a worker started (autofs, NFS remounts) to propagate into it. systemd's sandboxing confines weed and its workers together, so also the process that terminates TLS and authenticates requests (see [Installation](installation.html#sandboxing)); it does not separate the accounts from each other.
 
@@ -91,16 +111,7 @@ New files and directories get the permissions that weed's umask leaves (0644 and
 
 ## cgroups
 
-With `unix_users.cgroups`, the workers of each account run in a cgroup of their own, below weed's. weed's cgroup must be delegated to it (cgroup v2; with systemd, `Delegate=yes` in the unit). weed then moves itself into \<its cgroup\>/main, and starts the workers of alice in \<its cgroup\>/worker-alice, with the cpu, io, memory and pids controllers when they are available. systemd-cgtop and systemd-cgls show what each account uses:
-
-    # systemd-cgls -u weed.service
-    Unit weed.service (/system.slice/weed.service):
-    ├─main
-    │ └─812 weed -config /etc/weed/weed.toml
-    ├─worker-alice
-    │ └─1630 weed worker alice
-    └─worker-cms001
-      └─1702 weed worker cms001
+With `unix_users.cgroups`, the workers of each account run in a cgroup of their own, below weed's. weed's cgroup must be delegated to it (cgroup v2; with systemd, `Delegate=yes` in the unit). The starter of workers then moves itself and weed into \<its cgroup\>/main, and starts the workers of alice in \<its cgroup\>/worker-alice, with the cpu, io, memory and pids controllers when they are available. systemd-cgtop and systemd-cgls show what each account uses (see [above](#process)).
 
 `unix_users.cgroup_limits` writes limits into the cgroup of every account (and implies cgroups), unless the limits file sets others for the account (see [Limits per account](limits.html)):
 

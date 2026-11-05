@@ -118,7 +118,7 @@ restart_pending
 :   why a restart would change what runs, by reason: config, binary. Empty when nothing would change.
 
 storage_unmounted
-:   since when the storage that the exported directory was on when weed started is not mounted, absent while it is: requests get 503 (see [Installation](installation.html#mounted)).
+:   since when the storage that the exported directory was on is not mounted, absent while it is: requests get 503 (see [Installation](installation.html#mounted)).
 
 workers
 :   each worker: its account, its pid, since when it runs, and how many requests weed waits for it to answer. A retired worker finishes its requests and takes no new ones, e.g. after its account's groups changed. blocked_threads are the worker's threads that wait in the kernel, uninterruptibly: for a moment while they read or write files, and for long when its storage does not answer, also once their clients have gone (see [Troubleshooting](troubleshooting.html#hung-storage)).
@@ -154,6 +154,7 @@ With `metrics_address = "localhost:9100"`, scrape it from the host, e.g. through
 |----|----|
 | weed is down | `up{job="weed"} == 0`, or /healthz failing from outside |
 | the storage is not mounted | `weed_storage_unmounted == 1` |
+| the storage is full | `increase(weed_storage_full_total{reason="full"}[10m]) > 0`; alongside the free space of its file system (node_exporter) |
 | CRLs about to expire (fetch-crl stopped) | `weed_crl_expiry_timestamp_seconds - time() < 6 * 3600` |
 | host certificate about to expire | `weed_tls_certificate_expiry_timestamp_seconds - time() < 14 * 86400` |
 | a credential file cannot be read | `weed_reload_last_successful == 0` |
@@ -164,4 +165,4 @@ With `metrics_address = "localhost:9100"`, scrape it from the host, e.g. through
 | too many workers (raise unix_users.max_workers) | `weed_workers > 0.9 * 256` |
 | third-party copies refused (raise tpc.max_transfers) | `increase(weed_tpc_rejected_total[1h]) > 0` |
 | third-party copies failing | `rate(weed_tpc_transfers_total{result="failure"}[1h]) / rate(weed_tpc_transfers_total[1h]) > 0.1` |
-| server errors | `sum(rate(weed_http_requests_total{code=~"5.."}[5m])) / sum(rate(weed_http_requests_total[5m])) > 0.05` |
+| server errors (507 aside: a full storage, or an account over its quota) | `sum(rate(weed_http_requests_total{code=~"5..",code!="507"}[5m])) / sum(rate(weed_http_requests_total[5m])) > 0.05` |

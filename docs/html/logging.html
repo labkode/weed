@@ -76,6 +76,7 @@
 				<ul>
 					<li><a href="commands.html#weed">weed</a></li>
 					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#limits">limits</a></li>
 					<li><a href="commands.html#config">config</a></li>
 					<li><a href="commands.html#version">version</a></li>
 					<li><a href="commands.html#ban">utils ban</a></li>
@@ -190,16 +191,17 @@ level=INFO msg=request method=PUT path=/webdav/cms/hosts proto=HTTP/1.1 status=4
 <pre><code>level=INFO msg=&quot;started a worker&quot; worker.user=alice worker.pid=127 account.name=alice account.uid=1001 account.gid=1001 account.groups=[1001]
 level=INFO msg=&quot;worker stopped&quot; worker.user=alice worker.pid=127</code></pre>
 <h2 id="rotation">Rotation</h2>
-<p>On SIGHUP, weed reopens its log file. With logrotate, /etc/logrotate.d/weed:</p>
-<pre><code>/var/log/weed/weed.log {
+<p>On SIGHUP, weed reopens its log file. The RPM installs /etc/logrotate.d/weed, which rotates it with logrotate; without the RPM, write it:</p>
+<pre><code>/var/log/weed/*.log {
     daily
     rotate 30
     compress
     delaycompress
     missingok
     notifempty
+    sharedscripts
     postrotate
-        systemctl reload weed &gt;/dev/null 2&gt;&amp;1 || true
+        systemctl reload weed.service &gt;/dev/null 2&gt;&amp;1 || true
     endscript
 }</code></pre>
 <p>The reload also re-reads the credential files (see <a href="reloading.html">Reloading</a>), which does no harm. Without <code>server.log_file</code>, the journal rotates the log itself, but does not keep every record (see <a href="#file">above</a>):</p>

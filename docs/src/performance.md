@@ -2,7 +2,7 @@
 title: 'Performance'
 ---
 
-weed spends the machine's CPUs on most requests, its storage on uploads, and the network on large transfers. Its own limits, systemd's and the kernel's can stop it before it runs out of any of them. This page says what limits each kind of request, which settings to change, and how to measure a server. The numbers are of one machine: measure yours before and after a change (see [Measuring a server](#stress)).
+weed spends the machine's CPUs on most requests, its storage on uploads, and the network on large transfers. Its own limits, systemd's and the kernel's can stop it before it runs out of any of them. This page says what limits each kind of request, which settings to change, and how to measure a server. The numbers are of one machine: measure yours before and after a change. *weed limits* measures it, and suggests which settings of this page to change (see [Measuring a server](#stress)).
 
 ## What limits each kind of request {#limits}
 
@@ -65,21 +65,28 @@ A TCP connection carries at most one buffer of data each round trip. weed leaves
 
 The buffers grow only for the connections that need them; net.ipv4.tcp_mem bounds the memory of all connections together. net.core.rmem_max and wmem_max do not bound them: they bound the sizes that programs set themselves, as weed does for its workers (below). Over paths that lose packets, BBR congestion control (net.ipv4.tcp_congestion_control = bbr, with net.core.default_qdisc = fq) keeps more of the bandwidth than the default, cubic: measure both.
 
-### Without root {#socket-buffers}
+### Between weed and its workers {#socket-buffers}
 
-Downloads relayed from workers run at about 92% of the speed of serving files directly, and uploads at the same speed (1 GiB files over loopback without TLS: about 5200 MB/s against 5600 MB/s). That needs 1 MiB buffers on the sockets between weed and its workers, more than net.core.wmem_max and rmem_max allow by default (212992 bytes), which root may exceed. If weed runs as an account of its own (see [Installation](installation.html#without-root)), raise net.core.wmem_max and net.core.rmem_max to 1048576, or downloads lose a third:
+Downloads relayed from workers run at about 92% of the speed of serving files directly, and uploads at the same speed (1 GiB files over loopback without TLS: about 5200 MB/s against 5600 MB/s). That needs 1 MiB buffers on the sockets between weed and its workers, more than net.core.wmem_max and rmem_max allow by default (212992 bytes). weed has no capability to exceed them (CAP_NET_ADMIN), as root too: raise net.core.wmem_max and net.core.rmem_max to 1048576, or downloads lose a third. The RPM does, in /usr/lib/sysctl.d/60-weed.conf:
 
     net.core.wmem_max = 1048576
     net.core.rmem_max = 1048576
 
 ### Connection tracking {#conntrack}
 
-When the firewall tracks connections, as firewalld does, the kernel keeps an entry for each, up to net.netfilter.nf_conntrack_max, until 120 seconds after it closes. Beyond, it drops new connections, and logs "nf_conntrack: table full, dropping packet". Clients that make a connection for each request fill it: 262144 entries hold some 2000 new connections a second. Compare the count with the maximum under load, and raise the maximum in /etc/sysctl.d, e.g. `net.netfilter.nf_conntrack_max = 1048576`. The setting exists once the module is loaded: load it at boot, before the settings are applied:
+When the firewall tracks connections, as firewalld does, the kernel keeps an entry for each, up to net.netfilter.nf_conntrack_max, until 120 seconds after it closes. Beyond, it drops new connections, and logs "nf_conntrack: table full, dropping packet". Clients that make a connection for each request fill it: 262144 entries hold some 2000 new connections a second. Compare the count with the maximum under load, and raise the maximum in /etc/sysctl.d, e.g. `net.netfilter.nf_conntrack_max = 1048576`, with the buckets of the hash table that finds the entries, `net.netfilter.nf_conntrack_buckets`: the kernel makes as many as entries, but no more than 262144, so that each list it walks is short. An entry takes some 300 bytes of the kernel's memory, a bucket 8. The settings exist once the module is loaded: load it at boot, before the settings are applied:
 
     # sysctl net.netfilter.nf_conntrack_count net.netfilter.nf_conntrack_max
     net.netfilter.nf_conntrack_count = 170
     net.netfilter.nf_conntrack_max = 262144
     # echo nf_conntrack >/etc/modules-load.d/nf_conntrack.conf
+
+Or leave weed's port untracked: the connections to it then take no entries. The firewall must still accept their packets, which have the state untracked rather than new or established (firewalld accepts both for the ports it opens). With nftables, for port 443:
+
+    table inet notrack_weed {
+        chain prerouting { type filter hook prerouting priority raw; tcp dport 443 notrack; }
+        chain output { type filter hook output priority raw; tcp sport 443 notrack; }
+    }
 
 ### Listen queue {#backlog}
 
@@ -106,12 +113,34 @@ On NFS and parallel filesystems, each call to the storage waits for the network:
 
 ## Measuring a server {#stress}
 
+*weed limits* finds what weed can serve on its machine, as its configuration sets it, and suggests the settings of this page that would let it serve more. It changes nothing. Run it as root, before weed serves or while it serves little, with the round trip to weed's farthest clients (see [Commands](commands.html#limits)):
+
+    # weed limits -rtt 150ms
+
+It runs a weed of its own on 127.0.0.1, with the settings of /etc/weed/weed.toml that set what serving costs, and exports a directory of weed's storage. It measures the storage by itself, then puts its weed under the load below, and reads what the kernel and weed's cgroups dropped meanwhile. It writes summary.txt, which says what weed served and what limited it, and the files of the settings it suggests:
+
+| When | It suggests |
+|----|----|
+| systemd's TasksMax is below the threads that weed's workers hold when the storage stops answering | TasksMax=infinity, in a drop-in of weed's unit ([above](#systemd)) |
+| weed answered more requests a second than the journal keeps, and `server.log_file` is not set | `server.log_file`, and LogsDirectory=weed |
+| a network storage (NFS, FUSE) answered 25% more calls a second at four times `unix_users.max_storage_calls` at once | `unix_users.max_storage_calls` four times higher ([above](#settings)) |
+| pids.max of `unix_users.cgroup_limits` is below `max_storage_calls`, plus the CPUs, plus a hundred, or a worker could not make a thread | a higher pids.max |
+| with `-rtt`, a connection carries less than the bandwidth over that round trip | `tcp_rmem` and `tcp_wmem` of twice the bandwidth-delay product ([above](#tcp-buffers)) |
+| the socket buffers that programs may ask for are below 1 MiB | `net.core.wmem_max` and `rmem_max` of 1 MiB ([above](#socket-buffers)) |
+| weed took more than half the new connections a second that connection tracking holds (`nf_conntrack_max` over the 120 s it keeps each), or it dropped some | a larger `nf_conntrack_max`, as many `nf_conntrack_buckets`, and nf_conntrack loaded at boot; or weed's port untracked ([above](#conntrack)) |
+| the kernel dropped connections for a full listen queue | larger `somaxconn` and `tcp_max_syn_backlog` ([above](#backlog)) |
+| the configuration enables passwords (the load measures them on their own, and authenticates by an app token otherwise); weed's host key is RSA of 3072 bits or more | app tokens, bearer tokens or certificates; an ECDSA host key ([above](#authentication)) |
+
+weed.toml is your configuration, with each setting it changes under a comment that says why, and what it was; *diff -u* shows them. The summary ends with the commands that install each file.
+
+Its load runs on weed's machine, over loopback: it takes CPUs from weed, and its connections do not cross the network. They come from one address, whose ports they reuse, and connection tracking reuses their entries: it does not fill as it would with as many clients, so weed limits sizes it from the rate of new connections, not from its drops. To measure what clients get, run test/stress from another machine.
+
 test/stress finds what a server sustains. For each kind of request (small files read, written and listed, new TLS connections, downloads and uploads of large files, each authentication method, many accounts), it doubles the clients until throughput stops growing, more than 1% of requests fail, or the p99 latency passes 2 seconds. Two more grow a crowd of up to 8192 clients that each hold a connection, the small GETs and slow downloads above, and report the memory that each client adds. Run weed as it will serve, and stress from another machine, as an account that may write the directory it is given; stress works in a directory of its own below it, and removes it:
 
     $ go build -o stress ./test/stress
     $ ./stress -url https://weed.example.org/webdav/home/alice \
           -cert usercert.pem -key userkey.pem -ca /etc/grid-security/certificates
 
-*stress -h* lists the kinds of requests and options; `-json` writes the results. From a checkout of weed, `make find-limits` runs it on weed's machine against weed serving one account, and `make find-limits-users` against weed serving many accounts to crowds of thousands of clients, in a Podman container. On weed's machine, stress takes CPUs from weed.
+*stress -h* lists the kinds of requests and options; `-json` writes the results. From a checkout of weed, `make find-limits` runs weed limits, and `make find-limits-users` runs stress against weed serving many accounts to crowds of thousands of clients, in a Podman container. On weed's machine, stress takes CPUs from weed.
 
 While it runs, watch what limits weed: the dashboard and /status (requests in progress, blocked threads; see [Monitoring](monitoring.html)), the pressure files of the workers' cgroups (see [Troubleshooting](troubleshooting.html#slow)), *systemctl show -p TasksCurrent weed*, and the counters of the kernel above.

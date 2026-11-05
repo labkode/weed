@@ -1,4 +1,4 @@
-package main
+package stress
 
 import (
 	"bytes"
@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,12 +52,15 @@ func TestRun(t *testing.T) {
 	// u1 twice, as one account by two methods would be: a directory each
 	os.WriteFile(ids, []byte("# name kind arguments\nu1 basic p-u1\nu2 basic p-u2\nu3 bearer t3\nu1 basic p-u1\n"), 0o644)
 	var stdout, stderr bytes.Buffer
-	code := run(ctx, []string{"-url", srv.URL + "/{user}", "-ca", ca, "-identities", ids,
+	rep, code := Run(ctx, []string{"-url", srv.URL + "/{user}", "-ca", ca, "-identities", ids,
 		"-max", "2", "-step", "200ms", "-warmup", "50ms", "-small-size", "1KiB", "-download-size", "1MiB",
 		"-upload-size", "256KiB", "-list-entries", "3", "-clients", "2", "-interval", "50ms", "-client-rate", "256KiB",
 		"-json", results}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit %d\n%s%s", code, &stdout, &stderr)
+	}
+	if rep == nil || len(rep.Results) != 10 {
+		t.Fatalf("Run returned %+v", rep)
 	}
 
 	b, err := os.ReadFile(results)
@@ -66,7 +70,7 @@ func TestRun(t *testing.T) {
 	var got struct {
 		Results []struct {
 			Name  string `json:"name"`
-			Steps []step `json:"steps"`
+			Steps []Step `json:"steps"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal(b, &got); err != nil {
@@ -144,6 +148,41 @@ func TestTokenFile(t *testing.T) {
 	}
 }
 
+// At the end of a step, the requests of a scenario that drains end; those of others
+// are cut
+func TestDrain(t *testing.T) {
+	for _, drain := range []bool{false, true} {
+		var cut atomic.Int64
+		sc := &scenario{Name: "x", Unit: "req/s", idents: []*identity{{}}, drain: drain,
+			op: func(ctx context.Context, id *identity, i int, moved *atomic.Int64) error {
+				select {
+				case <-time.After(300 * time.Millisecond):
+					return nil
+				case <-ctx.Done():
+					cut.Add(1)
+					return ctx.Err()
+				}
+			}}
+		runStep(context.Background(), &config{step: 100 * time.Millisecond}, sc, 4)
+		if want := int64(4); drain {
+			want = 0
+			if cut.Load() != want {
+				t.Errorf("drain: %d of 4 requests cut", cut.Load())
+			}
+		} else if cut.Load() != want {
+			t.Errorf("no drain: %d of 4 requests cut", cut.Load())
+		}
+	}
+}
+
+// An app token is a password of Basic authentication
+func TestAppToken(t *testing.T) {
+	id, err := newIdentity(&config{}, []string{"u", "app-token", "t0k"}, &tls.Config{}, "https://x/", "run")
+	if err != nil || *id.header.Load() != "Basic dTp0MGs=" || id.String() != "u (app-token)" {
+		t.Fatalf("%v %q %s", err, *id.header.Load(), id)
+	}
+}
+
 // A ramp stops on errors, on clients behind, on latency (of requests, not
 // transfers), and but for a crowd, once two doublings of the clients added less than
 // 10% each
@@ -177,9 +216,9 @@ func TestVerdict(t *testing.T) {
 		if c.crowd {
 			sc.crowdOp = func(context.Context, *member) error { return nil }
 		}
-		steps := make([]step, len(c.rates))
+		steps := make([]Step, len(c.rates))
 		for i, r := range c.rates {
-			steps[i] = step{Clients: 100, ReqRate: r, ByteRate: r, Requests: 98}
+			steps[i] = Step{Clients: 100, ReqRate: r, ByteRate: r, Requests: 98}
 		}
 		steps[len(steps)-1].Errors = c.errors
 		steps[len(steps)-1].Behind = c.behind

@@ -17,19 +17,23 @@ import (
 	"github.com/labkode/weed/internal/seccomp"
 	"github.com/labkode/weed/internal/systemd"
 	"github.com/labkode/weed/internal/worker"
+	"golang.org/x/sys/unix"
 )
 
 // confinedEnv is in the environment of weed that Confine executes again, confined
 const confinedEnv = "WEED_LANDLOCK"
 
-// confined says that this process is confined with Landlock
-var confined bool
+// starter starts the workers, once Confine has started it
+var starter *worker.Starter
 
-// Confine confines weed's own process with Landlock, and so the workers it starts;
-// and with seccomp to the sockets that Landlock confines, or does not need to: Unix,
-// netlink, TCP and UDP. Both confine a thread, and what it executes: Confine executes
-// weed again, from a thread that it confines, and returns in weed so executed, once
-// it has checked that it is confined. weed does not serve unconfined: without
+// Confine gives up weed's privileges, and confines it. First it starts the starter of
+// workers, which keeps the capabilities that starting workers as their accounts needs
+// (see worker.Starter); weed keeps none, but CAP_NET_BIND_SERVICE to listen on its
+// ports below 1024. It confines weed's own process with Landlock, and with seccomp to
+// the sockets that Landlock confines, or does not need to: Unix, netlink, TCP and UDP.
+// Capabilities and both confinements are those of a thread, and what it executes:
+// Confine executes weed again, from a thread that has them, and returns in weed so
+// executed, once it has checked them. weed does not serve unconfined: without
 // Landlock in the kernel, Confine fails.
 func Confine(c *config.Config, src config.Source) error {
 	again := os.Getenv(confinedEnv) != ""
@@ -43,7 +47,17 @@ func Confine(c *config.Config, src config.Source) error {
 		if !seccomp.Filtered(seccomp.TCPUDP) {
 			return fmt.Errorf("weed was executed again to open %s sockets alone (seccomp), and opens others", seccomp.TCPUDP)
 		}
-		confined = true
+		if more, err := worker.HasCapabilities(1 << unix.CAP_NET_BIND_SERVICE); err != nil || more != 0 {
+			return fmt.Errorf("weed was executed again without capabilities, but CAP_NET_BIND_SERVICE, and has some (%#x)", more)
+		}
+		st, err := worker.StarterFromEnv()
+		if err != nil {
+			return err
+		}
+		if st == nil {
+			return errors.New("weed was executed again with the starter of its workers, and has none")
+		}
+		starter = st
 		return nil
 	}
 	abi := landlock.ABI()
@@ -72,7 +86,7 @@ func Confine(c *config.Config, src config.Source) error {
 		return err
 	}
 	defer rs.Close()
-	paths := append([]string{src.Path, c.Directory, "/proc/self/exe", c.LogFile, c.LimitsFile, c.TPCCAPath}, opened(c)...)
+	paths := append([]string{src.Path, "/proc/self/exe", c.LogFile, c.LimitsFile, c.TPCCAPath}, opened(c)...)
 	path, err := rs.Unreachable(slices.DeleteFunc(paths, func(p string) bool { return p == "" })...)
 	if err != nil {
 		return err
@@ -102,19 +116,40 @@ func Confine(c *config.Config, src config.Source) error {
 			tcp += ", no connect"
 		}
 	}
-	slog.Info("weed confines itself with Landlock, and executes itself again confined", "landlock_abi", abi, "rules", desc, "tcp", tcp,
-		"sockets", seccomp.TCPUDP.String())
+	// The starter of workers, which keeps the privileges that weed gives up
+	env, err := worker.LaunchStarter(os.Args[1:], worker.Sockets(c))
+	if err != nil {
+		return err
+	}
+	var keep uint64
+	if bindsPrivileged(nw) {
+		keep = 1 << unix.CAP_NET_BIND_SERVICE
+	}
+	slog.Info("weed confines itself with Landlock, and executes itself again confined, without privileges",
+		"landlock_abi", abi, "rules", desc, "tcp", tcp, "sockets", seccomp.TCPUDP.String(),
+		"capabilities", map[bool]string{true: "CAP_NET_BIND_SERVICE", false: "none"}[keep != 0])
 	runtime.LockOSThread() // never unlocked: the thread is confined, and executes weed again (rs.Exec)
+	if err := worker.KeepCapabilities(keep); err != nil {
+		return err
+	}
 	if err := seccomp.Restrict(seccomp.TCPUDP); err != nil {
 		return err
 	}
-	return rs.Exec(os.Args, append(os.Environ(), confinedEnv+"=1"))
+	return rs.Exec(os.Args, append(slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, "WEED_") }),
+		confinedEnv+"=1", env))
 }
 
-// processRules are what weed's own process may reach: what its workers may, which
-// they reach through it, and the files of its configuration
+// bindsPrivileged says whether weed binds a port below 1024 (CAP_NET_BIND_SERVICE),
+// or one that it does not know yet
+func bindsPrivileged(nw landlock.Net) bool {
+	return nw.Bind || slices.ContainsFunc(nw.Ports, func(p uint16) bool { return p < 1024 })
+}
+
+// processRules are what weed's own process may reach: the system's files, as its
+// workers (but not the exported directory, which its workers reach and it does not),
+// and the files of its configuration
 func processRules(c *config.Config, src config.Source) []landlock.Rule {
-	rules := worker.Rules(c)
+	rules := worker.SystemRules(c)
 	exe, _ := os.Executable()
 	rules = landlock.Add(rules, landlock.Read, src.Path, exe, c.LimitsFile)
 	rules = landlock.Add(rules, landlock.Read, opened(c)...)
@@ -122,10 +157,6 @@ func processRules(c *config.Config, src config.Source) []landlock.Rule {
 	rules = landlock.Add(rules, landlock.Write, c.LogFile, c.BansFile)
 	// The caches of SSSD, which a build with cgo reads to look accounts up
 	rules = append(rules, landlock.Rule{Path: "/var/lib/sss", Access: landlock.Read})
-	// The cgroups of the workers, below weed's (limits may set some)
-	if cg := worker.Cgroup(); cg != "" && (c.WorkerCgroups || len(c.WorkerCgroupLimits) > 0 || c.LimitsFile != "") {
-		rules = append(rules, landlock.Rule{Path: cg, Access: landlock.Write})
-	}
 	return rules
 }
 

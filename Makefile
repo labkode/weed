@@ -6,7 +6,7 @@ FUZZTIME  ?= 20s
 # Platforms that "make cross" builds for, as CI does: weed runs on Linux alone
 PLATFORMS ?= linux/amd64 linux/arm64
 
-.PHONY: test-systemd dist all build test test-root test-cgroups bench-workers interop find-limits find-limits-users check fmt vulncheck fuzz bench cross ci docs clean help
+.PHONY: test-systemd test-vm dist all build test test-root test-cgroups bench-workers interop find-limits find-limits-users check fmt vulncheck fuzz bench cross ci docs clean help
 
 all: build
 
@@ -25,14 +25,21 @@ test-cgroups: ## The cgroups of worker processes, as root in a cgroup of their o
 		-exec 'sudo systemd-run --quiet --wait --pipe --collect --same-dir -p Delegate=yes -E WEED_TEST_CGROUPS=1' \
 		./internal/server
 
-test-systemd: ## weed as the guide's systemd service, sandboxed, as root and as an account of its own (Podman, sudo); WEED=path tests that weed
-	WEED="$(WEED)" test/systemd/systemd.sh
+test-systemd: ## weed's RPM as the guide installs it, under systemd, as the account weed and as root (Podman, sudo); WEED=path or RPM=path tests those
+	WEED="$(WEED)" RPM="$(RPM)" test/systemd/systemd.sh
+
+test-vm: ## test-systemd's tests on an AlmaLinux 10 virtual machine, SELinux enforcing (qemu, KVM, Podman); RPM=path tests that RPM
+	RPM="$(RPM)" test/vm/vm.sh
 
 interop: ## Interoperability tests with gfal2, davix and XRootD (Podman, sudo)
 	test/interop/interop.sh
 
-find-limits: ## The limits of weed on this machine, serving one account (ACCOUNT=, DATA=): a load that grows until weed or the machine gives (sudo); ARGS="..." go to test/stress
-	ACCOUNT="$(ACCOUNT)" DATA="$(DATA)" PORT="$(PORT)" METRICS_PORT="$(METRICS_PORT)" test/limits/host.sh $(ARGS)
+# weed limits reads CONFIG, /etc/weed/weed.toml if there is one; without either, it
+# measures DATA, /var/tmp by default
+find-limits: build ## weed limits on this machine (sudo): what weed can serve, and the settings that would let it; CONFIG=, DATA=, ACCOUNT= (yours), results in test/limits/out; ARGS="..." go to weed limits (-quick, -rtt 100ms, -- stress options)
+	sudo ./$(BIN) limits -account "$(or $(ACCOUNT),$(shell id -un))" -out test/limits/out \
+		$(if $(CONFIG),-config "$(CONFIG)") \
+		$(if $(DATA),-dir "$(DATA)",$(if $(or $(CONFIG),$(wildcard /etc/weed/weed.toml)),,-dir /var/tmp)) $(ARGS)
 
 find-limits-users: ## The limits of weed serving USERS accounts (100) to crowds of thousands of clients (Podman, sudo); ARGS="..." go to test/stress
 	USERS="$(USERS)" METRICS_PORT="$(METRICS_PORT)" test/limits/users.sh $(ARGS)
@@ -68,7 +75,7 @@ cross: ## Build and vet for every platform in PLATFORMS
 		GOOS=$${p%/*} GOARCH=$${p#*/} $(GO) vet ./...; \
 	done
 
-ci: check test cross ## What CI runs, except root tests, fuzzing, govulncheck, interop, test-systemd and docs
+ci: check test cross ## What CI runs, except root tests, fuzzing, govulncheck, interop, test-systemd, test-vm and docs
 
 docs: build ## The administration guide, docs/html, from docs/src (pandoc)
 	$(MAKE) -C docs/src dist WEED=$(abspath $(BIN))

@@ -171,6 +171,8 @@ var (
 		"Authentication outcomes of WebDAV requests, by the method that decided them (none when no credentials were accepted).", "method", "result")
 	UploadBytes = NewCounter("weed_upload_bytes_total",
 		"Bytes stored by successful uploads (PUT).")
+	StorageFull = NewCounter("weed_storage_full_total",
+		"Writes that the storage refused (507), by reason: full (ENOSPC), or quota, the account over its quota (EDQUOT).", "reason")
 	ChecksumMismatches = NewCounter("weed_checksum_mismatches_total",
 		"Transfers refused because the data did not match the client's checksum, by operation.", "operation")
 	TPCTransfers = NewCounter("weed_tpc_transfers_total",
@@ -198,7 +200,7 @@ var (
 
 // remoteMetrics are those that workers record
 var remoteMetrics = map[*Vec]bool{
-	UploadBytes: true, ChecksumMismatches: true,
+	UploadBytes: true, ChecksumMismatches: true, StorageFull: true,
 	TPCTransfers: true, TPCBytes: true, TPCActive: true,
 }
 

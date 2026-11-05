@@ -750,8 +750,9 @@ func TestWorkersShareTPCLimit(t *testing.T) {
 	}
 }
 
-// weed may run as an unprivileged account with only CAP_SETUID and CAP_SETGID, as
-// systemd's AmbientCapabilities= gives them; its workers must not inherit them
+// weed may run as an unprivileged account with only CAP_SETUID, CAP_SETGID and
+// CAP_KILL, as systemd's AmbientCapabilities= gives them; its workers must not inherit
+// them
 func TestWorkersOfUnprivilegedFront(t *testing.T) {
 	if os.Getenv("WEED_TEST_FRONT") == "" {
 		if os.Geteuid() != 0 {
@@ -762,7 +763,7 @@ func TestWorkersOfUnprivilegedFront(t *testing.T) {
 		cmd.Env = append(os.Environ(), "WEED_TEST_FRONT=1")
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Credential:  &syscall.Credential{Uid: 6009, Gid: 6009, Groups: []uint32{6009}},
-			AmbientCaps: []uintptr{unix.CAP_SETUID, unix.CAP_SETGID},
+			AmbientCaps: []uintptr{unix.CAP_SETUID, unix.CAP_SETGID, unix.CAP_KILL},
 		}
 		out, err := cmd.CombinedOutput()
 		if err != nil || !strings.Contains(string(out), "--- PASS: TestWorkersOfUnprivilegedFront") {
@@ -771,7 +772,7 @@ func TestWorkersOfUnprivilegedFront(t *testing.T) {
 		return
 	}
 
-	if status := procStatus(os.Getpid()); status["Uid"] != "6009\t6009\t6009\t6009" || status["CapAmb"] != "00000000000000c0" {
+	if status := procStatus(os.Getpid()); status["Uid"] != "6009\t6009\t6009\t6009" || status["CapAmb"] != "00000000000000e0" {
 		t.Fatalf("not running as intended: uid %q, ambient capabilities %q", status["Uid"], status["CapAmb"])
 	}
 	n := newWorkerNode(t, nil)
@@ -814,7 +815,7 @@ func TestUnprivilegedFront(t *testing.T) {
 		return
 	}
 	err := New(&config.Config{Directory: t.TempDir()}).Initialize()
-	if err == nil || strings.Count(err.Error(), "weed must run as root, or with CAP_SETUID and CAP_SETGID") != 1 {
+	if err == nil || strings.Count(err.Error(), "weed must run as root, or with the capabilities CAP_SETUID, CAP_SETGID and CAP_KILL") != 1 {
 		t.Errorf("starting without privileges: %v", err)
 	}
 }
@@ -1022,5 +1023,39 @@ func TestBanStopsWorkers(t *testing.T) {
 	}
 	if code := n.status("PUT", "/alice/f", "data"); code != 201 {
 		t.Errorf("PUT as alice once the ban is lifted: %d", code)
+	}
+}
+
+// A write that the storage refuses for lack of space gets 507, not 500 nor 403, and
+// is counted: an upload, the files that a COPY writes, a collection
+func TestUnixNoSpace(t *testing.T) {
+	n := newUnixNode(t, nil)
+	n.setup("/alice/", 0755, 6001, 6001)
+	full := n.local("/alice/full")
+	n.setup("/alice/full/", 0755, 6001, 6001)
+	if out, err := exec.Command("mount", "-t", "tmpfs", "-o", "size=64k,nr_inodes=32,mode=0755,uid=6001,gid=6001", "full", full).CombinedOutput(); err != nil {
+		t.Skipf("cannot mount a tmpfs: %v: %s", err, out)
+	}
+	t.Cleanup(func() { exec.Command("umount", "-l", full).Run() })
+	big := strings.Repeat("x", 256<<10)
+	n.write("/alice/big", big) // outside, to COPY in
+	os.Chown(n.local("/alice/big"), 6001, 6001)
+	before := metrics.StorageFull.Get("full")
+
+	if resp, msg := n.do("PUT", "/alice/full/f", big, n.as("alice")...); resp.StatusCode != 507 {
+		t.Errorf("PUT larger than the storage: %d %q, want 507", resp.StatusCode, msg)
+	}
+	if resp, msg := n.do("COPY", "/alice/big", "", append(n.as("alice"), "Destination", "/webdav/alice/full/copy")...); resp.StatusCode != 507 {
+		t.Errorf("COPY larger than the storage: %d %q, want 507", resp.StatusCode, msg)
+	}
+	// Without inodes left, the storage refuses a new directory too
+	for i := 0; os.WriteFile(fmt.Sprintf("%s/i%d", full, i), nil, 0o644) == nil && i < 100; i++ {
+	}
+	if resp, msg := n.do("MKCOL", "/alice/full/dir", "", n.as("alice")...); resp.StatusCode != 507 {
+		t.Errorf("MKCOL on a full storage: %d %q, want 507", resp.StatusCode, msg)
+	}
+	eventually(t, "the refusals to be counted", func() bool { return metrics.StorageFull.Get("full")-before >= 3 })
+	if left, _ := filepath.Glob(full + "/.weed-*"); len(left) != 0 {
+		t.Errorf("temporary files left: %v", left)
 	}
 }

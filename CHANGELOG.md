@@ -27,10 +27,20 @@ from 2026-10-29 or later, when the administration guide came, these are the chan
 - weed needs Linux 5.19 or later with landlock among the security modules (lsm=), and
   seccomp: it confines itself and its workers, and does not start otherwise.
   unix_users.landlock is gone: a configuration that sets it is refused.
+- weed gives up root, and its capabilities, as it starts. It first starts a process
+  of its own, the starter of workers ("weed starter"), which keeps CAP_SETUID,
+  CAP_SETGID and CAP_KILL alone, and does nothing but start weed's workers as their
+  accounts and stop them; weed itself keeps CAP_NET_BIND_SERVICE alone, for a port
+  below 1024. A unit that runs weed as an account of its own needs CAP_KILL in
+  AmbientCapabilities=, beside CAP_SETUID and CAP_SETGID: weed does not start without
+  it. If the starter exits, weed exits too, with status 1.
 - weed's own process, which terminates TLS and authenticates requests, is confined
-  with Landlock: it writes only the exported directory, the directories of
-  admin.socket and admin.bans, its cgroup and its log file, and binds only its ports.
-  weed does not export /.
+  with Landlock: it writes only the directories of admin.socket and admin.bans and
+  its log file, reads not the exported directory, which its workers alone reach, and
+  binds only its ports. weed does not keep its files in /.
+- weed no longer gives the sockets to its workers buffers beyond net.core.wmem_max
+  and rmem_max, as root too: raise them to 1048576 (the RPM does), or downloads lose
+  a third of their speed. weed limits suggests it.
 - Network rate limits are gone: the [network] section (egress_rate, ingress_rate,
   account_egress_rate, account_ingress_rate), the rates in the file of
   unix_users.limits, which weed now refuses, /status's network and the metric
@@ -41,10 +51,11 @@ from 2026-10-29 or later, when the administration guide came, these are the chan
   Links that stayed inside were followed: put what they point to in their place, or
   bind-mount it there. Workers open files with openat2(2), and refuse to serve where a
   seccomp filter refuses it.
-- When the storage that weed started on is no longer mounted, weed refuses requests
+- When the storage of the exported directory, at startup or mounted since, is no
+  longer mounted, weed refuses requests
   with 503, /healthz too, rather than serve the directory beneath; when a storage is
-  mounted again over the exported directory, weed exits with status 75, for its
-  supervisor to start it again.
+  mounted again over the exported directory, weed replaces its workers with workers
+  confined to it, and goes on serving.
 - weed listens with TCP, not with MPTCP, which Go listened with where the kernel has
   it. Clients with MPTCP fall back to TCP.
 - The content type of a file, GET's Content-Type and PROPFIND's getcontenttype, comes
@@ -54,12 +65,43 @@ from 2026-10-29 or later, when the administration guide came, these are the chan
 
 ### New
 
+- weed utils password asks for the password, twice, on a terminal, and reads it from
+  stdin otherwise, rather than taking it on the command line, where ps shows it (it is
+  still taken there, with a warning). It sets the password in the file of
+  basic.htpasswd of /etc/weed/weed.toml, of -config, or -file, rather than ./.htpasswd,
+  and replaces a user's entry rather than adding another; -delete removes a user. It
+  replaces the file at once, keeping its owner, group and mode, and makes a new one of
+  the group weed, 0640. weed utils token generate writes basic.app_tokens's file
+  alike.
+- weed check, run by root, checks again as the account that weed runs as (User= of
+  weed.service, or -as), with the unit's capabilities, and says which file that
+  account cannot read; -as root checks as root alone.
+- The RPM checks the configuration with the new version as it upgrades weed, which it
+  does not restart, and dnf shows whether that version would start with it. It warns
+  of a unit /etc/systemd/system/weed.service, which hides the RPM's. It installs
+  /etc/logrotate.d/weed, for server.log_file.
+- Writes that the storage refuses for lack of space, as it is full (ENOSPC) or the
+  account over its quota (EDQUOT), get 507 Insufficient Storage rather than 500 or 403:
+  uploads, MKCOL, COPY and MOVE; third-party copies fail saying so. The metric
+  weed_storage_full_total counts them, by reason, and weed logs one a minute.
+- weed says, as it starts, that a seccomp filter refuses openat2(2) or clone3(2), and
+  that systemd's RestrictSUIDSGID= or RestrictNamespaces= does, rather than failing
+  later with ENOSYS ("function not implemented").
+- An RPM for EL10 (AlmaLinux, Rocky Linux, RHEL 10 and later), x86_64 and aarch64, in
+  each release: weed, its systemd unit, which runs it as the account weed that the
+  RPM makes, with sandboxing; the sysctl settings of its socket buffers; and a
+  configuration in /etc/weed that serves /srv/weed locally, to the users of an empty
+  .htpasswd. It neither starts weed nor restarts it on upgrade.
+- weed's processes are named weed, its starter of workers too, rather than exe, the
+  name that the kernel gave weed once it executed itself again confined: ps -C weed
+  and pgrep -x weed find them.
 - seccomp: weed opens Unix, netlink, TCP and UDP sockets alone, and its workers Unix
   sockets alone (as weed with tpc.enabled), and neither has io_uring.
 - server.require_mount refuses to start while the exported directory is on the file
   system of /.
 - weed serves on the sockets that systemd passes (socket activation), and the guide's
-  systemd unit restarts it with a backoff that never gives up.
+  systemd unit, the RPM's, runs it as the account weed, sandboxed, and restarts it
+  with a backoff that never gives up.
 - /status's storage_unmounted and the metric weed_storage_unmounted.
 - Releases, with this changelog, and the version that the guide is for in its header.
 - weed answers PROPFIND, GET and HEAD itself, rather than golang.org/x/net/webdav:
@@ -77,9 +119,29 @@ from 2026-10-29 or later, when the administration guide came, these are the chan
   systemd unit sets TasksMax=infinity: systemd's default, 15% of kernel.threads-max,
   is fewer than the threads that weed's workers hold when the storage stops
   answering, on a machine of less than about 64 GB of memory.
+- weed limits finds what weed can serve on its machine, as its configuration sets it.
+  It runs a weed of its own on 127.0.0.1, with credentials it makes, measures the
+  storage, and puts that weed under a load that grows until weed or the machine
+  gives. It then reads what the kernel and weed's cgroups dropped, and checks the
+  settings of systemd, journald and the kernel. It writes a summary and the files of
+  the settings it suggests: a weed.toml with each change under a comment that says
+  why, a file of /etc/sysctl.d, one of /etc/modules-load.d, and a drop-in of weed's
+  unit. It changes nothing on the machine. make find-limits runs it.
 
 ### Fixed
 
+- Built with Go 1.26.0 (as go.mod allows), weed copied a directory (COPY of a
+  collection) without what it holds, and answered 201: the os package of that Go
+  looked up each entry of a directory by a path that is not the directory's in the
+  file system. weed looks each up in the directory itself, as with any Go. The
+  releases, built with the latest Go, were not affected.
+- weed started with a password or app tokens file that it could not read, which left
+  nobody able to log in, with a warning: it does not start, saying which file. A
+  reload that cannot read one still keeps the entries it has.
+- weed running as an account of its own could not stop its workers, which ran as
+  other accounts: a ban left the user's workers serving the requests in progress,
+  and a worker that did not stop when asked ran on. The starter of workers kills
+  them, with CAP_KILL, and weed logs a kill that fails.
 - Workers could open MPTCP, SCTP and other sockets that the rules of TCP of Landlock
   do not cover, and bind and connect with them where the rules refuse it.
 - Symbolic links led outside the exported directory: a user who can make links in it
@@ -96,3 +158,7 @@ from 2026-10-29 or later, when the administration guide came, these are the chan
   refused one more: Podman's default of 2048, for one, at some 2000 clients listing
   directories at once. Its threads are now bounded by unix_users.max_storage_calls:
   serving 8192 clients, a worker had 8559 threads, and now has 285.
+- An upload whose collection was removed while it was written (a DELETE or MOVE of
+  the collection) got 500, and weed logged an error, "cannot store an upload": it
+  gets 409, as one into a collection that does not exist does, and weed logs a
+  warning.

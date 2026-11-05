@@ -76,6 +76,7 @@
 				<ul>
 					<li><a href="commands.html#weed">weed</a></li>
 					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#limits">limits</a></li>
 					<li><a href="commands.html#config">config</a></li>
 					<li><a href="commands.html#version">version</a></li>
 					<li><a href="commands.html#ban">utils ban</a></li>
@@ -313,14 +314,15 @@ enabled = true
 htpasswd = &quot;/etc/weed/htpasswd&quot;
 app_tokens = &quot;/etc/weed/app-tokens&quot;</code></pre>
 <p>HTTP Basic authentication checks passwords against the bcrypt entries of an htpasswd file, or against app tokens: random tokens, one per line as token:username, that a user gives as their password. Basic credentials are clear text without TLS: enable [tls] with [basic].</p>
-<p><em>weed utils password</em> and <em>weed utils token generate</em> add entries to .htpasswd and .app-tokens in the current directory:</p>
-<pre><code># cd /etc/weed
-# weed utils password bob &#39;s3cret&#39;
-Added user &#39;bob&#39; to .htpasswd
+<p><em>weed utils password</em> sets a user's password in the file of <code>basic.htpasswd</code>, asking for it, and <em>weed utils token generate</em> adds an app token to that of <code>basic.app_tokens</code>, of /etc/weed/weed.toml or of <code>-config</code> (see <a href="commands.html#password">Commands</a>):</p>
+<pre><code># weed utils password bob
+Password of bob:
+Again:
+Added bob to /etc/weed/.htpasswd (basic.htpasswd of /etc/weed/weed.toml); ...
 # weed utils token generate bob
 Generated token for user &#39;bob&#39;: 23bb59e76eeeb0228d5a1d1b53f6bda289ce9e43fae29b85d64215d5422a5127
-Token saved to .app-tokens</code></pre>
-<p>Point <code>basic.htpasswd</code> and <code>basic.app_tokens</code> at those files, or use htpasswd -B. weed re-reads both on reload, so new users need no restart.</p>
+Token saved to /etc/weed/.app-tokens (basic.app_tokens of /etc/weed/weed.toml); ...</code></pre>
+<p>htpasswd -B writes the same entries. weed re-reads both files on reload (<em>systemctl reload weed</em>), so new users need no restart. The account that weed runs as must be able to read them: weed does not start when it cannot.</p>
 <h2 id="anonymous">Anonymous requests</h2>
 <p>With <code>server.anonymous</code>, requests without credentials are served as the account nobody. weed allows it only when <code>server.address</code> is a loopback address, so that only local clients reach it (but every local user does). It is the default without a configuration file. Credentials that an enabled method refuses still get 401.</p>
 </div>

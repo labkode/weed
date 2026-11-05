@@ -226,6 +226,84 @@ func TestLandlockRemount(t *testing.T) {
 	p.Close(context.Background())
 }
 
+// A storage mounted over the exported directory after weed started on the plain
+// directory gets workers that reach it; unmounted, the directory beneath gets none,
+// as if weed had started on the storage. It needs root.
+func TestLandlockMountedLater(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("starting workers as other accounts needs root")
+	}
+	if abi := landlock.ABI(); abi < landlock.MinABI {
+		t.Skipf("Landlock ABI %d", abi)
+	}
+	defer func(d time.Duration) { dirCheckInterval = d }(dirCheckInterval)
+	dirCheckInterval = 20 * time.Millisecond
+	base := t.TempDir()
+	os.Chmod(filepath.Dir(base), 0o755)
+	os.Chmod(base, 0o755)
+	export := filepath.Join(base, "export")
+	os.Mkdir(export, 0o777)
+	os.Chmod(export, 0o777)
+	beneath, _ := identify(unix.AT_FDCWD, export)
+	if root, _ := identify(unix.AT_FDCWD, "/"); beneath.dev != root.dev {
+		t.Skipf("%s is not on the file system of / (a tmpfs?)", base)
+	}
+	mount := func() {
+		if out, err := exec.Command("mount", "-t", "tmpfs", "-o", "mode=0777", "storage", export).CombinedOutput(); err != nil {
+			t.Skipf("cannot mount (a container without privileges?): %v: %s", err, out)
+		}
+		t.Cleanup(func() { exec.Command("umount", "-l", export).Run() }) // if the test fails mounted
+	}
+
+	lost := make(chan bool, 10)
+	p, err := New(Options{Config: config.Config{Directory: export}, Unmounted: func(u bool) { lost <- u }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { p.Close(context.Background()) })
+	if code, body := asNobody(p, "PUT", filepath.Join(export, "plain")); code != 200 {
+		t.Fatalf("PUT in the plain directory = %d (%s)", code, strings.TrimSpace(body))
+	}
+	pid := p.Workers()[0].PID
+	mount()
+	replaced(t, p, pid)
+	if code, body := asNobody(p, "PUT", filepath.Join(export, "storage")); code != 200 {
+		t.Errorf("PUT in the storage mounted later = %d (%s)", code, strings.TrimSpace(body))
+	}
+
+	if out, err := exec.Command("umount", export).CombinedOutput(); err != nil {
+		t.Fatalf("umount: %v: %s", err, out)
+	}
+	select {
+	case u := <-lost:
+		if !u {
+			t.Fatal("Unmounted(false) first")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no Unmounted(true) once the storage mounted later was unmounted")
+	}
+	if code, body := asNobody(p, "PUT", filepath.Join(export, "beneath")); code != 503 {
+		t.Errorf("PUT once the storage was unmounted = %d (%s), want 503", code, strings.TrimSpace(body))
+	}
+	if _, err := os.Stat(filepath.Join(export, "beneath")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("written in the directory beneath: %v", err)
+	}
+	mount()
+	select {
+	case u := <-lost:
+		if u {
+			t.Fatal("Unmounted(true) again")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no Unmounted(false) once a storage was mounted again")
+	}
+	if code, body := asNobody(p, "PUT", filepath.Join(export, "again")); code != 200 {
+		t.Errorf("PUT once mounted again = %d (%s)", code, strings.TrimSpace(body))
+	}
+	p.Close(context.Background())
+	exec.Command("umount", export).Run()
+}
+
 // asNobody has the worker of nobody serve a request
 func asNobody(p *Pool, method, path string) (int, string) {
 	nobody := &fsuser.User{Name: "nobody", UID: 65534, GID: 65534, Groups: []int{65534}}

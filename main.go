@@ -11,21 +11,56 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"github.com/labkode/weed/cmd/utils"
 	"github.com/labkode/weed/internal/config"
+	"github.com/labkode/weed/internal/findlimits"
 	"github.com/labkode/weed/internal/logger"
 	"github.com/labkode/weed/internal/server"
 	"github.com/labkode/weed/internal/systemd"
 	"github.com/labkode/weed/internal/version"
+	"golang.org/x/sys/unix"
 )
+
+// weed executes itself again as /proc/self/exe, confined, and so its starter of
+// workers: the kernel names them "exe". They take the name of weed's command again,
+// so that ps -C weed, pgrep -x weed and top show them. Init runs on the main thread,
+// whose name is the process's.
+//
+// The main goroutine keeps the main thread, so that no other goroutine runs there:
+// some confine their thread and end with it (the starter's, as it starts a worker,
+// keeps CAP_SETUID and CAP_SETGID alone, and Landlock's rules), and Go cannot end the
+// main thread, which would stay so. The kernel shows the main thread's credentials as
+// the process's (/proc/PID/status).
+func init() {
+	runtime.LockOSThread()
+	if name := filepath.Base(os.Args[0]); name != "" && name != "." && name != "/" {
+		if b, err := unix.BytePtrFromString(name); err == nil {
+			unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(b)), 0, 0, 0)
+			runtime.KeepAlive(b)
+		}
+	}
+}
 
 func main() {
 	// Check for utility commands
 	if len(os.Args) > 1 && os.Args[1] == "utils" {
 		utils.HandleUtilsCommand(os.Args)
+		return
+	}
+	// The starter of workers, which weed starts before it gives up its privileges
+	if len(os.Args) > 1 && os.Args[1] == "starter" {
+		if err := server.RunStarter(); err != nil {
+			if !errors.Is(err, server.ErrReported) {
+				fmt.Fprintln(os.Stderr, "weed starter:", err)
+			}
+			os.Exit(1)
+		}
 		return
 	}
 	// Worker processes, which weed starts to access files as Unix accounts
@@ -48,6 +83,13 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "check" {
 		os.Exit(check(os.Args[2:]))
 	}
+	// What weed can serve on this machine, and the settings that would let it serve more
+	if len(os.Args) > 1 && os.Args[1] == "limits" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		code := findlimits.Main(ctx, os.Args[2:], os.Stdout, os.Stderr)
+		stop()
+		os.Exit(code)
+	}
 
 	cfg, src, err := config.FromArgs(os.Args[1:])
 	switch {
@@ -67,7 +109,8 @@ func main() {
 		logger.Fatal("cannot open the log file", err)
 	}
 
-	// Executes weed again, confined with Landlock
+	// Starts the starter of workers, then executes weed again without privileges,
+	// confined with Landlock
 	if err := server.Confine(cfg, src); err != nil {
 		logger.Fatal("cannot confine weed with Landlock", err)
 	}
@@ -99,9 +142,7 @@ func main() {
 	// Serve until SIGINT/SIGTERM, then shut down gracefully
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := srv.Run(ctx); errors.Is(err, server.ErrRestart) {
-		os.Exit(server.RestartStatus)
-	} else if err != nil {
+	if err := srv.Run(ctx); err != nil {
 		logger.Fatal("cannot serve", err)
 	}
 }
@@ -110,6 +151,11 @@ func main() {
 // without serving: it reads and checks everything weed does at startup, and prints
 // the problems and warnings weed would log. It returns the exit status.
 func check(args []string) int {
+	args, as, err := cutAs(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "weed check:", err)
+		return 2
+	}
 	cfg, src, err := config.FromArgs(args)
 	switch {
 	case errors.Is(err, flag.ErrHelp):
@@ -144,6 +190,15 @@ func check(args []string) int {
 	}
 	if src.Path == "" {
 		fmt.Println("weed would start with the default configuration (no -config)")
+		return 0
+	}
+	account, why, ok, out := checkAs(args, as, src.Path)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "weed would start with %s as root, but not as the account %s that it runs as (%s):\n%s", src.Path, account, why, out)
+		return 1
+	}
+	if account != "" {
+		fmt.Printf("%s: weed would start with it (sha256 %s), as the account %s too (%s)\n", src.Path, src.SHA256, account, why)
 	} else {
 		fmt.Printf("%s: weed would start with it (sha256 %s)\n", src.Path, src.SHA256)
 	}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/labkode/weed/internal/config"
 	"github.com/labkode/weed/internal/utils"
 )
 
@@ -21,9 +20,7 @@ func HandleUtilsCommand(args []string) {
 	case "password":
 		HandlePassword()
 	case "token":
-		// Token operations use the same default file as the server (basic.app_tokens)
-		cfg := &config.Config{AppTokensFile: ".app-tokens"}
-		HandleToken(cfg)
+		HandleToken()
 	case "ban":
 		HandleBan()
 	case "unban":
@@ -36,34 +33,14 @@ func HandleUtilsCommand(args []string) {
 	}
 }
 
-// HandleCommand handles the utils command with a provided config
-func HandleCommand(cfg *config.Config) {
-	if len(os.Args) < 3 {
-		PrintHelp()
-		return
-	}
-
-	switch os.Args[2] {
-	case "cert":
-		HandleCert()
-	case "password":
-		HandlePassword()
-	case "token":
-		HandleToken(cfg)
-	default:
-		fmt.Printf("Unknown utils command: %s\n", os.Args[2])
-		PrintHelp()
-	}
-}
-
 // PrintHelp prints the utils help
 func PrintHelp() {
 	fmt.Println("Usage: weed utils <command>")
 	fmt.Println("")
 	fmt.Println("Available commands:")
 	fmt.Println("  cert     - Generate TLS certificates")
-	fmt.Println("  password - Generate password hashes")
-	fmt.Println("  token    - Manage application tokens")
+	fmt.Println("  password - Set or remove a user's password (basic.htpasswd)")
+	fmt.Println("  token    - Generate an app token for a user (basic.app_tokens)")
 	fmt.Println("")
 	fmt.Println("Commands of a running weed, through its control plane (admin.socket):")
 	fmt.Println("  ban      - Ban a user: refuse its requests, stop its worker processes")
@@ -87,58 +64,4 @@ func HandleCert() {
 		os.Exit(1)
 	}
 	fmt.Println("Generated server.crt and server.key")
-}
-
-// HandlePassword handles password hash generation
-func HandlePassword() {
-	if len(os.Args) < 5 || (len(os.Args) > 3 && (os.Args[3] == "-h" || os.Args[3] == "--help")) {
-		fmt.Println("Usage: weed utils password <username> <password>")
-		fmt.Println("")
-		fmt.Println("Generates a bcrypt hash and appends to .htpasswd file")
-		return
-	}
-
-	username := os.Args[3]
-	password := os.Args[4]
-
-	if err := utils.AddUserToHtpasswd(username, password); err != nil {
-		fmt.Printf("Error adding user: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("Added user '%s' to .htpasswd\n", username)
-}
-
-// HandleToken handles token management
-func HandleToken(cfg *config.Config) {
-	if len(os.Args) < 4 {
-		fmt.Println("Usage: weed utils token generate <username>")
-		return
-	}
-
-	switch os.Args[3] {
-	case "generate":
-		HandleTokenGenerate(cfg)
-	default:
-		fmt.Println("Usage: weed utils token generate <username>")
-	}
-}
-
-// HandleTokenGenerate handles token generation
-func HandleTokenGenerate(cfg *config.Config) {
-	if len(os.Args) < 5 {
-		fmt.Println("Usage: weed utils token generate <username>")
-		return
-	}
-
-	username := os.Args[4]
-	token := utils.GenerateAppToken()
-
-	if err := utils.AddTokenToFile(cfg.AppTokensFile, username, token); err != nil {
-		fmt.Printf("Error generating token: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("Generated token for user '%s': %s\n", username, token)
-	fmt.Printf("Token saved to %s\n", cfg.AppTokensFile)
 }

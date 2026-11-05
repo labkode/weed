@@ -76,6 +76,7 @@
 				<ul>
 					<li><a href="commands.html#weed">weed</a></li>
 					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#limits">limits</a></li>
 					<li><a href="commands.html#config">config</a></li>
 					<li><a href="commands.html#version">version</a></li>
 					<li><a href="commands.html#ban">utils ban</a></li>
@@ -142,11 +143,25 @@ Landlock's rules of TCP cover TCP alone: not MPTCP, which Go listens with where 
 <p>weed logs the rules as it starts:</p>
 <pre><code>INFO workers are confined with Landlock landlock_abi=6 rules=&quot;[write /data read /etc read /proc read /sys/fs/cgroup read /usr read /lib read /lib64 execute /proc/self/exe write /dev/null]&quot; tcp=&quot;no bind, connect (tpc.enabled)&quot; sockets=&quot;Unix, netlink, TCP and UDP&quot;</code></pre>
 <h3 id="process">weed's own process</h3>
-<p>weed confines itself with Landlock too: the process that terminates TLS and authenticates requests, as root. It may write the exported directory, the directories of <code>server.log_file</code>, <code>admin.socket</code> and <code>admin.bans</code>, and its cgroup, and read only those, the system's files (as workers) and the files that its configuration names. From Linux 6.7, it binds only its ports, and connects only to token issuers and for third-party copies. With seccomp, it opens Unix, netlink, TCP and UDP sockets alone, and has no io_uring.</p>
-<p>Landlock and seccomp confine a thread and what it executes: weed executes itself again, from a thread that it confines, and refuses to start if it then is not confined. It logs the rules as it does:</p>
-<pre><code>INFO weed confines itself with Landlock, and executes itself again confined landlock_abi=6 rules=&quot;[write /data read /etc ... write and make sockets in /run/weed write /var/lib/weed write /sys/fs/cgroup/system.slice/weed.service]&quot; tcp=&quot;bind 443 9100, connect (token issuers, tpc.enabled)&quot; sockets=&quot;Unix, netlink, TCP and UDP&quot;</code></pre>
-<p>Confined to /, weed would reach everything: it does not export /, nor keep its files there.</p>
-<p>Landlock confines to plain directories and to mount points alike. A rule names the directory that its path leads to as weed starts: with a storage mounted at /data, the root of that storage; without one, the directory /data itself. It covers everything beneath, storage mounted below it later included. It does not cover what is mounted over it, or above it, later, nor what replaces it: a storage mounted at /data after weed started, or the directory beneath once the storage is unmounted, is out of weed's reach. weed looks at the directory every 5 seconds. When a storage is there in its place, weed exits, to be started again by its supervisor, confined to it. When the storage that weed started on is no longer mounted, weed does not exit, and refuses requests until the storage is back: a weed started again would serve the directory beneath (see <a href="installation.html#mounted">Installation</a>).</p>
+<p>weed runs as three kinds of process. weed itself terminates TLS, authenticates requests and relays them; the starter of workers starts the workers, as their accounts; each worker accesses the files of one account:</p>
+<pre><code># systemd-cgls -u weed.service
+Unit weed.service (/system.slice/weed.service):
+├─main
+│ ├─812 /usr/bin/weed -config /etc/weed/weed.toml  as weed: no capabilities
+│ └─815 weed starter -config /etc/weed/weed.toml   as weed: CAP_SETUID CAP_SETGID CAP_KILL
+├─worker-alice
+│ └─1630 weed worker alice                         as alice: no capabilities
+└─worker-cms001
+  └─1702 weed worker cms001                        as cms001: no capabilities</code></pre>
+<p>weed has no privileges: as it starts, before it reads a request, it starts the starter, then gives up its capabilities (but CAP_NET_BIND_SERVICE, to listen on a port below 1024), and confines itself with Landlock and seccomp. It may write the directories of <code>server.log_file</code>, <code>admin.socket</code> and <code>admin.bans</code>, and read only those, the system's files (as workers) and the files that its configuration names; not the exported directory, which workers alone reach. From Linux 6.7, it binds only its ports, and connects only to token issuers and for third-party copies. With seccomp, it opens Unix, netlink, TCP and UDP sockets alone, and has no io_uring. It is the same as root: a root without capabilities owns root's files, but reaches only what Landlock lets it.</p>
+<p>Landlock, seccomp and the capabilities of a process are those of a thread, and what it executes: weed executes itself again, from a thread that it confines, and refuses to start if it then is not confined, or has capabilities. It logs the rules as it does:</p>
+<pre><code>INFO weed confines itself with Landlock, and executes itself again confined, without privileges landlock_abi=6 rules=&quot;[read /etc read /proc ... write and make sockets in /run/weed write /var/lib/weed]&quot; tcp=&quot;bind 443 9100, connect (token issuers, tpc.enabled)&quot; sockets=&quot;Unix, netlink, TCP and UDP&quot; capabilities=CAP_NET_BIND_SERVICE</code></pre>
+<p>Confined to /, weed would reach everything: it does not keep its files there.</p>
+<h3 id="starter">The starter of workers</h3>
+<p>The starter keeps the capabilities that starting workers needs, CAP_SETUID and CAP_SETGID, and CAP_KILL to stop them, and nothing else: it reads no request, and does nothing but start the workers that weed asks for, and kill them. weed sends it the name of an account and the two sockets of the worker; the starter looks the account up itself, and starts no worker as root, nor as an account that it finds other than weed does (its uid, gid and groups): an account changed since weed looked it up gets 503 until <em>systemctl reload weed</em> looks it up again. It may gain no privileges (no_new_privs), and seccomp lets it open only the sockets of its workers. weed cannot look into it: it is not dumpable, and has capabilities that weed has not.</p>
+<p>With CAP_SETUID, the starter can become any account, root too, so it is as trusted as root: it is small, and takes nothing but weed's messages, which it checks. It is not confined with Landlock, so that it follows the exported directory as storage comes and goes (below). Its log is weed's, with <code>process=starter</code>. If it exits, weed exits too (status 1), as it can start no worker; systemd starts both again.</p>
+<h3 id="mounted">Storage mounted later</h3>
+<p>Landlock confines to plain directories and to mount points alike. A rule names the directory that its path leads to as the worker starts: with a storage mounted at /data, the root of that storage; without one, the directory /data itself. It covers everything beneath, storage mounted below it later included. It does not cover what is mounted over it, or above it, later, nor what replaces it: a storage mounted at /data after a worker started, or the directory beneath once the storage is unmounted, is out of the worker's reach. The starter looks at the directory every 5 seconds. When a storage is there in its place, the workers confined to the directory as it was finish their requests and stop, and the next requests get workers confined to the storage: weed goes on serving. When the storage that the directory was on, at startup or mounted since, is no longer mounted, no worker starts, and requests get 503 until the storage is back: weed started again would serve the directory beneath (see <a href="installation.html#mounted">Installation</a>).</p>
 <p>Two more would confine workers further, and are not part of weed. A mount namespace per worker, holding only the exported directory and the system files a worker needs (pivot_root, as containers do), would hide what is outside even from stat; weed would need CAP_SYS_ADMIN, and storage mounted after a worker started (autofs, NFS remounts) to propagate into it. systemd's sandboxing confines weed and its workers together, so also the process that terminates TLS and authenticates requests (see <a href="installation.html#sandboxing">Installation</a>); it does not separate the accounts from each other.</p>
 <h2 id="permissions">Permissions</h2>
 <p>Operations that the filesystem refuses get 403. As with local tools:</p>
@@ -162,15 +177,7 @@ Landlock's rules of TCP cover TCP alone: not MPTCP, which Go listens with where 
 # chmod 2755 /data/cms        # the group reads; what is created inside stays in group cms</code></pre>
 <p>New files and directories get the permissions that weed's umask leaves (0644 and 0755 with systemd's default of 0022).</p>
 <h2 id="cgroups">cgroups</h2>
-<p>With <code>unix_users.cgroups</code>, the workers of each account run in a cgroup of their own, below weed's. weed's cgroup must be delegated to it (cgroup v2; with systemd, <code>Delegate=yes</code> in the unit). weed then moves itself into &lt;its cgroup&gt;/main, and starts the workers of alice in &lt;its cgroup&gt;/worker-alice, with the cpu, io, memory and pids controllers when they are available. systemd-cgtop and systemd-cgls show what each account uses:</p>
-<pre><code># systemd-cgls -u weed.service
-Unit weed.service (/system.slice/weed.service):
-├─main
-│ └─812 weed -config /etc/weed/weed.toml
-├─worker-alice
-│ └─1630 weed worker alice
-└─worker-cms001
-  └─1702 weed worker cms001</code></pre>
+<p>With <code>unix_users.cgroups</code>, the workers of each account run in a cgroup of their own, below weed's. weed's cgroup must be delegated to it (cgroup v2; with systemd, <code>Delegate=yes</code> in the unit). The starter of workers then moves itself and weed into &lt;its cgroup&gt;/main, and starts the workers of alice in &lt;its cgroup&gt;/worker-alice, with the cpu, io, memory and pids controllers when they are available. systemd-cgtop and systemd-cgls show what each account uses (see <a href="#process">above</a>).</p>
 <p><code>unix_users.cgroup_limits</code> writes limits into the cgroup of every account (and implies cgroups), unless the limits file sets others for the account (see <a href="limits.html">Limits per account</a>):</p>
 <pre><code>[unix_users]
 cgroup_limits = [&quot;memory.max=8G&quot;, &quot;pids.max=5000&quot;, &quot;cpu.weight=100&quot;]</code></pre>

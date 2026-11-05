@@ -76,6 +76,7 @@
 				<ul>
 					<li><a href="commands.html#weed">weed</a></li>
 					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#limits">limits</a></li>
 					<li><a href="commands.html#config">config</a></li>
 					<li><a href="commands.html#version">version</a></li>
 					<li><a href="commands.html#ban">utils ban</a></li>
@@ -124,13 +125,16 @@
 <ol type="1">
 <li><p>Get the new version (see <a href="installation.html#releases">Installation</a>), or build it, and look at what it is:</p>
 <pre><code>$ make build &amp;&amp; ./weed version</code></pre></li>
-<li><p>Install it by replacing the file: <em>install</em> and <em>mv</em> do, as package managers do. (Linux refuses to write into a binary that runs: <em>cp</em> onto it fails with "Text file busy".)</p>
+<li><p>Install it by replacing the file: the RPM's <em>dnf upgrade</em> does, which does not restart weed, as <em>install</em> and <em>mv</em> do. (Linux refuses to write into a binary that runs: <em>cp</em> onto it fails with "Text file busy".)</p>
+<pre><code># dnf upgrade https://github.com/labkode/weed/releases/download/v1.3.0/weed-1.3.0-1.el10.x86_64.rpm</code></pre>
+<p>or, without the RPM:</p>
 <pre><code># install -m 0755 weed /usr/local/bin/weed</code></pre>
 <p>weed now logs that a restart is pending, with the new version:</p>
 <pre><code>level=WARN msg=&quot;restart pending: weed&#39;s executable /usr/local/bin/weed is now v1.3.0 (commit 9c1e0a2b77d4 of ...) go1.27.3 linux/amd64, build go:...&quot; reason=binary</code></pre></li>
-<li><p>Check that the new version starts with your configuration. The new version may know options that the old one did not, or warn about others:</p>
+<li><p>Check that the new version starts with your configuration. The new version may know options that the old one did not, or warn about others. The RPM's <em>dnf upgrade</em> does it, and says how it went (see <a href="installation.html#rpm">Installation</a>); otherwise:</p>
 <pre><code># weed check -config /etc/weed/weed.toml
-/etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0...)</code></pre></li>
+/etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0...), as the account weed too (User= of weed.service)</code></pre>
+<p>Run by root, it checks as the account weed too, which may not read every file that root reads (see <a href="commands.html#check">Commands</a>).</p></li>
 <li><p>Restart, when the transfers in progress allow it (see <a href="monitoring.html#in-progress">Monitoring</a>):</p>
 <pre><code># curl -s localhost:9100/status | jq .in_progress.total
 # systemctl restart weed</code></pre>

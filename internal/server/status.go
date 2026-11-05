@@ -235,7 +235,7 @@ func (s *Server) writeStatusGauges(w io.Writer) {
 	if s.unmounted.Load() != nil {
 		lost = 1
 	}
-	metrics.WriteGauge(w, "weed_storage_unmounted", "1 while the storage that the exported directory was on when weed started is not mounted: requests get 503 until it is again, never served from the directory beneath.", lost, nil, nil)
+	metrics.WriteGauge(w, "weed_storage_unmounted", "1 while the storage that the exported directory was on is not mounted: requests get 503 until it is again, never served from the directory beneath.", lost, nil, nil)
 }
 
 // status is what /status reports

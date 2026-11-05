@@ -326,13 +326,14 @@ check "token no rule maps is refused" http_status 403 -H "Authorization: Bearer 
 check "certificate whose account does not exist is refused" http_status 403 --cert ghost.pem --key ghost.key $(https $C)/interop/f.bin
 check "...logged as its account" grep -q '"msg":"request","method":"GET","path":"/webdav/interop/f.bin",.*"status":403,.*"user":"ghost"' $W/weed-c.log
 C_PID=$(pgrep -f 'weed -config weed-c.toml')
-workers() { ps -o user=,args= --ppid $C_PID | awk '{print $1, $2, $3, $4}' | sort; }
+C_STARTER=$(pgrep -P $C_PID | head -1) # weed's only child; its workers are the starter's
+workers() { ps -o user=,args= --ppid $C_STARTER | awk '{print $1, $2, $3, $4}' | sort; }
 workers_are() { [ "$(workers)" = "$(printf '%s\n' "$@")" ]; }
 gfal-ls $C/interop >/dev/null; curl -s -o /dev/null --capath $CERTS -H "Authorization: Bearer $ROBOT" $(https $C)/robot/t.bin
 check "ps shows a worker per account, running as it" workers_are "interop weed worker interop" "robot weed worker robot"
 check "...while weed itself runs as root" [ "$(ps -o user= -p $C_PID)" = root ]
 status_workers() { curl -s localhost:9101/status | jq -r '.workers[] | "\(.account) \(.pid)"' | sort; }
-check "/status lists them, with their pids" eval '[ "$(status_workers)" = "$(ps -o user=,pid= --ppid $C_PID | awk "{print \$1, \$2}" | sort)" ]'
+check "/status lists them, with their pids" eval '[ "$(status_workers)" = "$(ps -o user=,pid= --ppid $C_STARTER | awk "{print \$1, \$2}" | sort)" ]'
 for i in $(seq 100); do [ -z "$(workers)" ] && break; sleep 0.1; done
 check "idle workers stop (unix_users.idle_timeout)" workers_are
 check "...and start again when needed" gfal-ls $C/interop

@@ -76,6 +76,7 @@
 				<ul>
 					<li><a href="commands.html#weed">weed</a></li>
 					<li><a href="commands.html#check">check</a></li>
+					<li><a href="commands.html#limits">limits</a></li>
 					<li><a href="commands.html#config">config</a></li>
 					<li><a href="commands.html#version">version</a></li>
 					<li><a href="commands.html#ban">utils ban</a></li>
@@ -127,11 +128,11 @@ $ ls -l /tmp/demo
 <h3 id="host-certificate-cas-and-crls">2. Host certificate, CAs and CRLs</h3>
 <p>weed serves HTTPS with the host certificate, and checks client certificates against the CAs, as other grid services do:</p>
 <pre><code>/etc/grid-security/hostcert.pem
-/etc/grid-security/hostkey.pem              (mode 0400)
+/etc/grid-security/hostkey.pem              (group weed, mode 0440)
 /etc/grid-security/certificates/            the IGTF CAs (e.g. the ca-policy-egi-core
                                             package), and their CRLs, kept current
                                             by fetch-crl</code></pre>
-<p>By default weed refuses certificates whose CA has no current CRL, so run fetch-crl regularly (its packages do) and see <a href="reloading.html#crls">Reloading</a>.</p>
+<p>weed runs as the account weed (see <a href="installation.html#without-root">Installation</a>), which must read the key: <code>chgrp weed hostkey.pem &amp;&amp; chmod 0440 hostkey.pem</code>, or give weed a copy of its own. By default weed refuses certificates whose CA has no current CRL, so run fetch-crl regularly (its packages do) and see <a href="reloading.html#crls">Reloading</a>.</p>
 <h3 id="the-grid-mapfile">3. The grid-mapfile</h3>
 <p>Only the certificates whose DN the grid-mapfile lists are accepted, as the account it names. Trusting every IGTF CA does not let in every grid user. /etc/grid-security/grid-mapfile:</p>
 <pre><code>&quot;/DC=org/DC=example/OU=Users/CN=Alice Smith&quot; alice</code></pre>
@@ -168,8 +169,8 @@ ca_path = &quot;/etc/grid-security/certificates&quot;
 [macaroons]
 enabled = true
 secret_key = &quot;...the output of: openssl rand -hex 32...&quot;</code></pre>
-<p>The file holds a secret, so make it readable by root only: weed refuses a file with secrets that every user can read.</p>
-<pre><code># chmod 600 /etc/weed/weed.toml</code></pre>
+<p>The file holds a secret, so make it readable by root and the account weed only, as the RPM's is: weed refuses a file with secrets that every user can read.</p>
+<pre><code># chgrp weed /etc/weed/weed.toml &amp;&amp; chmod 640 /etc/weed/weed.toml</code></pre>
 <p>The grid-mapfile is at its default path, /etc/grid-security/grid-mapfile. <code>tpc.ca_path</code> lets weed verify the other storage endpoints with the IGTF CAs, and macaroons let gfal2 and FTS hand out credentials for third-party copies. <em>weed config</em> prints every option, with its default and what it does; <a href="options.html">Configuration options</a> lists them.</p>
 <h3 id="checking-and-starting">6. Checking and starting</h3>
 <pre><code># weed check -config /etc/weed/weed.toml
@@ -228,9 +229,10 @@ $ ls -l /data/alice /data/cms
 <p>Each file belongs to the account that wrote it, and <em>ps</em> shows a worker for each:</p>
 <pre><code>$ ps -o user,pid,ppid,args -C weed
 USER         PID    PPID COMMAND
-root          95       1 weed -config /etc/weed/weed.toml
-alice        127      95 weed worker alice
-cms001       166      95 weed worker cms001</code></pre>
+weed          95       1 /usr/bin/weed -config /etc/weed/weed.toml
+weed          98      95 weed starter -config /etc/weed/weed.toml
+alice        127      98 weed worker alice
+cms001       166      98 weed worker cms001</code></pre>
 <p>A certificate that the grid-mapfile does not list gets 403, and the log says why:</p>
 <pre><code>level=INFO msg=&quot;authentication failed&quot; method=x509 error=&quot;forbidden: /DC=org/DC=example/OU=Users/CN=Somebody Else is not in the grid-mapfile&quot; request_id=2daaa43c
 level=INFO msg=request method=GET path=/webdav/alice/ proto=HTTP/1.1 status=403 bytes=10 duration=288.167µs user=nobody remote=192.0.2.7:52430 user_agent=curl/7.76.1 request_id=2daaa43c</code></pre>

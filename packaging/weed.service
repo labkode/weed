@@ -1,0 +1,61 @@
+[Unit]
+Description=weed WebDAV server
+Documentation=https://labkode.github.io/weed/
+After=network-online.target remote-fs.target
+Wants=network-online.target
+# Restart= for ever, not 5 times in 10 seconds and then never again
+StartLimitIntervalSec=0
+
+[Service]
+# systemd 253 or later; before, Type=notify and ExecReload=/bin/kill -HUP $MAINPID
+Type=notify-reload
+ExecStartPre=/usr/bin/weed check -config /etc/weed/weed.toml
+ExecStart=/usr/bin/weed -config /etc/weed/weed.toml
+# After a crash: in 2 seconds, and up to a minute apart while it keeps failing
+# (RestartSteps=: systemd 254)
+Restart=on-failure
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=1min
+# A worker that the kernel kills for its memory does not stop weed
+OOMPolicy=continue
+# weed bounds its threads itself, and those of each account with pids.max:
+# systemd's default can be fewer than its workers hold when the storage hangs
+# (see Performance)
+TasksMax=infinity
+# A cgroup for the workers of each account (unix_users.cgroups)
+Delegate=yes
+# weed runs as an account of its own. The starter of its workers keeps CAP_SETUID,
+# CAP_SETGID and CAP_KILL, to start them as their accounts and to kill them; weed
+# itself keeps CAP_NET_BIND_SERVICE alone, for ports below 1024
+User=weed
+Group=weed
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL CAP_NET_BIND_SERVICE
+# /run/weed for admin.socket, /var/lib/weed for admin.bans, /var/log/weed for
+# server.log_file (see Logging)
+RuntimeDirectory=weed
+RuntimeDirectoryMode=0700
+StateDirectory=weed
+StateDirectoryMode=0700
+LogsDirectory=weed
+LogsDirectoryMode=0750
+# Sandboxing, beyond Landlock and seccomp, which weed applies itself
+ProtectSystem=full
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+# Not RestrictSUIDSGID= nor RestrictNamespaces=: their seccomp filters refuse
+# openat2(2), which workers open files with, and clone3(2), which starts each in its
+# cgroup
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
