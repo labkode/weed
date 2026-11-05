@@ -141,6 +141,7 @@
 </ul>
 <h3 id="fixed">Fixed</h3>
 <ul>
+<li>Built with Go 1.26.0 (as go.mod allows), weed copied a directory (COPY of a collection) without what it holds, and answered 201: the os package of that Go looked up each entry of a directory by a path that is not the directory's in the file system. weed looks each up in the directory itself, as with any Go. The releases, built with the latest Go, were not affected.</li>
 <li>weed started with a password or app tokens file that it could not read, which left nobody able to log in, with a warning: it does not start, saying which file. A reload that cannot read one still keeps the entries it has.</li>
 <li>weed running as an account of its own could not stop its workers, which ran as other accounts: a ban left the user's workers serving the requests in progress, and a worker that did not stop when asked ran on. The starter of workers kills them, with CAP_KILL, and weed logs a kill that fails.</li>
 <li>Workers could open MPTCP, SCTP and other sockets that the rules of TCP of Landlock do not cover, and bind and connect with them where the rules refuse it.</li>

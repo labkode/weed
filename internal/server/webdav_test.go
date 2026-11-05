@@ -301,6 +301,31 @@ func TestLocksAreHonouredByPut(t *testing.T) {
 	}
 }
 
+// A COPY of a collection copies what it holds, at every depth (RFC 4918 section
+// 9.8.3), and leaves out symbolic links, which weed does not serve. x/net/webdav
+// copies a collection with Readdir, which up to Go 1.26.0's os package found
+// nothing in a directory that weed opened: the copy came out empty, with 201.
+func TestCopyCollection(t *testing.T) {
+	n := newNode(t, nil)
+	n.write("/d/a", "A")
+	n.write("/d/sub/b", "B")
+	if err := os.Symlink("a", filepath.Join(n.dir, "d", "link")); err != nil {
+		t.Fatal(err)
+	}
+	if code := n.status("COPY", "/d", "", "Destination", n.url("/e")); code != 201 {
+		t.Fatalf("COPY of a collection: %d, want 201", code)
+	}
+	if a, _ := n.read("/e/a"); a != "A" {
+		t.Errorf("/e/a: %q, want A", a)
+	}
+	if b, _ := n.read("/e/sub/b"); b != "B" {
+		t.Errorf("/e/sub/b: %q, want B", b)
+	}
+	if _, err := os.Lstat(filepath.Join(n.dir, "e", "link")); !os.IsNotExist(err) {
+		t.Errorf("the symbolic link was copied: %v", err)
+	}
+}
+
 func TestCopyMoveSafety(t *testing.T) {
 	n := newNode(t, nil)
 	n.write("/d/f", "keep me")

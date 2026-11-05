@@ -130,6 +130,11 @@ from 2026-10-29 or later, when the administration guide came, these are the chan
 
 ### Fixed
 
+- Built with Go 1.26.0 (as go.mod allows), weed copied a directory (COPY of a
+  collection) without what it holds, and answered 201: the os package of that Go
+  looked up each entry of a directory by a path that is not the directory's in the
+  file system. weed looks each up in the directory itself, as with any Go. The
+  releases, built with the latest Go, were not affected.
 - weed started with a password or app tokens file that it could not read, which left
   nobody able to log in, with a warning: it does not start, saying which file. A
   reload that cannot read one still keeps the entries it has.
