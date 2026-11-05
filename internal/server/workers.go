@@ -180,11 +180,10 @@ func RunStarter() error {
 	if err != nil {
 		return sc.Fail(err)
 	}
-	l := &limits.Limits{Default: limits.Account{Cgroup: cfg.WorkerCgroupLimits}}
-	if cfg.LimitsFile != "" {
-		if l.Rules, err = limits.Load(cfg.LimitsFile); err != nil {
-			return sc.Fail(fmt.Errorf("failed to load the limits file (unix_users.limits): %w", err))
-		}
+	// weed reads them too: if they differ, it does not start (see worker.New)
+	l, err := readLimits(cfg)
+	if err != nil {
+		return sc.Fail(err)
 	}
 	// Its paths read, it keeps no storage busy, as its workers
 	if err := os.Chdir("/"); err != nil {

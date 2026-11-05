@@ -30,6 +30,12 @@ func captureLog(t *testing.T) *bytes.Buffer {
 }
 
 // fromFile starts a server from a configuration file, as weed does
+// bansIn is a section of a configuration file with a bans file of the test's, rather
+// than the machine's (/var/lib/weed/bans.json, which may be root's)
+func bansIn(t *testing.T) string {
+	return "[admin]\nbans = \"" + filepath.Join(t.TempDir(), "bans.json") + "\"\n"
+}
+
 func fromFile(t *testing.T, content string) (*Server, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "weed.toml")
@@ -78,7 +84,7 @@ func pendingNow(s *Server) map[string]pendingRestart {
 // runs, or would not start weed at all
 func TestRestartPendingConfig(t *testing.T) {
 	dir := t.TempDir()
-	content := "[server]\naddress = \"127.0.0.1\"\nport = 9000\ndir = \"" + dir + "\"\n"
+	content := "[server]\naddress = \"127.0.0.1\"\nport = 9000\ndir = \"" + dir + "\"\n" + bansIn(t)
 	s, path := fromFile(t, content)
 	s.run.executable = ""
 	log := captureLog(t)
@@ -91,7 +97,7 @@ func TestRestartPendingConfig(t *testing.T) {
 		t.Errorf("pending after a comment: %v", p)
 	}
 
-	writeFile(t, path, strings.Replace(content, "9000", "9001", 1)+"[tpc]\nenabled = true\n")
+	writeFile(t, path, strings.Replace(content, "port = 9000", "port = 9001", 1)+"[tpc]\nenabled = true\n")
 	p := pendingNow(s)[restartConfig]
 	if p.level != slog.LevelWarn || p.why != "the configuration file has changed: server.port, tpc.enabled" {
 		t.Errorf("changed port: %+v", p)
@@ -198,7 +204,7 @@ func TestStatus(t *testing.T) {
 	htpasswd := filepath.Join(t.TempDir(), "htpasswd")
 	os.WriteFile(htpasswd, []byte("alice:$2y$04$ShRnxLOs.q4Wv3J1cKnMA.ZB2xEj9Sut9ENu5pZsSb4Wdm9lYv1y6\n"), 0600)
 	s, path := fromFile(t, "[server]\nport = 9000\ndir = \""+dir+"\"\n[basic]\nenabled = true\nhtpasswd = \""+htpasswd+
-		"\"\n[macaroons]\nenabled = true\nsecret_key = \"0123456789abcdef0123456789abcdef\"\n")
+		"\"\n[macaroons]\nenabled = true\nsecret_key = \"0123456789abcdef0123456789abcdef\"\n"+bansIn(t))
 	_, src, _ := config.Read(path)
 
 	get := func() (st status) {
@@ -330,6 +336,7 @@ func TestQuickStartMonitoring(t *testing.T) {
 	get := func(cfg *config.Config, path string) *httptest.ResponseRecorder {
 		t.Helper()
 		cfg.Directory = t.TempDir()
+		cfg.BansFile = filepath.Join(t.TempDir(), "bans.json") // not the machine's
 		if err := cfg.Validate(); err != nil {
 			t.Fatal(err)
 		}

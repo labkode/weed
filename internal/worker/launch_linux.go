@@ -166,7 +166,9 @@ func newLocal(cfg config.Config, cgroups bool, pids []int, onDir func(fileID, er
 	return l, nil
 }
 
-func (l *local) start(u *fsuser.User, check bool, ctl, logw *os.File, limits []string) (*process, error) {
+// start starts u's worker; that of Pool.Check is nobody's as any other, and only the
+// starter, which looks accounts up, tells it apart (see starter.account)
+func (l *local) start(u *fsuser.User, _ bool, ctl, logw *os.File, limits []string) (*process, error) {
 	rules, dir, err := l.conf.ruleset()
 	if err != nil {
 		return nil, err
