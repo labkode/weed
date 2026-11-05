@@ -302,8 +302,9 @@ func sameValue(a, b any) bool {
 }
 
 const usage = `usage: weed [-config weed.toml]
-       weed check [-config weed.toml]
-                      check that weed would start with a configuration, without serving
+       weed check [-config weed.toml] [-as ACCOUNT]
+                      check that weed would start with a configuration, without serving;
+                      run by root, as the account weed runs as too (User= of weed.service)
        weed version   print the version, commit and build of weed
        weed config    print a configuration file with every option and its default
        weed limits [-config weed.toml] [-dir DIR]

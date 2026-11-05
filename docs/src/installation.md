@@ -2,7 +2,15 @@
 title: 'Installation'
 ---
 
-weed is a single binary, without runtime dependencies. On AlmaLinux, Rocky Linux or RHEL 10 and later, install its RPM, which sets it up as this page does ([The RPM](#rpm)). Elsewhere, download a release or build it from source with Go, install it, and run it as a systemd service, or under another supervisor (see [Without systemd](#without-systemd)).
+weed is a single binary, which needs no other software than glibc. On AlmaLinux, Rocky Linux or RHEL 10 and later, install its RPM, which sets it up as this page does ([The RPM](#rpm)). Elsewhere, download a release or build it from source with Go, install it, and run it as a systemd service, or under another supervisor (see [Without systemd](#without-systemd)).
+
+| weed needs | |
+|----|----|
+| Linux 5.19 or later, with Landlock among its security modules (lsm=), and seccomp | as the kernels of EL9 and EL10 have them; weed does not start otherwise, and says why |
+| glibc 2.34 or later, for a release's weed | EL9 and EL10, Debian 12, Ubuntu 22.04 and later; a weed built without cgo needs none (see [Building](#building)) |
+| systemd 253 or later, for the unit of this page and the RPM | Type=notify-reload: EL10; EL9's systemd is 252 |
+
+weed is developed and tested on AlmaLinux 10 (EL10), which it targets: the RPM is for EL10 alone, and other systems are not tested.
 
 ## The RPM {#rpm}
 
@@ -19,23 +27,32 @@ Each release on [GitHub](https://github.com/labkode/weed/releases) has an RPM fo
 | /usr/lib/sysctl.d/60-weed.conf | net.core.wmem_max and rmem_max of 1 MiB, which the RPM applies (see [Performance](performance.html#socket-buffers)) |
 | /etc/weed/weed.toml | a configuration that serves /srv/weed on 127.0.0.1:8080 to the users of /etc/weed/.htpasswd, and the metrics on 127.0.0.1:9100; root:weed, 0640 |
 | /etc/weed/.htpasswd, .app-tokens | empty: no one logs in yet; root:weed, 0640 |
+| /etc/logrotate.d/weed | the rotation of /var/log/weed/weed.log, for `server.log_file` (see [Logging](logging.html#rotation)) |
 | /srv/weed | the exported directory |
 | /usr/share/doc/weed/ | README.txt, CHANGELOG.md, and this guide (guide/) |
 
-It neither enables nor starts weed. Add a user, give them a directory, and start weed:
+It neither enables nor starts weed. Each user's requests access the files as the Unix account of the same name: make the account, unless it has one (in LDAP, for one), set the user's password, which *weed utils password* asks for and writes to /etc/weed/.htpasswd, give the account a directory, and start weed:
 
-    # cd /etc/weed && weed utils password alice 'her password'
+    # useradd -M alice
+    # weed utils password alice
+    Password of alice:
+    Again:
+    Added alice to /etc/weed/.htpasswd (basic.htpasswd of /etc/weed/weed.toml); weed reads it again on systemctl reload weed (SIGHUP), and every server.reload_interval
     # mkdir /srv/weed/alice && chown alice: /srv/weed/alice
     # systemctl enable --now weed
     $ curl -u alice -T notes.txt http://127.0.0.1:8080/webdav/alice/notes.txt
 
 Then set it up for production in /etc/weed/weed.toml, as the file says: HTTPS on port 443 to every interface, X.509 certificates or tokens (see [Getting started](getting-started.html) and [Configuration](configuration.html)). The account weed must be able to read every file that the configuration names, the host key included (`chgrp weed hostkey.pem && chmod 0640 hostkey.pem`). Change the unit with a drop-in (*systemctl edit weed*), not in /usr/lib: an upgrade replaces the unit, and keeps the files of /etc/weed that you changed.
 
-An upgrade does not restart weed: check the configuration with the new version, then restart it (see [Upgrading](upgrading.html)):
+An upgrade does not restart weed. The new version checks the configuration at once, as root and as the account weed, and says whether it would start with it; restart weed when it would (see [Upgrading](upgrading.html)):
 
     # dnf upgrade https://github.com/labkode/weed/releases/download/v1.3.0/weed-1.3.0-1.el10.x86_64.rpm
-    # weed check -config /etc/weed/weed.toml
+    ...
+    weed 1.3.0: /etc/weed/weed.toml: weed would start with it (sha256 7c0f...), as the account weed too (User= of weed.service)
+    weed: the running weed is the version before, until systemctl restart weed
     # systemctl restart weed
+
+Otherwise dnf shows why, "weed: warning: weed 1.3.0 would not start with /etc/weed/weed.toml, ...": correct the file, check it with *weed check -config /etc/weed/weed.toml*, and restart weed then. The RPM also warns of a unit /etc/systemd/system/weed.service, as an earlier version of this guide had you write, which hides the RPM's: remove it, and keep your changes in a drop-in.
 
 Removing the RPM stops weed. It leaves the account weed, /srv/weed, and what weed wrote in /var/lib/weed and /var/log/weed; the files of /etc/weed that you changed are kept as .rpmsave.
 
@@ -161,7 +178,7 @@ weed is a notify service: it tells systemd when it is ready (once it listens), w
     [Install]
     WantedBy=multi-user.target
 
-*weed check* reads the configuration and every file it names before weed starts, so that *systemctl start* fails with the reason weed would not start. A restart stops weed before ExecStartPre runs, so run *weed check* yourself before restarting (see [Upgrading](upgrading.html)). With Type=notify-reload, *systemctl reload weed* re-reads the credentials (see [Reloading](reloading.html)) and returns once that is done.
+*weed check* reads the configuration and every file it names before weed starts, so that *systemctl start* fails with the reason weed would not start. A restart stops weed before ExecStartPre runs, so run *weed check* yourself before restarting (see [Upgrading](upgrading.html)). Run by root, it checks again as the account weed, with the capabilities of the unit, as ExecStartPre does: root reads a host key of mode 0600, and the account weed does not (see [Commands](commands.html#check)). With Type=notify-reload, *systemctl reload weed* re-reads the credentials (see [Reloading](reloading.html)) and returns once that is done.
 
     # systemctl daemon-reload
     # systemctl enable --now weed
@@ -254,7 +271,9 @@ weed then gives up root's capabilities as it starts, as it does those of the acc
 
 ### Testing the service {#test-systemd}
 
-*make test-systemd* builds the RPM, and runs weed as it installs it, in an AlmaLinux 10 container that boots systemd (Podman): the unit above as the account weed, with the sandboxing of the drop-in above and `unix_users.cgroups`, then as root. It checks that the RPM makes the account, its files and the unit of this page; that weed serves uploads, downloads and third-party copies, reloads, bans, restarts after a crash, and stops with its workers; that weed has no capabilities and its starter only its three; that a ban stops the user's workers at once; that weed may write only what the sandboxing allows; that a storage mounted over the exported directory is served by the same weed; that it blocks while its storage is unmounted, writing nothing beneath, and serves it again once it is mounted; that with `require_mount` it does not start while the storage is not mounted; that a worker killed for its memory leaves weed serving; and that with weed.socket, a restart refuses no connection. Try other directives with *weed check* and a few requests of each kind, uploads and third-party copies included.
+*make test-systemd* builds the RPM, and runs weed as it installs it, in an AlmaLinux 10 container that boots systemd (Podman): the unit above as the account weed, with the sandboxing of the drop-in above and `unix_users.cgroups`, then as root. It checks that the RPM makes the account, its files and the unit of this page; that weed serves uploads, downloads and third-party copies, reloads, bans, restarts after a crash, and stops with its workers; that weed has no capabilities and its starter only its three; that a ban stops the user's workers at once; that weed may write only what the sandboxing allows; that a storage mounted over the exported directory is served by the same weed; that it blocks while its storage is unmounted, writing nothing beneath, and serves it again once it is mounted; that with `require_mount` it does not start while the storage is not mounted; that a worker killed for its memory leaves weed serving; that weed does not start under RestrictSUIDSGID= or RestrictNamespaces=, and says so; that *weed check* by root checks as the account weed too; that an upgrade checks the configuration with the new weed, and warns of a unit that hides the RPM's; that logrotate rotates `server.log_file` with the RPM's file; and that with weed.socket, a restart refuses no connection. Try other directives with *weed check* and a few requests of each kind, uploads and third-party copies included.
+
+*make test-vm* runs the same tests on an AlmaLinux 10 virtual machine, of its cloud image: EL10's kernel, rather than the host's, and SELinux enforcing, with its targeted policy, which a container does not have. It then checks that SELinux denied weed, its starter and its workers nothing. It needs qemu with KVM (/dev/kvm); CI runs it, and again on the RPM of each release.
 
 ## Without systemd {#without-systemd}
 

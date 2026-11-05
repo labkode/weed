@@ -195,16 +195,17 @@ Every weed that shares the secret key accepts the macaroons of the others. Chang
 
 HTTP Basic authentication checks passwords against the bcrypt entries of an htpasswd file, or against app tokens: random tokens, one per line as token:username, that a user gives as their password. Basic credentials are clear text without TLS: enable \[tls\] with \[basic\].
 
-*weed utils password* and *weed utils token generate* add entries to .htpasswd and .app-tokens in the current directory:
+*weed utils password* sets a user's password in the file of `basic.htpasswd`, asking for it, and *weed utils token generate* adds an app token to that of `basic.app_tokens`, of /etc/weed/weed.toml or of `-config` (see [Commands](commands.html#password)):
 
-    # cd /etc/weed
-    # weed utils password bob 's3cret'
-    Added user 'bob' to .htpasswd
+    # weed utils password bob
+    Password of bob:
+    Again:
+    Added bob to /etc/weed/.htpasswd (basic.htpasswd of /etc/weed/weed.toml); ...
     # weed utils token generate bob
     Generated token for user 'bob': 23bb59e76eeeb0228d5a1d1b53f6bda289ce9e43fae29b85d64215d5422a5127
-    Token saved to .app-tokens
+    Token saved to /etc/weed/.app-tokens (basic.app_tokens of /etc/weed/weed.toml); ...
 
-Point `basic.htpasswd` and `basic.app_tokens` at those files, or use htpasswd -B. weed re-reads both on reload, so new users need no restart.
+htpasswd -B writes the same entries. weed re-reads both files on reload (*systemctl reload weed*), so new users need no restart. The account that weed runs as must be able to read them: weed does not start when it cannot.
 
 ## Anonymous requests {#anonymous}
 

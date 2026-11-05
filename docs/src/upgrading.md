@@ -43,10 +43,12 @@ Between releases, the main branch is the development version, which the header o
 
         level=WARN msg="restart pending: weed's executable /usr/local/bin/weed is now v1.3.0 (commit 9c1e0a2b77d4 of ...) go1.27.3 linux/amd64, build go:..." reason=binary
 
-3.  Check that the new version starts with your configuration. The new version may know options that the old one did not, or warn about others:
+3.  Check that the new version starts with your configuration. The new version may know options that the old one did not, or warn about others. The RPM's *dnf upgrade* does it, and says how it went (see [Installation](installation.html#rpm)); otherwise:
 
         # weed check -config /etc/weed/weed.toml
-        /etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0...)
+        /etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0...), as the account weed too (User= of weed.service)
+
+    Run by root, it checks as the account weed too, which may not read every file that root reads (see [Commands](commands.html#check)).
 
 4.  Restart, when the transfers in progress allow it (see [Monitoring](monitoring.html#in-progress)):
 

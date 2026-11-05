@@ -178,7 +178,9 @@ func newTPCEngine(cfg *config.Config) (*tpc.Engine, error) {
 // loadCredentials reads the credential files of the enabled authentication methods.
 // When a file cannot be read, its previous contents (from prev) are kept, so that a
 // file being rewritten or broken during a reload neither locks everybody out nor
-// lets anybody in. At startup (prev == nil) unreadable CAs or CRLs are fatal.
+// lets anybody in. At startup (prev == nil) unreadable CAs or CRLs are fatal, and so
+// are password and app token files that exist but cannot be read: weed would start
+// with nobody able to log in.
 func (s *Server) loadCredentials(prev *auth.Credentials) (c *auth.Credentials, complete bool, err error) {
 	startup := prev == nil
 	if startup {
@@ -186,6 +188,7 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (c *auth.Credentials, c
 	}
 	next := *prev
 	c, complete = &next, true
+	var unreadable error
 	loadMap := func(what, file string, load func(string) (map[string]string, error), dst *map[string]string) {
 		m, err := load(file)
 		if errors.Is(err, fs.ErrNotExist) && len(*dst) == 0 {
@@ -193,6 +196,10 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (c *auth.Credentials, c
 			if startup {
 				slog.Info("no "+what+" file", "file", file)
 			}
+			return
+		}
+		if err != nil && startup {
+			unreadable = errors.Join(unreadable, fmt.Errorf("cannot read the %s file: %w", what, err))
 			return
 		}
 		if err != nil {
@@ -207,6 +214,9 @@ func (s *Server) loadCredentials(prev *auth.Credentials) (c *auth.Credentials, c
 	if s.Config.BasicAuth {
 		loadMap("htpasswd", s.Config.HtpasswdFile, auth.LoadHtpasswd, &next.Htpasswd)
 		loadMap("app tokens", s.Config.AppTokensFile, auth.LoadAppTokens, &next.AppTokens)
+		if unreadable != nil {
+			return nil, false, unreadable
+		}
 	}
 	if s.Config.X509Auth {
 		// Only certificates listed in the grid-mapfile are accepted, so X.509 needs one

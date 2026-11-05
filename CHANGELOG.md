@@ -65,6 +65,28 @@ from 2026-10-29 or later, when the administration guide came, these are the chan
 
 ### New
 
+- weed utils password asks for the password, twice, on a terminal, and reads it from
+  stdin otherwise, rather than taking it on the command line, where ps shows it (it is
+  still taken there, with a warning). It sets the password in the file of
+  basic.htpasswd of /etc/weed/weed.toml, of -config, or -file, rather than ./.htpasswd,
+  and replaces a user's entry rather than adding another; -delete removes a user. It
+  replaces the file at once, keeping its owner, group and mode, and makes a new one of
+  the group weed, 0640. weed utils token generate writes basic.app_tokens's file
+  alike.
+- weed check, run by root, checks again as the account that weed runs as (User= of
+  weed.service, or -as), with the unit's capabilities, and says which file that
+  account cannot read; -as root checks as root alone.
+- The RPM checks the configuration with the new version as it upgrades weed, which it
+  does not restart, and dnf shows whether that version would start with it. It warns
+  of a unit /etc/systemd/system/weed.service, which hides the RPM's. It installs
+  /etc/logrotate.d/weed, for server.log_file.
+- Writes that the storage refuses for lack of space, as it is full (ENOSPC) or the
+  account over its quota (EDQUOT), get 507 Insufficient Storage rather than 500 or 403:
+  uploads, MKCOL, COPY and MOVE; third-party copies fail saying so. The metric
+  weed_storage_full_total counts them, by reason, and weed logs one a minute.
+- weed says, as it starts, that a seccomp filter refuses openat2(2) or clone3(2), and
+  that systemd's RestrictSUIDSGID= or RestrictNamespaces= does, rather than failing
+  later with ENOSYS ("function not implemented").
 - An RPM for EL10 (AlmaLinux, Rocky Linux, RHEL 10 and later), x86_64 and aarch64, in
   each release: weed, its systemd unit, which runs it as the account weed that the
   RPM makes, with sandboxing; the sysctl settings of its socket buffers; and a
@@ -108,6 +130,9 @@ from 2026-10-29 or later, when the administration guide came, these are the chan
 
 ### Fixed
 
+- weed started with a password or app tokens file that it could not read, which left
+  nobody able to log in, with a warning: it does not start, saying which file. A
+  reload that cannot read one still keeps the entries it has.
 - weed running as an account of its own could not stop its workers, which ran as
   other accounts: a ban left the user's workers serving the requests in progress,
   and a worker that did not stop when asked ran on. The starter of workers kills

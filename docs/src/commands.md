@@ -6,8 +6,9 @@ weed is a single binary. Options are set in the configuration file, not on the c
 
     $ weed -h
     usage: weed [-config weed.toml]
-           weed check [-config weed.toml]
-                          check that weed would start with a configuration, without serving
+           weed check [-config weed.toml] [-as ACCOUNT]
+                          check that weed would start with a configuration, without serving;
+                          run by root, as the account weed runs as too (User= of weed.service)
            weed version   print the version, commit and build of weed
            weed config    print a configuration file with every option and its default
            weed limits [-config weed.toml] [-dir DIR]
@@ -39,9 +40,17 @@ weed runs on Linux, as root, or as an account of its own with the capabilities C
 ## weed check {#check}
 
     # weed check -config /etc/weed/weed.toml
-    /etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0972e5a032630bb90ccdf474c3df01a9dd983f88c9fdc5baf417e)
+    /etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0972e5a032630bb90ccdf474c3df01a9dd983f88c9fdc5baf417e), as the account weed too (User= of weed.service)
 
-Checks that weed would start with a configuration, without serving: it reads the file and every file it names, contacts the OIDC provider, and starts a worker as nobody, as weed does at startup. It prints the warnings weed would log, and the SHA-256 of the file, which weed logs and reports when it runs it. It does not try the listening addresses, nor set cgroups up. Run it as the user weed runs as, so that it reads the files with the same permissions. See [What runs](what-runs.html#check).
+Checks that weed would start with a configuration, without serving: it reads the file and every file it names, contacts the OIDC provider, and starts a worker as nobody, as weed does at startup. It prints the warnings weed would log, and the SHA-256 of the file, which weed logs and reports when it runs it. It does not try the listening addresses, nor set cgroups up. See [What runs](what-runs.html#check).
+
+Run by root, it checks the configuration again as the account that weed runs as, which may not read every file that root does: the account of `-as`, or the User= of weed.service (the RPM's unit: weed), with the unit's capabilities, in /, as systemd runs it. When the account cannot read a file, it says which:
+
+    # weed check -config /etc/weed/weed.toml
+    weed would start with /etc/weed/weed.toml as root, but not as the account weed that it runs as (User= of weed.service):
+    weed would not start with /etc/weed/weed.toml: failed to load TLS certificate: open /etc/weed/hostkey.pem: permission denied
+
+Give the file to the group weed (`chgrp weed hostkey.pem && chmod 640 hostkey.pem`). Without a unit, or one that runs weed as root, or with `-as root`, as for a file that weed will not run with as it is (the weed.toml of *weed limits*), it checks as root alone. Run by another account (in ExecStartPre=, as the account weed), it checks as that account.
 
 | Exit status | When |
 |----|----|
@@ -200,18 +209,26 @@ ban, unban and bans exit with:
 
 ### weed utils password {#password}
 
-    # weed utils password bob 's3cret'
-    Added user 'bob' to .htpasswd
+    # weed utils password bob
+    Password of bob:
+    Again:
+    Added bob to /etc/weed/.htpasswd (basic.htpasswd of /etc/weed/weed.toml); weed reads it again on systemctl reload weed (SIGHUP), and every server.reload_interval
+    # printf '%s\n' "$PASSWORD" | weed utils password bob
+    Changed the password of bob in /etc/weed/.htpasswd (basic.htpasswd of /etc/weed/weed.toml); ...
+    # weed utils password -delete bob
+    Removed bob from /etc/weed/.htpasswd (basic.htpasswd of /etc/weed/weed.toml); ...
 
-Adds a user with a bcrypt hash of the password to .htpasswd, in the current directory. The password is on the command line, where other users can see it with *ps*, and goes to the shell's history: on a shared host, use `htpasswd -B`, which asks for it.
+Sets a user's password, as a bcrypt hash, in weed's password file, adding the user if it is not there; `-delete` removes the user. It asks for the password twice on a terminal, without showing it, and reads the first line of stdin otherwise, for scripts. The file is `basic.htpasswd` of `-config`, by default /etc/weed/weed.toml if there is one, or `-file`; without either, .htpasswd in the current directory. It replaces the file at once, so that weed never reads half of it, and keeps its owner, group and mode; a file it makes is of the group weed, mode 0640, if there is a group weed. weed sees the change at the next reload (*systemctl reload weed*).
+
+A password given on the command line (`weed utils password bob 's3cret'`) is still taken, with a warning: other users see it with *ps*, and it stays in the shell's history.
 
 ### weed utils token {#token}
 
     # weed utils token generate bob
     Generated token for user 'bob': 23bb59e76eeeb0228d5a1d1b53f6bda289ce9e43fae29b85d64215d5422a5127
-    Token saved to .app-tokens
+    Token saved to /etc/weed/.app-tokens (basic.app_tokens of /etc/weed/weed.toml); weed reads it again on systemctl reload weed (SIGHUP), and every server.reload_interval
 
-Generates a random app token for a user, which they give as their password with Basic authentication, and adds it to .app-tokens, in the current directory. See [Authentication](authentication.html#basic).
+Generates a random app token for a user, which they give as their password with Basic authentication, and adds it to weed's app tokens file: `basic.app_tokens` of `-config` (by default /etc/weed/weed.toml if there is one), or `-file`, as *weed utils password* does. See [Authentication](authentication.html#basic).
 
 ### weed utils cert {#cert}
 

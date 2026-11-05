@@ -6,7 +6,7 @@ FUZZTIME  ?= 20s
 # Platforms that "make cross" builds for, as CI does: weed runs on Linux alone
 PLATFORMS ?= linux/amd64 linux/arm64
 
-.PHONY: test-systemd dist all build test test-root test-cgroups bench-workers interop find-limits find-limits-users check fmt vulncheck fuzz bench cross ci docs clean help
+.PHONY: test-systemd test-vm dist all build test test-root test-cgroups bench-workers interop find-limits find-limits-users check fmt vulncheck fuzz bench cross ci docs clean help
 
 all: build
 
@@ -27,6 +27,9 @@ test-cgroups: ## The cgroups of worker processes, as root in a cgroup of their o
 
 test-systemd: ## weed's RPM as the guide installs it, under systemd, as the account weed and as root (Podman, sudo); WEED=path or RPM=path tests those
 	WEED="$(WEED)" RPM="$(RPM)" test/systemd/systemd.sh
+
+test-vm: ## test-systemd's tests on an AlmaLinux 10 virtual machine, SELinux enforcing (qemu, KVM, Podman); RPM=path tests that RPM
+	RPM="$(RPM)" test/vm/vm.sh
 
 interop: ## Interoperability tests with gfal2, davix and XRootD (Podman, sudo)
 	test/interop/interop.sh
@@ -72,7 +75,7 @@ cross: ## Build and vet for every platform in PLATFORMS
 		GOOS=$${p%/*} GOARCH=$${p#*/} $(GO) vet ./...; \
 	done
 
-ci: check test cross ## What CI runs, except root tests, fuzzing, govulncheck, interop, test-systemd and docs
+ci: check test cross ## What CI runs, except root tests, fuzzing, govulncheck, interop, test-systemd, test-vm and docs
 
 docs: build ## The administration guide, docs/html, from docs/src (pandoc)
 	$(MAKE) -C docs/src dist WEED=$(abspath $(BIN))

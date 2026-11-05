@@ -13,6 +13,7 @@ weed serves these metrics at /metrics on `server.metrics_address`, in the Promet
 | [`weed_upload_bytes_total`]{#weed_upload_bytes_total} | counter |  | Bytes stored by successful uploads (PUT). |
 | [`weed_requests_in_progress`]{#weed_requests_in_progress} | gauge | kind | Authenticated WebDAV requests being served, by kind: download (GET), upload (PUT), tpc_pull and tpc_push (third-party copies, for as long as their COPY lasts), other (PROPFIND, MKCOL, DELETE, MOVE, local COPY, ...). /status also counts them by user. |
 | [`weed_auth_requests_total`]{#weed_auth_requests_total} | counter | method, result | Authentication outcomes of WebDAV requests, by the method that decided them (x509, token, macaroon, basic, anonymous; none when no credentials were accepted) and result (success, forbidden, unauthorized). |
+| [`weed_storage_full_total`]{#weed_storage_full_total} | counter | reason | Writes that the storage refused, answered 507 Insufficient Storage (or, for a third-party copy, its failure), by reason: full (ENOSPC), or quota, the account over its quota (EDQUOT). weed logs the first in a minute of each reason. |
 | [`weed_checksum_mismatches_total`]{#weed_checksum_mismatches_total} | counter | operation | Transfers refused because the data did not match the client's checksum, by operation (put, tpc_pull, tpc_push). |
 
 ## Third-party copy {#tpc}

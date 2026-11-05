@@ -154,6 +154,22 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <td>Landlock refuses every access on some file systems, whatever its rules, such as Docker Desktop's mounts of the host: put the exported directory and weed's binary on another (see <a href="unix-accounts.html#confinement">Unix accounts</a>).</td>
 </tr>
 <tr>
+<td><code>weed would start with /etc/weed/weed.toml as root, but not as the account weed that it runs as (User= of weed.service)</code> ... <code>permission denied</code></td>
+<td><em>weed check</em>, run by root: the account weed cannot read a file that the configuration names, which root can. Give it to the group weed: <code>chgrp weed FILE &amp;&amp; chmod 640 FILE</code> (see <a href="commands.html#check">Commands</a>).</td>
+</tr>
+<tr>
+<td><code>cannot read the htpasswd file: open /etc/weed/.htpasswd: permission denied</code></td>
+<td>The account that weed runs as cannot read the password file (or the app tokens file), and weed would start with nobody able to log in: <code>chgrp weed /etc/weed/.htpasswd &amp;&amp; chmod 640 /etc/weed/.htpasswd</code>. On a reload, weed keeps the users it has.</td>
+</tr>
+<tr>
+<td><code>a seccomp filter refuses openat2(2), with which weed's workers open files: systemd's RestrictSUIDSGID= does, ...</code></td>
+<td>A drop-in of weed's unit, often of a security baseline, sets RestrictSUIDSGID=, or a SystemCallFilter= without openat2: remove it (<em>systemctl cat weed</em> shows the unit and its drop-ins). weed opens every file with openat2, to follow no symbolic link (see <a href="unix-accounts.html#confinement">Unix accounts</a>).</td>
+</tr>
+<tr>
+<td><code>a seccomp filter refuses clone3(2), which starts each worker in its cgroup (unix_users.cgroups): systemd's RestrictNamespaces= does, ...</code></td>
+<td>As above, for RestrictNamespaces=, which refuses clone3 as it cannot look into its arguments.</td>
+</tr>
+<tr>
 <td><code>cannot read the banned users (admin.bans): open /var/lib/weed/bans.json: permission denied</code></td>
 <td>weed's user must be able to read and write <code>admin.bans</code> and its directory.</td>
 </tr>
@@ -279,11 +295,19 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 </tr>
 <tr>
 <td><code>cannot start a worker for alice: fork/exec /proc/self/exe: function not implemented</code></td>
-<td>A seccomp filter refuses clone3, which starts a worker in its cgroup (<code>unix_users.cgroups</code>): systemd's RestrictNamespaces=, which refuses it as it cannot look into its arguments, or a container runtime's that predates it. Remove RestrictNamespaces= from weed's unit.</td>
+<td>A seccomp filter refuses clone3, which starts a worker in its cgroup (<code>unix_users.cgroups</code>): a container runtime's that predates it. weed says so as it starts when systemd's RestrictNamespaces= refuses it (above).</td>
 </tr>
 <tr>
 <td><code>refusing to serve: weed opens files with openat2(2), which this system refuses ...</code></td>
-<td>A seccomp filter refuses openat2: a container runtime's that predates it, or systemd's RestrictSUIDSGID=, which refuses it as it cannot look into its arguments. Remove RestrictSUIDSGID= from weed's unit, or update the runtime. weed opens every file with openat2, to follow no symbolic link (see <a href="unix-accounts.html#confinement">Unix accounts</a>).</td>
+<td>A seccomp filter refuses openat2: a container runtime's that predates it; update it. weed says so as it starts when systemd's RestrictSUIDSGID= refuses it (above).</td>
+</tr>
+<tr>
+<td><code>the storage is full: writes get 507 Insufficient Storage</code></td>
+<td>The file system of the exported directory is full (ENOSPC): uploads, MKCOL, COPY and third-party copies into it get 507, which clients tell from a fault of weed. weed logs it once a minute, with how many it did not log; <code>weed_storage_full_total</code> counts them all. Free space, or grow the file system.</td>
+</tr>
+<tr>
+<td><code>an account is over its quota on the storage: its writes get 507 Insufficient Storage</code></td>
+<td>The account's quota on the file system is used up (EDQUOT): the user's writes get 507 until they free space, or their quota grows.</td>
 </tr>
 <tr>
 <td><code>the exported directory has changed since the worker started (mounted again?): replacing the worker</code></td>

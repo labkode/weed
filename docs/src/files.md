@@ -19,6 +19,7 @@ The files that weed reads and writes, with the paths of the examples in this gui
 | /etc/weed/.htpasswd, /etc/weed/.app-tokens | `basic.htpasswd`, `basic.app_tokens` | root:weed, 0640 | Passwords and app tokens, reloaded. |
 | /etc/weed/limits.json | `unix_users.limits` | root, 0644 | The limits of some users and groups, reloaded (see [Limits per account](limits.html#file)). |
 | /var/log/weed/weed.log | `server.log_file` | weed | The log, reopened on SIGHUP (see [Logging](logging.html#rotation)); in the directory of `LogsDirectory=weed`. |
+| /etc/logrotate.d/weed (the RPM) |  | root, 0644 | Rotates /var/log/weed/\*.log daily, keeping 30, and has weed reopen it (see [Logging](logging.html#rotation)). |
 | /run/weed/admin.sock (default) | `admin.socket` | weed, 0600 in a 0700 directory | The control plane (see [Banning users](banning.html#control-plane)), removed when weed stops. |
 | /var/lib/weed/bans.json (default) | `admin.bans` | weed, 0600 in a 0700 directory | The banned users, written by weed, read at startup. |
 | /data/ | `server.dir` | the accounts | The exported directory, accessed as the users' accounts. |

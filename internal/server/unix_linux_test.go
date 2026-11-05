@@ -1025,3 +1025,37 @@ func TestBanStopsWorkers(t *testing.T) {
 		t.Errorf("PUT as alice once the ban is lifted: %d", code)
 	}
 }
+
+// A write that the storage refuses for lack of space gets 507, not 500 nor 403, and
+// is counted: an upload, the files that a COPY writes, a collection
+func TestUnixNoSpace(t *testing.T) {
+	n := newUnixNode(t, nil)
+	n.setup("/alice/", 0755, 6001, 6001)
+	full := n.local("/alice/full")
+	n.setup("/alice/full/", 0755, 6001, 6001)
+	if out, err := exec.Command("mount", "-t", "tmpfs", "-o", "size=64k,nr_inodes=32,mode=0755,uid=6001,gid=6001", "full", full).CombinedOutput(); err != nil {
+		t.Skipf("cannot mount a tmpfs: %v: %s", err, out)
+	}
+	t.Cleanup(func() { exec.Command("umount", "-l", full).Run() })
+	big := strings.Repeat("x", 256<<10)
+	n.write("/alice/big", big) // outside, to COPY in
+	os.Chown(n.local("/alice/big"), 6001, 6001)
+	before := metrics.StorageFull.Get("full")
+
+	if resp, msg := n.do("PUT", "/alice/full/f", big, n.as("alice")...); resp.StatusCode != 507 {
+		t.Errorf("PUT larger than the storage: %d %q, want 507", resp.StatusCode, msg)
+	}
+	if resp, msg := n.do("COPY", "/alice/big", "", append(n.as("alice"), "Destination", "/webdav/alice/full/copy")...); resp.StatusCode != 507 {
+		t.Errorf("COPY larger than the storage: %d %q, want 507", resp.StatusCode, msg)
+	}
+	// Without inodes left, the storage refuses a new directory too
+	for i := 0; os.WriteFile(fmt.Sprintf("%s/i%d", full, i), nil, 0o644) == nil && i < 100; i++ {
+	}
+	if resp, msg := n.do("MKCOL", "/alice/full/dir", "", n.as("alice")...); resp.StatusCode != 507 {
+		t.Errorf("MKCOL on a full storage: %d %q, want 507", resp.StatusCode, msg)
+	}
+	eventually(t, "the refusals to be counted", func() bool { return metrics.StorageFull.Get("full")-before >= 3 })
+	if left, _ := filepath.Glob(full + "/.weed-*"); len(left) != 0 {
+		t.Errorf("temporary files left: %v", left)
+	}
+}

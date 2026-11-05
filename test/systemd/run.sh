@@ -4,6 +4,8 @@
 # from docs/src), its unit, which runs weed as the account weed, with the sandboxing
 # that the guide suggests; then as root
 set -uo pipefail
+# With pipefail, cmd | grep -q fails when grep's early exit kills cmd (SIGPIPE): grep
+# a here-string (<<<"$(cmd)") instead
 
 pass=0 fail=0
 check() {
@@ -37,6 +39,7 @@ check "the RPM makes the account weed, its group, and /etc/weed for it" sh -c 'i
 block 'Write /etc/systemd/system/weed.service' | sed 's#/usr/local/bin/weed#/usr/bin/weed#g' >/tmp/guide.service
 check "the RPM's unit is the guide's" diff -B /tmp/guide.service /usr/lib/systemd/system/weed.service
 check "...and its sysctl settings, the guide's" sh -c "grep -qx 'net.core.wmem_max = 1048576' /usr/lib/sysctl.d/60-weed.conf"
+check "...and a logrotate file for server.log_file" logrotate -d /etc/logrotate.d/weed
 systemctl daemon-reload
 check "the RPM's configuration: weed starts, serves /srv/weed to this machine, asking for a password" sh -c '
 	systemctl start weed && curl -sf 127.0.0.1:9100/healthz &&
@@ -53,8 +56,10 @@ check "the guide has the sandboxing" sh -c "grep -q '^ProtectSystem=strict' /etc
 useradd -M -u 6001 alice
 useradd -M -u 6002 bob
 mkdir -p /data/alice /data/bob && chown alice: /data/alice && chown bob: /data/bob
-# Appended to the RPM's .htpasswd, which weed's group may read
-cd /etc/weed && weed utils password alice pw-alice >/dev/null
+# In the RPM's .htpasswd (basic.htpasswd of /etc/weed/weed.toml), which weed's group may read
+check "weed utils password, from stdin, sets alice's in the RPM's .htpasswd, which stays root:weed 0640" sh -c "
+	printf 'pw-alice\n' | weed utils password alice | grep -q 'Added alice to /etc/weed/.htpasswd' &&
+	grep -q '^alice:' /etc/weed/.htpasswd && [ \"\$(stat -c %U:%G:%a /etc/weed/.htpasswd)\" = root:weed:640 ]"
 cat >/etc/weed/weed.toml <<'T'
 [server]
 port = 8080
@@ -116,7 +121,7 @@ t_ban_kills() { # a ban kills alice's workers, the one of her upload in progress
 		pgrep -u alice >/dev/null && break
 		sleep 0.25
 	done
-	out=$(timeout 30 weed utils ban -reason test alice 2>&1) && echo "$out" | grep -q 'stopped its [0-9]* worker process' &&
+	out=$(timeout 30 weed utils ban -reason test alice 2>&1) && grep -q 'stopped its [0-9]* worker process' <<<"$out" &&
 		for i in $(seq 20); do # the starter reaps them
 			pgrep -u alice >/dev/null || { ok=0; break; }
 			sleep 0.25
@@ -134,7 +139,7 @@ t_limits() { # weed limits, as alice, while weed serves: a weed of its own in a 
 	grep '^  get-small ' /tmp/limits/summary.txt && grep 'weed and its workers used at most' /tmp/limits/summary.txt &&
 		! grep TasksMax /tmp/limits/summary.txt && [ -z "$(ls -A /data /var/tmp | grep weed-limits)" ] &&
 		! systemctl list-units --all 'weed-limits-*' | grep weed-limits &&
-		{ [ ! -e /tmp/limits/weed.toml ] || weed check -config /tmp/limits/weed.toml; } && curl -sf 127.0.0.1:9100/healthz
+		{ [ ! -e /tmp/limits/weed.toml ] || weed check -as root -config /tmp/limits/weed.toml; } && curl -sf 127.0.0.1:9100/healthz
 }
 t_readonly() { ! nsenter -t "$(main)" -m touch /etc/weed/probe; }
 t_writable() {
@@ -147,8 +152,44 @@ t_tpc() { # the worker connects to weed, as to another server
 		$W/alice/g | tail -1 | grep '^success' && cmp /data/alice/f /data/alice/g
 }
 t_refused() { ! as bob -T /etc/os-release $W/bob/f; }
+t_check_as() { # weed check, as root, of a file that root may read, and weed not
+	local out
+	chmod 600 /etc/weed/.htpasswd
+	out=$(weed check -config /etc/weed/weed.toml 2>&1)
+	chmod 640 /etc/weed/.htpasswd
+	grep -q 'not as the account weed that it runs as (User= of weed.service)' <<<"$out" &&
+		grep -q '/etc/weed/.htpasswd: permission denied' <<<"$out" || { echo "$out"; return 1; }
+}
+t_hardened() { # with systemd's directive $1, weed does not start, and says which
+	mkdir -p /etc/systemd/system/weed.service.d
+	printf '[Service]\n%s=yes\n' "$1" >/etc/systemd/system/weed.service.d/hardening.conf
+	systemctl daemon-reload
+	! systemctl restart weed
+	local refused=$?
+	rm /etc/systemd/system/weed.service.d/hardening.conf
+	systemctl daemon-reload
+	systemctl reset-failed weed
+	[ $refused = 0 ] && grep -q "systemd's $1= does" <<<"$(journalctl -u weed -o cat)" ||
+		{ journalctl -u weed -o cat | tail -5; return 1; }
+}
+t_upgrade() { # rpm -U of a weed: it checks the configuration, and says that weed runs on; $1 is what it says
+	local out
+	out=$(rpm -U --replacepkgs /test/weed.rpm 2>&1)
+	grep -q "$1" <<<"$out" || { echo "$out"; return 1; }
+}
+t_logrotate() { # server.log_file: logrotate moves it, and weed writes a new one
+	sed -i 's|^metrics_address = .*|&\nlog_file = "/var/log/weed/weed.log"|' /etc/weed/weed.toml
+	systemctl restart weed && as alice -o /dev/null -T /etc/os-release $W/alice/rot1 &&
+		grep -q 'msg=request' /var/log/weed/weed.log &&
+		logrotate -f /etc/logrotate.d/weed && as alice -o /dev/null -T /etc/os-release $W/alice/rot2 &&
+		grep -q 'msg=request' /var/log/weed/weed.log.1 && grep -q 'msg=request' /var/log/weed/weed.log
+	local ok=$?
+	sed -i '/^log_file = /d' /etc/weed/weed.toml
+	systemctl restart weed
+	return $ok
+}
 t_reload() {
-	(cd /etc/weed && weed utils password bob pw-bob >/dev/null) && systemctl reload weed &&
+	printf 'pw-bob\n' | weed utils password bob >/dev/null && systemctl reload weed &&
 		as bob -T /etc/os-release $W/bob/f
 }
 serving() { # a weed other than $1 serves: within 90 s, as systemd restarts it ever less often
@@ -271,6 +312,9 @@ t_stop() { # weed, its starter and its workers stop, and weed exits 0
 mount --make-rshared /
 systemctl daemon-reload
 check "weed check accepts the configuration" weed check -config /etc/weed/weed.toml
+check "...as root, and as the account weed, which the unit runs weed as" sh -c "
+	weed check -config /etc/weed/weed.toml | grep -q 'as the account weed too (User= of weed.service)'"
+check "...and as root, it says which file the account weed may not read" t_check_as
 # Type=notify: systemctl returns once weed says it is ready, and it serves then
 check "systemctl start returns once weed serves" sh -c 'systemctl start weed && curl -sf 127.0.0.1:9100/healthz'
 check "the status line says since when weed serves" sh -c "systemctl show -P StatusText weed | grep '^Serving since'"
@@ -329,6 +373,19 @@ cp /etc/weed/weed.toml.good /etc/weed/weed.toml
 check "...and the journal says why" sh -c "journalctl -u weed -o cat | grep 'unknown option server.prot'"
 systemctl reset-failed weed
 check "...and once corrected, weed starts" sh -c 'systemctl restart weed && curl -sf 127.0.0.1:9100/healthz'
+check "RestrictSUIDSGID= in a drop-in: weed does not start, and says why" t_hardened RestrictSUIDSGID
+check "RestrictNamespaces= in a drop-in: weed does not start, and says why" t_hardened RestrictNamespaces
+check "...and without, weed starts" sh -c 'systemctl restart weed && curl -sf 127.0.0.1:9100/healthz'
+check "an upgrade checks the configuration with the new weed, which the running one goes on until restarted" \
+	t_upgrade 'the running weed is the version before, until systemctl restart weed'
+sed -i 's/^\[server\]$/&\nprot = 1/' /etc/weed/weed.toml
+check "...and warns of one that the new weed would refuse" t_upgrade 'would not start with /etc/weed/weed.toml'
+cp /etc/weed/weed.toml.good /etc/weed/weed.toml
+cp /usr/lib/systemd/system/weed.service /etc/systemd/system/weed.service # the same: weed runs on
+check "...and of a unit in /etc/systemd/system that hides the RPM's" t_upgrade '/etc/systemd/system/weed.service hides the unit of this RPM'
+rm /etc/systemd/system/weed.service
+systemctl daemon-reload
+check "server.log_file: logrotate, with the RPM's file, rotates it, and weed writes a new one" t_logrotate
 check "systemctl stop: weed, its starter and its workers stop, weed exits 0" t_stop
 
 # --- Socket activation: systemd listens on weed's ports, and passes the sockets

@@ -37,6 +37,9 @@ func (s *Server) startWorkers() error {
 		return err
 	}
 	s.cgroups = wantCgroups(s.Config, s.limits.Load())
+	if err := worker.CheckSyscalls(s.cgroups); err != nil {
+		return err
+	}
 	s.lost = make(chan error, 1)
 	opts := worker.Options{
 		Config:       workerConfig(s.Config, dir),

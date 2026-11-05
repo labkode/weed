@@ -2,7 +2,7 @@
 # needs 253 or later), for make test-systemd; and rpmbuild, which builds weed's RPM
 FROM almalinux:10
 RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
-        systemd dbus util-linux shadow-utils procps-ng curl jq diffutils \
+        systemd dbus util-linux shadow-utils procps-ng curl jq diffutils logrotate \
         rpm-build systemd-rpm-macros && \
     dnf clean all && \
     systemctl mask getty.target console-getty.service systemd-firstboot.service \

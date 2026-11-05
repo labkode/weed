@@ -7,13 +7,10 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
-	"fmt"
 	"math/big"
 	"net"
 	"os"
 	"time"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 // GenerateAppToken creates a new random application token
@@ -68,45 +65,6 @@ func GenerateTLSCertificates() error {
 	privateKeyDER := x509.MarshalPKCS1PrivateKey(privateKey)
 	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: privateKeyDER}); err != nil {
 		return err
-	}
-
-	return nil
-}
-
-// AddUserToHtpasswd adds a user to the htpasswd file
-func AddUserToHtpasswd(username, password string) error {
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("error hashing password: %v", err)
-	}
-
-	entry := fmt.Sprintf("%s:%s\n", username, string(hashedPassword))
-
-	file, err := os.OpenFile(".htpasswd", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return fmt.Errorf("error opening .htpasswd file: %v", err)
-	}
-	defer file.Close()
-
-	if _, err := file.WriteString(entry); err != nil {
-		return fmt.Errorf("error writing to .htpasswd file: %v", err)
-	}
-
-	return nil
-}
-
-// AddTokenToFile adds a token to the app tokens file
-func AddTokenToFile(filename, username, token string) error {
-	entry := fmt.Sprintf("%s:%s\n", token, username)
-
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return fmt.Errorf("error opening app tokens file: %v", err)
-	}
-	defer file.Close()
-
-	if _, err := file.WriteString(entry); err != nil {
-		return fmt.Errorf("error writing token: %v", err)
 	}
 
 	return nil

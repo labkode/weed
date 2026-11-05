@@ -192,6 +192,12 @@
 <td>The log, reopened on SIGHUP (see <a href="logging.html#rotation">Logging</a>); in the directory of <code>LogsDirectory=weed</code>.</td>
 </tr>
 <tr>
+<td>/etc/logrotate.d/weed (the RPM)</td>
+<td></td>
+<td>root, 0644</td>
+<td>Rotates /var/log/weed/*.log daily, keeping 30, and has weed reopen it (see <a href="logging.html#rotation">Logging</a>).</td>
+</tr>
+<tr>
 <td>/run/weed/admin.sock (default)</td>
 <td><code>admin.socket</code></td>
 <td>weed, 0600 in a 0700 directory</td>

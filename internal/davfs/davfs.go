@@ -251,6 +251,7 @@ func (t *Tree) checked(ctx context.Context, name string, err error) error {
 		err = &os.PathError{Op: "open", Path: name, Err: ErrSymlink}
 	}
 	noteDenied(ctx, err)
+	noteNoSpaceIn(ctx, err)
 	return err
 }
 
@@ -291,7 +292,7 @@ func (t *Tree) OpenFile(ctx context.Context, name string, flag int, perm os.File
 		if err != nil {
 			return nil, err
 		}
-		return &davFile{af: af}, nil
+		return &davFile{af: af, ctx: ctx}, nil
 	}
 	var f *os.File
 	if flag&(os.O_WRONLY|os.O_RDWR) == 0 {
@@ -660,6 +661,7 @@ func ignoringEINTR(f func() error) error {
 // that would promote ReadFrom, letting io.Copy bypass Write and its error tracking.
 type davFile struct {
 	af     *AtomicFile
+	ctx    context.Context // of the request, for TrackNoSpace
 	failed bool
 }
 
@@ -672,6 +674,7 @@ func (f *davFile) Write(p []byte) (int, error) {
 	n, err := f.af.Write(p)
 	if err != nil {
 		f.failed = true
+		noteNoSpaceIn(f.ctx, err)
 	}
 	return n, err
 }
@@ -682,6 +685,7 @@ func (f *davFile) ReadFrom(r io.Reader) (int64, error) {
 	n, err := io.Copy(struct{ io.Writer }{f.af.File}, r)
 	if err != nil {
 		f.failed = true
+		noteNoSpaceIn(f.ctx, err)
 	}
 	return n, err
 }
@@ -691,5 +695,7 @@ func (f *davFile) Close() error {
 		f.af.Abort()
 		return errWriteFailed
 	}
-	return f.af.Commit()
+	err := f.af.Commit()
+	noteNoSpaceIn(f.ctx, err)
+	return err
 }

@@ -273,6 +273,10 @@ each worker: its account, its pid, since when it runs, and how many requests wee
 <td><code>weed_storage_unmounted == 1</code></td>
 </tr>
 <tr>
+<td>the storage is full</td>
+<td><code>increase(weed_storage_full_total{reason="full"}[10m]) &gt; 0</code>; alongside the free space of its file system (node_exporter)</td>
+</tr>
+<tr>
 <td>CRLs about to expire (fetch-crl stopped)</td>
 <td><code>weed_crl_expiry_timestamp_seconds - time() &lt; 6 * 3600</code></td>
 </tr>
@@ -313,8 +317,8 @@ each worker: its account, its pid, since when it runs, and how many requests wee
 <td><code>rate(weed_tpc_transfers_total{result="failure"}[1h]) / rate(weed_tpc_transfers_total[1h]) &gt; 0.1</code></td>
 </tr>
 <tr>
-<td>server errors</td>
-<td><code>sum(rate(weed_http_requests_total{code=~"5.."}[5m])) / sum(rate(weed_http_requests_total[5m])) &gt; 0.05</code></td>
+<td>server errors (507 aside: a full storage, or an account over its quota)</td>
+<td><code>sum(rate(weed_http_requests_total{code=~"5..",code!="507"}[5m])) / sum(rate(weed_http_requests_total[5m])) &gt; 0.05</code></td>
 </tr>
 </tbody>
 </table>

@@ -1,0 +1,15 @@
+# weed's log file, when weed.toml sets server.log_file = "/var/log/weed/weed.log"
+# (see Logging in the guide): weed reopens it on SIGHUP, which systemctl reload sends.
+# Without server.log_file, weed logs to the journal, and this does nothing.
+/var/log/weed/*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    sharedscripts
+    postrotate
+        systemctl reload weed.service >/dev/null 2>&1 || true
+    endscript
+}

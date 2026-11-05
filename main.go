@@ -31,7 +31,14 @@ import (
 // workers: the kernel names them "exe". They take the name of weed's command again,
 // so that ps -C weed, pgrep -x weed and top show them. Init runs on the main thread,
 // whose name is the process's.
+//
+// The main goroutine keeps the main thread, so that no other goroutine runs there:
+// some confine their thread and end with it (the starter's, as it starts a worker,
+// keeps CAP_SETUID and CAP_SETGID alone, and Landlock's rules), and Go cannot end the
+// main thread, which would stay so. The kernel shows the main thread's credentials as
+// the process's (/proc/PID/status).
 func init() {
+	runtime.LockOSThread()
 	if name := filepath.Base(os.Args[0]); name != "" && name != "." && name != "/" {
 		if b, err := unix.BytePtrFromString(name); err == nil {
 			unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(b)), 0, 0, 0)
@@ -144,6 +151,11 @@ func main() {
 // without serving: it reads and checks everything weed does at startup, and prints
 // the problems and warnings weed would log. It returns the exit status.
 func check(args []string) int {
+	args, as, err := cutAs(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "weed check:", err)
+		return 2
+	}
 	cfg, src, err := config.FromArgs(args)
 	switch {
 	case errors.Is(err, flag.ErrHelp):
@@ -178,6 +190,15 @@ func check(args []string) int {
 	}
 	if src.Path == "" {
 		fmt.Println("weed would start with the default configuration (no -config)")
+		return 0
+	}
+	account, why, ok, out := checkAs(args, as, src.Path)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "weed would start with %s as root, but not as the account %s that it runs as (%s):\n%s", src.Path, account, why, out)
+		return 1
+	}
+	if account != "" {
+		fmt.Printf("%s: weed would start with it (sha256 %s), as the account %s too (%s)\n", src.Path, src.SHA256, account, why)
 	} else {
 		fmt.Printf("%s: weed would start with it (sha256 %s)\n", src.Path, src.SHA256)
 	}

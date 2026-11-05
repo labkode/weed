@@ -33,8 +33,10 @@ can), with its metrics, status and dashboard at http://127.0.0.1:9000/metrics,
 
 Helpers:
 
-    ./weed utils password <user> <password>   add a bcrypt entry to .htpasswd
-    ./weed utils token generate <user>        create an app token in .app-tokens
+    ./weed utils password <user>          set a password, asking for it (-delete removes)
+    ./weed utils token generate <user>    create an app token
+    (in the files of basic.htpasswd and basic.app_tokens of /etc/weed/weed.toml,
+    -config's, or -file; .htpasswd and .app-tokens here without any)
 
 The administration guide, docs/html/index.html, explains how to install, set up and
 run weed, with every option, metric and command. Its pages are written in Markdown in
@@ -649,8 +651,8 @@ process logs them: workers send their records to weed, which logs them with
 worker.user and worker.pid. Values are quoted or escaped, so clients cannot forge
 records with crafted paths or headers, and X-Forwarded-For is logged as
 forwarded_for, never in place of the client's address. On SIGHUP weed reopens
-server.log_file, so that logrotate can move it (postrotate: systemctl kill -s HUP
-weed); under systemd, standard error goes to the journal. Log to a file to keep every
+server.log_file, so that logrotate can move it (the RPM installs
+/etc/logrotate.d/weed, whose postrotate is systemctl reload weed); under systemd, standard error goes to the journal. Log to a file to keep every
 record: the journal keeps so many lines of a service every 30 seconds (10000 by
 default) and drops the others until the 30 seconds are over, weed's errors with its
 requests, so a server answering more than a few hundred requests a second loses
@@ -754,7 +756,10 @@ a worker as nobody (without setting cgroups up, which would change the cgroup it
 in). It prints the warnings weed would log, and the SHA-256 of the file; if weed
 would not start, it says why and exits with 1. It does not try to listen on the
 configured addresses, which are in use while weed runs. Run it before restarting
-weed, or let systemd do so.
+weed, or let systemd do so. Run by root, it checks again as the account that weed
+runs as (-as, or User= of weed.service), with the unit's capabilities, as root reads
+files that the account may not; -as root checks as root alone. The RPM runs it on
+upgrade, as the new version, and dnf shows how it went.
 
 systemd. weed is a Type=notify service: it tells systemd that it is ready once it
 listens (so systemctl start fails when weed cannot start, and units ordered after
@@ -904,6 +909,9 @@ Testing
                        and mounted over the exported directory, in a privileged
                        AlmaLinux 10 container that boots systemd
                        (test/systemd/systemd.sh, Podman); WEED= or RPM= tests those
+    make test-vm       the same tests on an AlmaLinux 10 virtual machine, SELinux
+                       enforcing, and that SELinux denied weed nothing (test/vm/vm.sh,
+                       qemu with KVM); RPM= tests that RPM
     make interop       interoperability tests (test/interop/interop.sh, Podman)
     make find-limits   weed limits on this machine (sudo): CONFIG=, DATA= the storage
                        (/var/tmp), ACCOUNT= (yours); the results are in
@@ -931,7 +939,8 @@ accounts, bans, and third-party copies in both directions between two weed serve
 and between weed and XRootD. Each parser also has a fuzz test (go test -fuzz). CI
 (.github/workflows/ci.yml) runs on Linux: the tests with -race and as root, go vet,
 gofmt, govulncheck, builds for amd64 and arm64, the fuzz tests, the interoperability
-tests and make test-systemd. It also makes the administration guide from docs/src,
+tests, make test-systemd and make test-vm, which it runs again on a release's RPM. It
+also makes the administration guide from docs/src,
 fails if docs/html is not what make docs makes, and publishes it on GitHub Pages from
 the main branch: the guide of the latest release, and main's under dev/. For a tag, it
 makes the release (see Releases).

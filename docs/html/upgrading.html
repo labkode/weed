@@ -131,9 +131,10 @@
 <pre><code># install -m 0755 weed /usr/local/bin/weed</code></pre>
 <p>weed now logs that a restart is pending, with the new version:</p>
 <pre><code>level=WARN msg=&quot;restart pending: weed&#39;s executable /usr/local/bin/weed is now v1.3.0 (commit 9c1e0a2b77d4 of ...) go1.27.3 linux/amd64, build go:...&quot; reason=binary</code></pre></li>
-<li><p>Check that the new version starts with your configuration. The new version may know options that the old one did not, or warn about others:</p>
+<li><p>Check that the new version starts with your configuration. The new version may know options that the old one did not, or warn about others. The RPM's <em>dnf upgrade</em> does it, and says how it went (see <a href="installation.html#rpm">Installation</a>); otherwise:</p>
 <pre><code># weed check -config /etc/weed/weed.toml
-/etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0...)</code></pre></li>
+/etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0...), as the account weed too (User= of weed.service)</code></pre>
+<p>Run by root, it checks as the account weed too, which may not read every file that root reads (see <a href="commands.html#check">Commands</a>).</p></li>
 <li><p>Restart, when the transfers in progress allow it (see <a href="monitoring.html#in-progress">Monitoring</a>):</p>
 <pre><code># curl -s localhost:9100/status | jq .in_progress.total
 # systemctl restart weed</code></pre>

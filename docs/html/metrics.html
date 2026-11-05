@@ -145,6 +145,12 @@
 <td>Authentication outcomes of WebDAV requests, by the method that decided them (x509, token, macaroon, basic, anonymous; none when no credentials were accepted) and result (success, forbidden, unauthorized).</td>
 </tr>
 <tr>
+<td><span id="weed_storage_full_total"><code>weed_storage_full_total</code></span></td>
+<td>counter</td>
+<td>reason</td>
+<td>Writes that the storage refused, answered 507 Insufficient Storage (or, for a third-party copy, its failure), by reason: full (ENOSPC), or quota, the account over its quota (EDQUOT). weed logs the first in a minute of each reason.</td>
+</tr>
+<tr>
 <td><span id="weed_checksum_mismatches_total"><code>weed_checksum_mismatches_total</code></span></td>
 <td>counter</td>
 <td>operation</td>
