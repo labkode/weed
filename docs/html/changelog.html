@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for the development version</a>
+	<a class="version" href="changelog.html">for weed v0.1.1</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -103,7 +103,7 @@
 <h1 class="title">Changelog</h1>
 </header>
 <p>The changes of each version of weed, the newest first. Versions are numbered MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number (until 1.0.0, a new MINOR number) is not compatible with the one before it, and its section begins with Incompatible changes, what to change before upgrading to it. The guide's Upgrading page says what counts as incompatible.</p>
-<h2 id="unreleased">Unreleased</h2>
+<h2 id="v0.1.1-2026-11-06">v0.1.1 (2026-11-06)</h2>
 <h3 id="fixed">Fixed</h3>
 <ul>
 <li>weed reads CRLs of version 1, which some IGTF CAs still publish: 14 of the 128 CRLs of ca-policy-egi-core in November 2026 (NIKHEF, NorduGrid, UK e-Science, ASGC and ArmeSFo). weed 0.1.0 refused them, and so did not start with x509.crl_path = "/etc/grid-security/certificates" where fetch-crl keeps them: "failed to load CRLs: /etc/grid-security/certificates/16da7552.r0: x509: unsupported crl version". A CRL of version 1 with extensions, which only version 2 may have, is still refused.</li>

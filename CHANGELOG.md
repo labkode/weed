@@ -6,7 +6,7 @@ MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number 
 begins with Incompatible changes, what to change before upgrading to it. The guide's
 Upgrading page says what counts as incompatible.
 
-## Unreleased
+## v0.1.1 (2026-11-06)
 
 ### Fixed
 
