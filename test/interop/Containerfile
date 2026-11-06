@@ -1,7 +1,12 @@
 # Real WLCG clients and a reference HTTP-TPC server (XRootD) for interoperability tests
 FROM almalinux:10
-RUN dnf install -y epel-release && \
-    dnf install -y --setopt=install_weak_deps=False \
-        gfal2-util-scripts gfal2-plugin-http gfal2-plugin-file davix \
-        xrootd-server xrootd-client xrootd-scitokens openssl procps-ng jq diffutils tar && \
+# A mirror may serve broken metadata for a while ("repomd.xml parser error"): dnf
+# tries again (epel-release is in extras, EPEL's packages in EPEL)
+RUN for i in 1 2 3 4; do \
+        dnf install -y epel-release && \
+        dnf install -y --setopt=install_weak_deps=False \
+            gfal2-util-scripts gfal2-plugin-http gfal2-plugin-file davix \
+            xrootd-server xrootd-client xrootd-scitokens openssl procps-ng jq diffutils tar && break; \
+        [ $i = 4 ] && exit 1; dnf -q clean metadata; sleep $((i * 15)); \
+    done && \
     dnf clean all

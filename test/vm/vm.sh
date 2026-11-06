@@ -44,8 +44,15 @@ else
 	cp "$root/README.txt" "$root/CHANGELOG.md" "$root/LICENSE" "$work/pkg/"
 	cp -R "$root/docs/html" "$work/pkg/guide"
 	cp -R "$root/packaging" "$root/release" "$work/src/"
+	# A mirror may serve broken metadata for a while ("repomd.xml parser error"): dnf
+	# reads only the repositories it needs, and tries again
 	podman run --rm -v "$work:/b:Z" almalinux:10 sh -c '
-		dnf -q -y install rpm-build systemd-rpm-macros >/dev/null &&
+		for i in 1 2 3 4; do
+			dnf -q -y --repo=baseos --repo=appstream install rpm-build systemd-rpm-macros >/dev/null && break
+			[ $i = 4 ] && exit 1
+			echo "vm.sh: dnf failed, trying again in $((i * 15))s" >&2
+			dnf -q clean metadata; sleep $((i * 15))
+		done
 		cd /b/src && RELEASE=test release/rpm.sh /b/pkg 0.0.0 >/dev/null && cp dist/weed-*.rpm /b/seed/weed.rpm'
 fi
 

@@ -113,7 +113,7 @@ jobs:
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules >/dev/null
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
-          sudo apt-get -q update && sudo apt-get -q install -y --no-install-recommends qemu-system-x86 qemu-utils xorriso
+          sudo apt-get -q -o Acquire::Retries=3 update && sudo apt-get -q -o Acquire::Retries=3 install -y --no-install-recommends qemu-system-x86 qemu-utils xorriso
       - name: weed's RPM on AlmaLinux 10, SELinux enforcing
         run: make test-vm
 
@@ -190,8 +190,15 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: almalinux:10
     steps:
-      # git first: checkout then clones
-      - run: dnf -y -q install gcc git-core tar gzip gawk rpm-build systemd-rpm-macros
+      # git first: checkout then clones. A mirror may serve broken metadata for a while
+      # ("repomd.xml parser error"): dnf reads only the repositories it needs, and
+      # tries again
+      - run: |
+          for i in 1 2 3 4; do
+            dnf -y -q --repo=baseos --repo=appstream install gcc git-core tar gzip gawk rpm-build systemd-rpm-macros && break
+            [ $i = 4 ] && exit 1
+            dnf -q clean metadata; sleep $((i * 15))
+          done
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # the tag, which gives weed its version
@@ -237,7 +244,7 @@ jobs:
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules >/dev/null
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
-          sudo apt-get -q update && sudo apt-get -q install -y --no-install-recommends qemu-system-x86 qemu-utils xorriso
+          sudo apt-get -q -o Acquire::Retries=3 update && sudo apt-get -q -o Acquire::Retries=3 install -y --no-install-recommends qemu-system-x86 qemu-utils xorriso
       - if: matrix.arch == 'amd64'
         name: The release's RPM on AlmaLinux 10, SELinux enforcing (make test-vm)
         run: RPM=$(echo dist/weed-*.rpm) test/vm/vm.sh

@@ -14,8 +14,15 @@ systemctl is-system-running --wait >/dev/null
 echo "weed-vm: $(. /etc/os-release && echo "$PRETTY_NAME"), Linux $(uname -r), SELinux $(getenforce), systemd $(systemctl --version | awk 'NR == 1 { print $2 }')"
 [ "$(getenforce)" = Enforcing ] || fail "SELinux is not enforcing"
 
-# What run.sh uses, beyond the cloud image
-dnf -q -y install jq diffutils logrotate procps-ng util-linux curl audit >/dev/null || fail "cannot install run.sh's tools"
+# What run.sh uses, beyond the cloud image. A mirror may serve broken metadata for a
+# while ("repomd.xml parser error"): dnf reads only the repositories it needs, and
+# tries again
+for i in 1 2 3 4; do
+	dnf -q -y --repo=baseos --repo=appstream install jq diffutils logrotate procps-ng util-linux curl audit >/dev/null && break
+	[ $i = 4 ] && fail "cannot install run.sh's tools"
+	echo "weed-vm: dnf failed, trying again in $((i * 15))s"
+	dnf -q clean metadata; sleep $((i * 15))
+done
 
 bash /test/run.sh
 status=$?
