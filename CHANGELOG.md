@@ -6,6 +6,17 @@ MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number 
 begins with Incompatible changes, what to change before upgrading to it. The guide's
 Upgrading page says what counts as incompatible.
 
+## Unreleased
+
+### Fixed
+
+- weed reads CRLs of version 1, which some IGTF CAs still publish: 14 of the 128 CRLs
+  of ca-policy-egi-core in November 2026 (NIKHEF, NorduGrid, UK e-Science, ASGC and
+  ArmeSFo). weed 0.1.0 refused them, and so did not start with x509.crl_path =
+  "/etc/grid-security/certificates" where fetch-crl keeps them: "failed to load CRLs:
+  /etc/grid-security/certificates/16da7552.r0: x509: unsupported crl version". A CRL
+  of version 1 with extensions, which only version 2 may have, is still refused.
+
 ## v0.1.0 (2026-11-06)
 
 The first release. weed serves files over HTTP and WebDAV to the clients and services

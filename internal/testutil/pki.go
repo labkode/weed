@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -250,6 +251,48 @@ func NewCRL(t testing.TB, ca *Cert, thisUpdate, nextUpdate time.Time, revoked ..
 		NextUpdate:                nextUpdate,
 		RevokedCertificateEntries: entries,
 	}, ca.Cert, ca.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
+}
+
+// NewCRLv1 returns a DER-encoded CRL of version 1, as some IGTF CAs still publish
+// (crypto/x509 makes version 2 ones only): issued by ca, valid from thisUpdate to
+// nextUpdate, revoking the given certificates. It has no version field, and no
+// extensions unless extensions are given, which only version 2 may have.
+func NewCRLv1(t testing.TB, ca *Cert, thisUpdate, nextUpdate time.Time, extensions []pkix.Extension, revoked ...*Cert) []byte {
+	t.Helper()
+	type entry struct {
+		SerialNumber   *big.Int
+		RevocationTime time.Time
+	}
+	var entries []entry
+	for _, c := range revoked {
+		entries = append(entries, entry{c.Cert.SerialNumber, thisUpdate.UTC()})
+	}
+	ecdsaWithSHA256 := pkix.AlgorithmIdentifier{Algorithm: asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}}
+	tbs, err := asn1.Marshal(struct {
+		Signature           pkix.AlgorithmIdentifier
+		Issuer              asn1.RawValue
+		ThisUpdate          time.Time
+		NextUpdate          time.Time
+		RevokedCertificates []entry          `asn1:"optional"`
+		Extensions          []pkix.Extension `asn1:"tag:0,optional,explicit"`
+	}{ecdsaWithSHA256, asn1.RawValue{FullBytes: ca.Cert.RawSubject}, thisUpdate.UTC(), nextUpdate.UTC(), entries, extensions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(tbs)
+	signature, err := ecdsa.SignASN1(rand.Reader, ca.Key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := asn1.Marshal(struct {
+		TBSCertList        asn1.RawValue
+		SignatureAlgorithm pkix.AlgorithmIdentifier
+		SignatureValue     asn1.BitString
+	}{asn1.RawValue{FullBytes: tbs}, ecdsaWithSHA256, asn1.BitString{Bytes: signature, BitLength: 8 * len(signature)}})
 	if err != nil {
 		t.Fatal(err)
 	}

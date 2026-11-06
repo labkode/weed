@@ -71,7 +71,7 @@ Limited proxies are accepted: they are meant for data access. /proc/x509 shows h
 
 ### Revocation {#crls}
 
-With `x509.crl_path`, weed checks certificates against CRLs, PEM or DER, read from a file or a directory such as /etc/grid-security/certificates, where fetch-crl keeps them as \<hash\>.r0. A certificate is checked against the newest current CRL that its issuer signed.
+With `x509.crl_path`, weed checks certificates against CRLs, PEM or DER, read from a file or a directory such as /etc/grid-security/certificates, where fetch-crl keeps them as \<hash\>.r0. A certificate is checked against the newest current CRL that its issuer signed. CRLs of version 1, which some IGTF CAs still publish, are read as well as those of version 2, unless they have extensions, which only version 2 may have.
 
 `x509.crl_mode` says what happens when the issuer has no current CRL:
 

@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for weed v0.1.0</a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -156,7 +156,7 @@ gridmap = &quot;/etc/grid-security/grid-mapfile&quot;</code></pre>
 </ul>
 <p>Limited proxies are accepted: they are meant for data access. /proc/x509 shows how weed sees the certificate that a client presents.</p>
 <h3 id="crls">Revocation</h3>
-<p>With <code>x509.crl_path</code>, weed checks certificates against CRLs, PEM or DER, read from a file or a directory such as /etc/grid-security/certificates, where fetch-crl keeps them as &lt;hash&gt;.r0. A certificate is checked against the newest current CRL that its issuer signed.</p>
+<p>With <code>x509.crl_path</code>, weed checks certificates against CRLs, PEM or DER, read from a file or a directory such as /etc/grid-security/certificates, where fetch-crl keeps them as &lt;hash&gt;.r0. A certificate is checked against the newest current CRL that its issuer signed. CRLs of version 1, which some IGTF CAs still publish, are read as well as those of version 2, unless they have extensions, which only version 2 may have.</p>
 <p><code>x509.crl_mode</code> says what happens when the issuer has no current CRL:</p>
 <dl>
 <dt>require (the default)</dt>

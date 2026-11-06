@@ -1,8 +1,10 @@
 package x509utils
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -110,13 +112,101 @@ type CRLSet struct {
 }
 
 type crl struct {
-	list    *x509.RevocationList
-	revoked map[string]bool // serial numbers
+	rawIssuer              []byte
+	thisUpdate, nextUpdate time.Time
+	revoked                map[string]bool // serial numbers
+	checkSignatureFrom     func(issuer *x509.Certificate) error
 
 	// verifiedBy caches successful signature checks by issuer certificate (SHA-256),
 	// since CRLs of large CAs take a while to hash
 	mu         sync.Mutex
 	verifiedBy map[[32]byte]bool
+}
+
+// parseCRL parses a DER-encoded CRL, of version 2 or 1
+func parseCRL(der []byte) (*crl, error) {
+	list, err := x509.ParseRevocationList(der)
+	if err != nil {
+		return parseCRLv1(der, err)
+	}
+	c := &crl{
+		rawIssuer:          list.RawIssuer,
+		thisUpdate:         list.ThisUpdate,
+		nextUpdate:         list.NextUpdate,
+		revoked:            make(map[string]bool, len(list.RevokedCertificateEntries)),
+		checkSignatureFrom: list.CheckSignatureFrom,
+	}
+	for _, e := range list.RevokedCertificateEntries {
+		c.revoked[e.SerialNumber.String()] = true
+	}
+	return c, nil
+}
+
+// parseCRLv1 parses a version 1 CRL, which x509.ParseRevocationList refused with
+// errV2, "unsupported crl version": it has no version field. Some IGTF CAs still
+// publish them (14 of the 128 CRLs of ca-policy-egi-core in November 2026: NIKHEF,
+// NorduGrid, UK e-Science, ASGC, ArmeSFo). crypto/x509 reads them only with
+// ParseDERCRL and CheckCRLSignature, deprecated because they check less than
+// ParseRevocationList and RevocationList.CheckSignatureFrom do: what they leave out,
+// and what applies to version 1, is checked here. A CRL that is not of version 1
+// gets errV2.
+func parseCRLv1(der []byte, errV2 error) (*crl, error) {
+	list, err := x509.ParseDERCRL(der) //nolint:staticcheck // the only parser of version 1 CRLs in crypto/x509
+	if err != nil {
+		return nil, errV2
+	}
+	// The issuer and the signature algorithms as they are encoded, which pkix does not
+	// keep. A TBSCertList that begins with a version, even 0, is not of version 1.
+	var outer struct {
+		TBSCertList        asn1.RawValue
+		SignatureAlgorithm asn1.RawValue
+	}
+	var tbs struct {
+		Signature asn1.RawValue
+		Issuer    asn1.RawValue
+	}
+	if _, err := asn1.Unmarshal(der, &outer); err != nil {
+		return nil, errV2
+	}
+	if _, err := asn1.Unmarshal(outer.TBSCertList.FullBytes, &tbs); err != nil || tbs.Signature.Tag != asn1.TagSequence {
+		return nil, errV2
+	}
+	if !bytes.Equal(tbs.Signature.FullBytes, outer.SignatureAlgorithm.FullBytes) {
+		return nil, errors.New("x509: inner and outer signature algorithm identifiers don't match")
+	}
+	// Only version 2 may have extensions (RFC 5280, 5.1.2.1). Those of a CRL that
+	// claims to be of version 1, such as one that is a delta CRL or covers only some
+	// certificates, would be ignored: refuse it instead.
+	if len(list.TBSCertList.Extensions) > 0 {
+		return nil, errors.New("x509: version 1 CRL with extensions, which only version 2 may have")
+	}
+	c := &crl{
+		rawIssuer:  tbs.Issuer.FullBytes,
+		thisUpdate: list.TBSCertList.ThisUpdate,
+		nextUpdate: list.TBSCertList.NextUpdate,
+		revoked:    make(map[string]bool, len(list.TBSCertList.RevokedCertificates)),
+		// The checks of RevocationList.CheckSignatureFrom on the issuer, which
+		// CheckCRLSignature does not make
+		checkSignatureFrom: func(issuer *x509.Certificate) error {
+			if issuer.Version == 3 && !issuer.BasicConstraintsValid || issuer.BasicConstraintsValid && !issuer.IsCA {
+				return x509.ConstraintViolationError{}
+			}
+			if issuer.KeyUsage != 0 && issuer.KeyUsage&x509.KeyUsageCRLSign == 0 {
+				return x509.ConstraintViolationError{}
+			}
+			if issuer.PublicKeyAlgorithm == x509.UnknownPublicKeyAlgorithm {
+				return x509.ErrUnsupportedAlgorithm
+			}
+			return issuer.CheckCRLSignature(list) //nolint:staticcheck // see above
+		},
+	}
+	for _, e := range list.TBSCertList.RevokedCertificates {
+		if len(e.Extensions) > 0 {
+			return nil, errors.New("x509: version 1 CRL with entry extensions, which only version 2 may have")
+		}
+		c.revoked[e.SerialNumber.String()] = true
+	}
+	return c, nil
 }
 
 // LoadCRLs reads the CRLs (PEM or DER) in path, a file or a directory such as
@@ -149,15 +239,11 @@ func LoadCRLs(path string, require bool) (*CRLSet, error) {
 			ders = append(ders, data)
 		}
 		for _, der := range ders {
-			list, err := x509.ParseRevocationList(der)
+			c, err := parseCRL(der)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", f, err)
 			}
-			c := &crl{list: list, revoked: make(map[string]bool, len(list.RevokedCertificateEntries))}
-			for _, e := range list.RevokedCertificateEntries {
-				c.revoked[e.SerialNumber.String()] = true
-			}
-			set.byIssuer[string(list.RawIssuer)] = append(set.byIssuer[string(list.RawIssuer)], c)
+			set.byIssuer[string(c.rawIssuer)] = append(set.byIssuer[string(c.rawIssuer)], c)
 			n++
 		}
 	}
@@ -175,8 +261,8 @@ func (s *CRLSet) Expiry() time.Time {
 	for _, list := range s.byIssuer {
 		var latest time.Time
 		for _, c := range list {
-			if c.list.NextUpdate.After(latest) {
-				latest = c.list.NextUpdate
+			if c.nextUpdate.After(latest) {
+				latest = c.nextUpdate
 			}
 		}
 		if !latest.IsZero() && (earliest.IsZero() || latest.Before(earliest)) {
@@ -202,7 +288,7 @@ func (c *crl) signedBy(issuer *x509.Certificate) bool {
 	if ok, done := c.verifiedBy[key]; done {
 		return ok
 	}
-	ok := c.list.CheckSignatureFrom(issuer) == nil
+	ok := c.checkSignatureFrom(issuer) == nil
 	if c.verifiedBy == nil {
 		c.verifiedBy = make(map[[32]byte]bool)
 	}
@@ -215,13 +301,13 @@ func (c *crl) signedBy(issuer *x509.Certificate) bool {
 func (s *CRLSet) Check(cert, issuer *x509.Certificate, now time.Time) error {
 	var current *crl
 	for _, c := range s.byIssuer[string(issuer.RawSubject)] {
-		if now.Before(c.list.ThisUpdate) || (!c.list.NextUpdate.IsZero() && now.After(c.list.NextUpdate)) {
+		if now.Before(c.thisUpdate) || (!c.nextUpdate.IsZero() && now.After(c.nextUpdate)) {
 			continue
 		}
 		if !c.signedBy(issuer) {
 			continue
 		}
-		if current == nil || c.list.ThisUpdate.After(current.list.ThisUpdate) {
+		if current == nil || c.thisUpdate.After(current.thisUpdate) {
 			current = c
 		}
 	}
