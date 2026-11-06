@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for the development version</a>
+	<a class="version" href="changelog.html">for weed v0.1.0</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -110,6 +110,7 @@
 <li>A new MINOR adds what the version before did not have, such as options, metrics, fields of /status or commands, and keeps what that version did with the same configuration.</li>
 <li>A new MAJOR has incompatible changes, which the changelog lists first in its section.</li>
 </ul>
+<p>Until 1.0.0, MINOR takes the place of MAJOR: 0.2.0 may have incompatible changes, and 0.1.1 adds to 0.1.0, or fixes it.</p>
 <p>A change is incompatible if a server, or what watches it, may stop working as it did with the same configuration, files and clients:</p>
 <ul>
 <li>An option or a section that is removed or renamed, or whose default or meaning changes: weed refuses an option that it does not know.</li>

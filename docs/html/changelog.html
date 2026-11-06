@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for the development version</a>
+	<a class="version" href="changelog.html">for weed v0.1.0</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -102,8 +102,8 @@
 <header id="title-block-header">
 <h1 class="title">Changelog</h1>
 </header>
-<p>The changes of each version of weed, the newest first. Versions are numbered MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number is not compatible with the one before it, and its section begins with Incompatible changes, what to change before upgrading to it. The guide's Upgrading page says what counts as incompatible.</p>
-<h2 id="unreleased">Unreleased</h2>
+<p>The changes of each version of weed, the newest first. Versions are numbered MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number (until 1.0.0, a new MINOR number) is not compatible with the one before it, and its section begins with Incompatible changes, what to change before upgrading to it. The guide's Upgrading page says what counts as incompatible.</p>
+<h2 id="v0.1.0-2026-11-06">v0.1.0 (2026-11-06)</h2>
 <p>The first release. weed serves files over HTTP and WebDAV to the clients and services of the WLCG (gfal2, davix, FTS, Rucio, XRootD): authentication with X.509 certificates and proxies, WLCG and SciTokens tokens, macaroons, an OIDC login page and passwords; third-party copies in both directions; checksums from end to end; each request served as the Unix account that its credentials map to, by a worker process confined with Landlock and seccomp; cgroup limits per user and group; bans; metrics, /status and a dashboard.</p>
 <p>Until now, weed was built from the main branch. For a server that ran a build of it from 2026-10-29 or later, when the administration guide came, these are the changes.</p>
 <h3 id="incompatible-changes">Incompatible changes</h3>

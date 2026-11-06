@@ -980,7 +980,8 @@ CHANGELOG.md has the changes of each version, the newest first, and the guide ha
 as a page. A change that users or administrators may notice adds a line to its first
 section, Unreleased, which the first change after a release begins; one that is not
 compatible goes under Incompatible changes, and makes the next release a new major
-version (the guide's Upgrading, Versions, says which are).
+version, or until 1.0.0 a new minor one (the guide's Upgrading, Versions, says which
+are).
 
 A release is a tag vMAJOR.MINOR.PATCH on main. Its commit names the version and the
 day as the first section of CHANGELOG.md, in place of Unreleased, and has the guide

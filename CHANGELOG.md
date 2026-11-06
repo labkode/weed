@@ -1,12 +1,12 @@
 # Changelog
 
 The changes of each version of weed, the newest first. Versions are numbered
-MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number is not
-compatible with the one before it, and its section begins with Incompatible changes,
-what to change before upgrading to it. The guide's Upgrading page says what counts as
-incompatible.
+MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number (until
+1.0.0, a new MINOR number) is not compatible with the one before it, and its section
+begins with Incompatible changes, what to change before upgrading to it. The guide's
+Upgrading page says what counts as incompatible.
 
-## Unreleased
+## v0.1.0 (2026-11-06)
 
 The first release. weed serves files over HTTP and WebDAV to the clients and services
 of the WLCG (gfal2, davix, FTS, Rucio, XRootD): authentication with X.509 certificates

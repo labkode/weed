@@ -12,6 +12,8 @@ weed's versions are numbered MAJOR.MINOR.PATCH, as in [Semantic Versioning](http
 - A new MINOR adds what the version before did not have, such as options, metrics, fields of /status or commands, and keeps what that version did with the same configuration.
 - A new MAJOR has incompatible changes, which the changelog lists first in its section.
 
+Until 1.0.0, MINOR takes the place of MAJOR: 0.2.0 may have incompatible changes, and 0.1.1 adds to 0.1.0, or fixes it.
+
 A change is incompatible if a server, or what watches it, may stop working as it did with the same configuration, files and clients:
 
 - An option or a section that is removed or renamed, or whose default or meaning changes: weed refuses an option that it does not know.
