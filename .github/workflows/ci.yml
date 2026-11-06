@@ -61,9 +61,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # The latest Go release: until Go 1.27, -fuzztime could end a fuzz test that
+      # found nothing with "context deadline exceeded" (go.dev/issue/75804)
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: stable
       - name: Fuzz parsers
         run: |
           for spec in $(grep -rho --include='*_test.go' '^func Fuzz[A-Za-z]*' internal | sort -u | sed 's/^func //'); do
