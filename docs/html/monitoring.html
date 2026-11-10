@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for weed v0.1.1</a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -104,11 +104,11 @@
 </header>
 <p>weed serves Prometheus metrics at /metrics, what runs at /status, a dashboard of both at /, and a health check at /healthz, on <code>server.metrics_address</code>:</p>
 <pre><code>[server]
-metrics_address = &quot;localhost:9100&quot;</code></pre>
-<p>9100 is also the port of Prometheus's node_exporter: on a machine that runs it, as many do, weed does not start (<code>metrics server: listen tcp 127.0.0.1:9100: bind: address already in use</code>). Give weed another port there, such as 9180.</p>
+metrics_address = &quot;localhost:9180&quot;</code></pre>
+<p>The examples use port 9180, not 9100, which Prometheus's node_exporter listens on, on many machines: weed does not start on a port that is taken (<code>metrics server: listen tcp 127.0.0.1:9100: bind: address already in use</code>).</p>
 <p>These endpoints have no authentication. /status shows the configuration (secrets redacted) and the names of the users with requests in progress, so serve them on localhost, or on an address that only your monitoring reaches. Without a configuration file, they are on the main port, whose clients are local (the dashboard at /dashboard/).</p>
 <h2 id="dashboard">The dashboard</h2>
-<p>http://localhost:9100/ is a page that your browser fills from /status and /metrics every 2 seconds, and that changes nothing:</p>
+<p>http://localhost:9180/ is a page that your browser fills from /status and /metrics every 2 seconds, and that changes nothing:</p>
 <ul>
 <li>tiles: egress and ingress now; requests per second, with the 4xx and 5xx; requests in progress, by kind; workers and their blocked threads; third-party copies; banned users;</li>
 <li>charts of the last 10 minutes, kept by the browser while the page is open: throughput; requests per second, by status; requests in progress, by kind;</li>
@@ -123,7 +123,7 @@ metrics_address = &quot;localhost:9100&quot;</code></pre>
 ok</code></pre>
 <h2 id="status">/status</h2>
 <p>/status tells, as JSON, which build runs and since when, with which configuration, how the last reload went, whether a restart is pending, the workers, and the requests in progress. It is what to look at first when something is odd. (See also <a href="what-runs.html">What runs</a>.)</p>
-<pre><code>$ curl -s localhost:9100/status | jq .
+<pre><code>$ curl -s localhost:9180/status | jq .
 {
   &quot;version&quot;: {
     &quot;version&quot;: &quot;v1.2.0&quot;,
@@ -248,14 +248,14 @@ each worker: its account, its pid, since when it runs, and how many requests wee
 </tbody>
 </table>
 <p>The metric <code>weed_requests_in_progress{kind}</code> counts the same totals. Before a restart, check that no long transfer would be cut:</p>
-<pre><code># curl -s localhost:9100/status | jq .in_progress.total
-# curl -s localhost:9100/status | jq &#39;.in_progress.by_user | to_entries[] | select(.value.tpc_pull)&#39;</code></pre>
+<pre><code># curl -s localhost:9180/status | jq .in_progress.total
+# curl -s localhost:9180/status | jq &#39;.in_progress.by_user | to_entries[] | select(.value.tpc_pull)&#39;</code></pre>
 <h2 id="prometheus">Prometheus</h2>
 <pre><code>scrape_configs:
   - job_name: weed
     static_configs:
-      - targets: [&quot;weed.example.org:9100&quot;]</code></pre>
-<p>With <code>metrics_address = "localhost:9100"</code>, scrape it from the host, e.g. through node_exporter's or your agent's local scraping, or listen on an address of the management network instead. <a href="metrics.html">Metrics</a> lists every metric.</p>
+      - targets: [&quot;weed.example.org:9180&quot;]</code></pre>
+<p>With <code>metrics_address = "localhost:9180"</code>, scrape it from the host, e.g. through node_exporter's or your agent's local scraping, or listen on an address of the management network instead. <a href="metrics.html">Metrics</a> lists every metric.</p>
 <h2 id="alerts">What to alert on</h2>
 <table>
 <thead>

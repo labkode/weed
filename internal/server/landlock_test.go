@@ -38,9 +38,9 @@ func TestProcessRules(t *testing.T) {
 		t.Errorf("the files of TLS, which is not enabled: %v", rules)
 	}
 
-	c.Port, c.MetricsAddress = 8443, "localhost:9100"
-	if nw := processNet(c); !slices.Equal(nw.Ports, []uint16{8443, 9100}) || nw.Bind || nw.Connect {
-		t.Errorf("ports 8443 and 9100, no connect: %+v", nw)
+	c.Port, c.MetricsAddress = 8443, "localhost:9180"
+	if nw := processNet(c); !slices.Equal(nw.Ports, []uint16{8443, 9180}) || nw.Bind || nw.Connect {
+		t.Errorf("ports 8443 and 9180, no connect: %+v", nw)
 	}
 	c.Port, c.TPC = 0, true
 	if nw := processNet(c); !nw.Bind || !nw.Connect {

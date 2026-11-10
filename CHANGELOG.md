@@ -6,6 +6,25 @@ MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number 
 begins with Incompatible changes, what to change before upgrading to it. The guide's
 Upgrading page says what counts as incompatible.
 
+## Unreleased
+
+### Incompatible changes
+
+- The RPM's configuration, /etc/weed/weed.toml, and the guide's examples serve the
+  metrics, /status and the dashboard on port 9180 rather than 9100, which Prometheus's
+  node_exporter listens on, on many machines: weed did not start there ("metrics
+  server: listen tcp 127.0.0.1:9100: bind: address already in use"). An upgrade
+  replaces /etc/weed/weed.toml only if it was never changed, as rpm does with
+  configuration files, and the running weed keeps 9100 until it restarts. Then move
+  what reads /metrics or /status, such as Prometheus, to 9180, or set
+  server.metrics_address back to 127.0.0.1:9100.
+
+### New
+
+- The guide's Third-party copies page says that weed pulls from EOS only with
+  tpc.allow_http, as EOS redirects downloads to its disk servers over plain http, and
+  to which servers weed sends the source's credentials on with a redirect.
+
 ## v0.1.1 (2026-11-06)
 
 ### Fixed

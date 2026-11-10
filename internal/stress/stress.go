@@ -164,7 +164,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) (*Report,
 	fs.DurationVar(&cfg.interval, "interval", time.Second, "how often each client of clients makes a request")
 	fs.Var(sizeFlag{&cfg.clientRate}, "client-rate", "what each client of slow-download reads per second")
 	fs.StringVar(&cfg.cgroup, "cgroup", "", "weed's cgroup, e.g. /sys/fs/cgroup/system.slice/weed.service, to report the CPU and memory weed uses (on weed's machine)")
-	fs.StringVar(&cfg.status, "status", "", "weed's /status, e.g. http://localhost:9100/status, to report its workers")
+	fs.StringVar(&cfg.status, "status", "", "weed's /status, e.g. http://localhost:9180/status, to report its workers")
 	fs.BoolVar(&cfg.http2, "http2", false, "use HTTP/2 when weed offers it; HTTP/1.1 otherwise, as most WLCG clients")
 	report := fs.String("report", "", "also write what it prints to this file")
 	jsonFile := fs.String("json", "", "write the results to this file, as JSON")

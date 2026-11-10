@@ -5,15 +5,15 @@ title: 'Monitoring'
 weed serves Prometheus metrics at /metrics, what runs at /status, a dashboard of both at /, and a health check at /healthz, on `server.metrics_address`:
 
     [server]
-    metrics_address = "localhost:9100"
+    metrics_address = "localhost:9180"
 
-9100 is also the port of Prometheus's node_exporter: on a machine that runs it, as many do, weed does not start (`metrics server: listen tcp 127.0.0.1:9100: bind: address already in use`). Give weed another port there, such as 9180.
+The examples use port 9180, not 9100, which Prometheus's node_exporter listens on, on many machines: weed does not start on a port that is taken (`metrics server: listen tcp 127.0.0.1:9100: bind: address already in use`).
 
 These endpoints have no authentication. /status shows the configuration (secrets redacted) and the names of the users with requests in progress, so serve them on localhost, or on an address that only your monitoring reaches. Without a configuration file, they are on the main port, whose clients are local (the dashboard at /dashboard/).
 
 ## The dashboard {#dashboard}
 
-http://localhost:9100/ is a page that your browser fills from /status and /metrics every 2 seconds, and that changes nothing:
+http://localhost:9180/ is a page that your browser fills from /status and /metrics every 2 seconds, and that changes nothing:
 
 - tiles: egress and ingress now; requests per second, with the 4xx and 5xx; requests in progress, by kind; workers and their blocked threads; third-party copies; banned users;
 - charts of the last 10 minutes, kept by the browser while the page is open: throughput; requests per second, by status; requests in progress, by kind;
@@ -34,7 +34,7 @@ It needs no other software, and loads nothing from elsewhere. weed counts the by
 
 /status tells, as JSON, which build runs and since when, with which configuration, how the last reload went, whether a restart is pending, the workers, and the requests in progress. It is what to look at first when something is odd. (See also [What runs](what-runs.html).)
 
-    $ curl -s localhost:9100/status | jq .
+    $ curl -s localhost:9180/status | jq .
     {
       "version": {
         "version": "v1.2.0",
@@ -138,17 +138,17 @@ workers
 
 The metric `weed_requests_in_progress{kind}` counts the same totals. Before a restart, check that no long transfer would be cut:
 
-    # curl -s localhost:9100/status | jq .in_progress.total
-    # curl -s localhost:9100/status | jq '.in_progress.by_user | to_entries[] | select(.value.tpc_pull)'
+    # curl -s localhost:9180/status | jq .in_progress.total
+    # curl -s localhost:9180/status | jq '.in_progress.by_user | to_entries[] | select(.value.tpc_pull)'
 
 ## Prometheus
 
     scrape_configs:
       - job_name: weed
         static_configs:
-          - targets: ["weed.example.org:9100"]
+          - targets: ["weed.example.org:9180"]
 
-With `metrics_address = "localhost:9100"`, scrape it from the host, e.g. through node_exporter's or your agent's local scraping, or listen on an address of the management network instead. [Metrics](metrics.html) lists every metric.
+With `metrics_address = "localhost:9180"`, scrape it from the host, e.g. through node_exporter's or your agent's local scraping, or listen on an address of the management network instead. [Metrics](metrics.html) lists every metric.
 
 ## What to alert on {#alerts}
 

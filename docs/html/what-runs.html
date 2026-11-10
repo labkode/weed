@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for weed v0.1.1</a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -134,7 +134,7 @@ level=WARN msg=&quot;restart pending: weed&#39;s executable /usr/local/bin/weed 
               changed: server.port&quot;</code></pre>
 <h2 id="status">/status</h2>
 <p>On <code>server.metrics_address</code>, /status tells all of it as JSON: the build, the pid, since when weed runs, the configuration (file, SHA-256 and every option), how the last reload went, whether a restart is pending and why, the workers, the banned users and the requests in progress. <a href="monitoring.html#status">Monitoring</a> shows a full answer.</p>
-<pre><code>$ curl -s localhost:9100/status | jq .restart_pending
+<pre><code>$ curl -s localhost:9180/status | jq .restart_pending
 {
   &quot;config&quot;: &quot;the configuration file has changed: server.port&quot;
 }</code></pre>

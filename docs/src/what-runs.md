@@ -49,7 +49,7 @@ Each is logged once, and "restart no longer pending" once the change is undone. 
 
 On `server.metrics_address`, /status tells all of it as JSON: the build, the pid, since when weed runs, the configuration (file, SHA-256 and every option), how the last reload went, whether a restart is pending and why, the workers, the banned users and the requests in progress. [Monitoring](monitoring.html#status) shows a full answer.
 
-    $ curl -s localhost:9100/status | jq .restart_pending
+    $ curl -s localhost:9180/status | jq .restart_pending
     {
       "config": "the configuration file has changed: server.port"
     }

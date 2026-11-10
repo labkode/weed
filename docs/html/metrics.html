@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for weed v0.1.1</a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -338,7 +338,7 @@
 </tbody>
 </table>
 <h2 id="example">Example</h2>
-<pre><code>$ curl -s localhost:9100/metrics | grep -v &#39;^#&#39;
+<pre><code>$ curl -s localhost:9180/metrics | grep -v &#39;^#&#39;
 weed_http_requests_total{method=&quot;COPY&quot;,code=&quot;202&quot;} 1
 weed_http_requests_total{method=&quot;GET&quot;,code=&quot;200&quot;} 3
 weed_http_requests_total{method=&quot;GET&quot;,code=&quot;403&quot;} 1

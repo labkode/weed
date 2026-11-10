@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for weed v0.1.1</a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -137,12 +137,12 @@
 /etc/weed/weed.toml: weed would start with it (sha256 6794c30b95c0...), as the account weed too (User= of weed.service)</code></pre>
 <p>Run by root, it checks as the account weed too, which may not read every file that root reads (see <a href="commands.html#check">Commands</a>).</p></li>
 <li><p>Restart, when the transfers in progress allow it (see <a href="monitoring.html#in-progress">Monitoring</a>):</p>
-<pre><code># curl -s localhost:9100/status | jq .in_progress.total
+<pre><code># curl -s localhost:9180/status | jq .in_progress.total
 # systemctl restart weed</code></pre>
 <p>weed gives the requests in progress 30 seconds to finish.</p></li>
 <li><p>Check what runs:</p>
 <pre><code># systemctl status weed
-# curl -s localhost:9100/status | jq &#39;.version.version, .restart_pending&#39;</code></pre></li>
+# curl -s localhost:9180/status | jq &#39;.version.version, .restart_pending&#39;</code></pre></li>
 </ol>
 <h2 id="old-binary">Until the restart</h2>
 <p>Workers are started from /proc/self/exe, which is the binary that weed started from, even after it has been replaced on disk. So weed and every worker it starts run the same build. <code>ls -l /proc/&lt;pid&gt;/exe</code> shows the old binary as deleted, for weed and its workers alike.</p>

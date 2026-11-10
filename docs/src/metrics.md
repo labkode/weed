@@ -62,7 +62,7 @@ weed serves these metrics at /metrics on `server.metrics_address`, in the Promet
 
 ## Example
 
-    $ curl -s localhost:9100/metrics | grep -v '^#'
+    $ curl -s localhost:9180/metrics | grep -v '^#'
     weed_http_requests_total{method="COPY",code="202"} 1
     weed_http_requests_total{method="GET",code="200"} 3
     weed_http_requests_total{method="GET",code="403"} 1

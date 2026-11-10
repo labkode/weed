@@ -83,7 +83,7 @@ func (c *Config) sections() []section {
 			{"log_file", `log to this file ("" for standard error, which systemd sends to the journal: it drops the lines beyond its rate limit, a file keeps them all); weed reopens it on SIGHUP, for logrotate`, &c.LogFile},
 			{"log_level", `log records of this level and above: "debug", "info", "warn" or "error"`, &c.LogLevel},
 			{"log_format", `"text" (key=value) or "json", one record per line`, &c.LogFormat},
-			{"metrics_address", `serve Prometheus metrics (/metrics), what runs (/status), a dashboard of both (/) and /healthz, without authentication, on this address, e.g. "localhost:9100" ("" disables)`, &c.MetricsAddress},
+			{"metrics_address", `serve Prometheus metrics (/metrics), what runs (/status), a dashboard of both (/) and /healthz, without authentication, on this address, e.g. "localhost:9180" ("" disables)`, &c.MetricsAddress},
 			{"reload_interval", `re-read credential files (htpasswd, app tokens, grid-mapfile, CAs, CRLs, token issuers, TLS certificate) this often ("0s": only on SIGHUP)`, &c.ReloadInterval},
 		}},
 		{"tls", "HTTPS", []option{

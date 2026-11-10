@@ -22,7 +22,7 @@ address = "127.0.0.1"
 port = 8080
 dir = "/srv/weed"
 # /metrics, /status and a dashboard, without authentication: keep it local
-metrics_address = "127.0.0.1:9100"
+metrics_address = "127.0.0.1:9180"
 
 [basic]
 enabled = true

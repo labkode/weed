@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for weed v0.1.1</a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -103,6 +103,15 @@
 <h1 class="title">Changelog</h1>
 </header>
 <p>The changes of each version of weed, the newest first. Versions are numbered MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number (until 1.0.0, a new MINOR number) is not compatible with the one before it, and its section begins with Incompatible changes, what to change before upgrading to it. The guide's Upgrading page says what counts as incompatible.</p>
+<h2 id="unreleased">Unreleased</h2>
+<h3 id="incompatible-changes">Incompatible changes</h3>
+<ul>
+<li>The RPM's configuration, /etc/weed/weed.toml, and the guide's examples serve the metrics, /status and the dashboard on port 9180 rather than 9100, which Prometheus's node_exporter listens on, on many machines: weed did not start there ("metrics server: listen tcp 127.0.0.1:9100: bind: address already in use"). An upgrade replaces /etc/weed/weed.toml only if it was never changed, as rpm does with configuration files, and the running weed keeps 9100 until it restarts. Then move what reads /metrics or /status, such as Prometheus, to 9180, or set server.metrics_address back to 127.0.0.1:9100.</li>
+</ul>
+<h3 id="new">New</h3>
+<ul>
+<li>The guide's Third-party copies page says that weed pulls from EOS only with tpc.allow_http, as EOS redirects downloads to its disk servers over plain http, and to which servers weed sends the source's credentials on with a redirect.</li>
+</ul>
 <h2 id="v0.1.1-2026-11-06">v0.1.1 (2026-11-06)</h2>
 <h3 id="fixed">Fixed</h3>
 <ul>
@@ -111,7 +120,7 @@
 <h2 id="v0.1.0-2026-11-06">v0.1.0 (2026-11-06)</h2>
 <p>The first release. weed serves files over HTTP and WebDAV to the clients and services of the WLCG (gfal2, davix, FTS, Rucio, XRootD): authentication with X.509 certificates and proxies, WLCG and SciTokens tokens, macaroons, an OIDC login page and passwords; third-party copies in both directions; checksums from end to end; each request served as the Unix account that its credentials map to, by a worker process confined with Landlock and seccomp; cgroup limits per user and group; bans; metrics, /status and a dashboard.</p>
 <p>Until now, weed was built from the main branch. For a server that ran a build of it from 2026-10-29 or later, when the administration guide came, these are the changes.</p>
-<h3 id="incompatible-changes">Incompatible changes</h3>
+<h3 id="incompatible-changes-1">Incompatible changes</h3>
 <ul>
 <li>weed builds and runs on Linux alone, on amd64 and arm64: weed utils, config, check and version no longer build for other systems, and weed no longer serves on macOS for development.</li>
 <li>weed needs Linux 5.19 or later with landlock among the security modules (lsm=), and seccomp: it confines itself and its workers, and does not start otherwise. unix_users.landlock is gone: a configuration that sets it is refused.</li>
@@ -124,7 +133,7 @@
 <li>weed listens with TCP, not with MPTCP, which Go listened with where the kernel has it. Clients with MPTCP fall back to TCP.</li>
 <li>The content type of a file, GET's Content-Type and PROPFIND's getcontenttype, comes from its name's extension alone, and is application/octet-stream when the system's MIME types (shared-mime-info or /etc/mime.types) and Go's do not know it: weed no longer reads the first 512 bytes of a file to guess it.</li>
 </ul>
-<h3 id="new">New</h3>
+<h3 id="new-1">New</h3>
 <ul>
 <li>weed utils password asks for the password, twice, on a terminal, and reads it from stdin otherwise, rather than taking it on the command line, where ps shows it (it is still taken there, with a warning). It sets the password in the file of basic.htpasswd of /etc/weed/weed.toml, of -config, or -file, rather than ./.htpasswd, and replaces a user's entry rather than adding another; -delete removes a user. It replaces the file at once, keeping its owner, group and mode, and makes a new one of the group weed, 0640. weed utils token generate writes basic.app_tokens's file alike.</li>
 <li>weed check, run by root, checks again as the account that weed runs as (User= of weed.service, or -as), with the unit's capabilities, and says which file that account cannot read; -as root checks as root alone.</li>

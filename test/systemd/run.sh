@@ -42,7 +42,7 @@ check "...and its sysctl settings, the guide's" sh -c "grep -qx 'net.core.wmem_m
 check "...and a logrotate file for server.log_file" logrotate -d /etc/logrotate.d/weed
 systemctl daemon-reload
 check "the RPM's configuration: weed starts, serves /srv/weed to this machine, asking for a password" sh -c '
-	systemctl start weed && curl -sf 127.0.0.1:9100/healthz &&
+	systemctl start weed && curl -sf 127.0.0.1:9180/healthz &&
 	[ "$(curl -s -o /dev/null -w %{http_code} -X PROPFIND http://127.0.0.1:8080/webdav/)" = 401 ] &&
 	journalctl -u weed -o cat | grep -q "dir=/srv/weed" && systemctl stop weed'
 mkdir -p /etc/systemd/system/weed.service.d
@@ -64,7 +64,7 @@ cat >/etc/weed/weed.toml <<'T'
 [server]
 port = 8080
 dir = "/data"
-metrics_address = "127.0.0.1:9100"
+metrics_address = "127.0.0.1:9180"
 
 [basic]
 enabled = true
@@ -139,7 +139,7 @@ t_limits() { # weed limits, as alice, while weed serves: a weed of its own in a 
 	grep '^  get-small ' /tmp/limits/summary.txt && grep 'weed and its workers used at most' /tmp/limits/summary.txt &&
 		! grep TasksMax /tmp/limits/summary.txt && [ -z "$(ls -A /data /var/tmp | grep weed-limits)" ] &&
 		! systemctl list-units --all 'weed-limits-*' | grep weed-limits &&
-		{ [ ! -e /tmp/limits/weed.toml ] || weed check -as root -config /tmp/limits/weed.toml; } && curl -sf 127.0.0.1:9100/healthz
+		{ [ ! -e /tmp/limits/weed.toml ] || weed check -as root -config /tmp/limits/weed.toml; } && curl -sf 127.0.0.1:9180/healthz
 }
 t_readonly() { ! nsenter -t "$(main)" -m touch /etc/weed/probe; }
 t_writable() {
@@ -196,7 +196,7 @@ serving() { # a weed other than $1 serves: within 90 s, as systemd restarts it e
 	local p
 	for i in $(seq 180); do
 		p=$(main)
-		[ "$p" != 0 ] && [ "$p" != "$1" ] && curl -sf 127.0.0.1:9100/healthz >/dev/null && return 0
+		[ "$p" != 0 ] && [ "$p" != "$1" ] && curl -sf 127.0.0.1:9180/healthz >/dev/null && return 0
 		sleep 0.5
 	done
 	return 1
@@ -233,11 +233,11 @@ t_blocked() { # weed $1, its storage unmounted after $2, refuses requests and go
 		sleep 0.5
 	done
 	[ "$(code alice -T /etc/os-release $W/alice/b)" = 503 ] && [ ! -e /data/alice/b ] &&
-		[ "$(curl -s -o /dev/null -w '%{http_code}' 127.0.0.1:9100/healthz)" = 503 ] &&
+		[ "$(curl -s -o /dev/null -w '%{http_code}' 127.0.0.1:9180/healthz)" = 503 ] &&
 		logged "$2" 'the storage of the exported directory is no longer mounted' &&
 		systemctl show -P StatusText weed | grep '^Blocked since .*, the storage of /data not mounted' &&
-		curl -s 127.0.0.1:9100/metrics | grep -x 'weed_storage_unmounted 1' &&
-		curl -s 127.0.0.1:9100/status | jq -e .storage_unmounted || return 1
+		curl -s 127.0.0.1:9180/metrics | grep -x 'weed_storage_unmounted 1' &&
+		curl -s 127.0.0.1:9180/status | jq -e .storage_unmounted || return 1
 	sleep 6 # a look at the directory more: weed still does not exit
 	[ "$(main)" = "$1" ] && [ "$(systemctl show -P ActiveState weed)" = active ]
 }
@@ -251,7 +251,7 @@ t_not_started() { # restarted while its storage is not mounted, weed does not st
 		sleep 0.5
 	done
 	[ "$(systemctl show -P NRestarts weed)" -gt "$n" ] && [ "$(systemctl show -P ActiveState weed)" != failed ] &&
-		! curl -sf 127.0.0.1:9100/healthz
+		! curl -sf 127.0.0.1:9180/healthz
 }
 t_require_mount() { systemctl restart weed && t_serves n2; }
 t_beneath() { ! as alice -T /etc/os-release $W/alice/q 2>/dev/null && [ ! -e /data/alice/q ]; }
@@ -268,7 +268,7 @@ t_oom() { # alice's worker, its memory.max lowered below what it uses, is killed
 		sleep 0.25
 	done
 	! kill -0 "$w" 2>/dev/null && [ "$(awk '$1 == "oom_kill" {print $2}' $CG/memory.events)" -gt "$kills" ] &&
-		[ "$(main)" = "$pid" ] && [ "$(systemctl show -P ActiveState weed)" = active ] && curl -sf 127.0.0.1:9100/healthz ||
+		[ "$(main)" = "$pid" ] && [ "$(systemctl show -P ActiveState weed)" = active ] && curl -sf 127.0.0.1:9180/healthz ||
 		{ echo "worker $w, weed $pid now $(main)"; grep oom $CG/memory.events; ps -o pid,user,rss,args -u alice; return 1; }
 }
 t_oom_next() { # the account's next request gets a worker again
@@ -277,11 +277,11 @@ t_oom_next() { # the account's next request gets a worker again
 }
 t_activated() { # the first connection to weed.socket starts weed
 	systemctl start weed.socket && [ "$(systemctl show -P ActiveState weed)" = inactive ] &&
-		curl -sf --max-time 60 127.0.0.1:9100/healthz && [ "$(systemctl show -P ActiveState weed)" = active ]
+		curl -sf --max-time 60 127.0.0.1:9180/healthz && [ "$(systemctl show -P ActiveState weed)" = active ]
 }
 t_passed() { # weed took the sockets of systemd, and binds no port
 	logged "$1" 'msg=listening address=.*:8080 scheme=http socket="passed by systemd"' &&
-		logged "$1" 'msg="serving metrics" address=127.0.0.1:9100 socket="passed by systemd"' &&
+		logged "$1" 'msg="serving metrics" address=127.0.0.1:9180 socket="passed by systemd"' &&
 		logged "$1" 'tcp="no bind' ||
 		{ journalctl -u weed -o cat --since "$1" | grep -E 'listening|serving metrics|tcp=' | cut -c1-300; return 1; }
 }
@@ -316,7 +316,7 @@ check "...as root, and as the account weed, which the unit runs weed as" sh -c "
 	weed check -config /etc/weed/weed.toml | grep -q 'as the account weed too (User= of weed.service)'"
 check "...and as root, it says which file the account weed may not read" t_check_as
 # Type=notify: systemctl returns once weed says it is ready, and it serves then
-check "systemctl start returns once weed serves" sh -c 'systemctl start weed && curl -sf 127.0.0.1:9100/healthz'
+check "systemctl start returns once weed serves" sh -c 'systemctl start weed && curl -sf 127.0.0.1:9180/healthz'
 check "the status line says since when weed serves" sh -c "systemctl show -P StatusText weed | grep '^Serving since'"
 check "TasksMax=infinity: systemd does not bound weed's threads" sh -c '[ "$(systemctl show -P TasksMax weed)" = infinity ]'
 check "weed's log is in the journal, its starter's too: workers confined with Landlock" sh -c "journalctl -u weed -o cat | grep 'workers are confined with Landlock.*process=starter'"
@@ -372,10 +372,10 @@ check "a configuration that weed would refuse fails systemctl restart" sh -c '! 
 cp /etc/weed/weed.toml.good /etc/weed/weed.toml
 check "...and the journal says why" sh -c "journalctl -u weed -o cat | grep 'unknown option server.prot'"
 systemctl reset-failed weed
-check "...and once corrected, weed starts" sh -c 'systemctl restart weed && curl -sf 127.0.0.1:9100/healthz'
+check "...and once corrected, weed starts" sh -c 'systemctl restart weed && curl -sf 127.0.0.1:9180/healthz'
 check "RestrictSUIDSGID= in a drop-in: weed does not start, and says why" t_hardened RestrictSUIDSGID
 check "RestrictNamespaces= in a drop-in: weed does not start, and says why" t_hardened RestrictNamespaces
-check "...and without, weed starts" sh -c 'systemctl restart weed && curl -sf 127.0.0.1:9100/healthz'
+check "...and without, weed starts" sh -c 'systemctl restart weed && curl -sf 127.0.0.1:9180/healthz'
 check "an upgrade checks the configuration with the new weed, which the running one goes on until restarted" \
 	t_upgrade 'the running weed is the version before, until systemctl restart weed'
 sed -i 's/^\[server\]$/&\nprot = 1/' /etc/weed/weed.toml
@@ -391,20 +391,20 @@ check "systemctl stop: weed, its starter and its workers stop, weed exits 0" t_s
 # --- Socket activation: systemd listens on weed's ports, and passes the sockets
 block 'Write /etc/systemd/system/weed.socket' | sed 's/^ListenStream=443$/ListenStream=8080/' >/etc/systemd/system/weed.socket
 check "the guide has the socket unit" sh -c "grep -qx 'ListenStream=8080' /etc/systemd/system/weed.socket &&
-	grep -qx 'ListenStream=127.0.0.1:9100' /etc/systemd/system/weed.socket"
+	grep -qx 'ListenStream=127.0.0.1:9180' /etc/systemd/system/weed.socket"
 systemctl daemon-reload
 since=$(now)
 check "socket activation: the first connection starts weed" t_activated
 check "...which serves on the sockets that systemd passed, and binds no port" t_passed "$since"
 check "a restart refuses no connection: they wait for weed" t_no_refused
-check "systemctl stop weed.socket weed: both stop" sh -c 'systemctl stop weed.socket weed && ! curl -s 127.0.0.1:9100/healthz &&
+check "systemctl stop weed.socket weed: both stop" sh -c 'systemctl stop weed.socket weed && ! curl -s 127.0.0.1:9180/healthz &&
 	[ "$(systemctl show -P ActiveState weed.socket)" = inactive ]'
 
 # --- As root, as the guide's drop-in has it
 block 'run it as root, with a drop-in' >/etc/systemd/system/weed.service.d/root.conf
 check "the guide has the drop-in for root" grep -qx 'User=root' /etc/systemd/system/weed.service.d/root.conf
 systemctl daemon-reload
-check "as root: systemctl start returns once weed serves" sh -c 'systemctl start weed && curl -sf 127.0.0.1:9100/healthz'
+check "as root: systemctl start returns once weed serves" sh -c 'systemctl start weed && curl -sf 127.0.0.1:9180/healthz'
 check "weed runs as root" t_user root
 check "...without capabilities; its starter, as root, CAP_SETUID, CAP_SETGID and CAP_KILL alone" t_caps root
 check "alice uploads, and the file is hers" t_upload r

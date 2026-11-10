@@ -50,7 +50,7 @@ A TOML file, in which every option is optional, for example:
     [server]
     port = 443
     dir = "/data"
-    metrics_address = "localhost:9100"
+    metrics_address = "localhost:9180"
 
     [tls]
     enabled = true
@@ -668,9 +668,9 @@ Monitoring
 the exported directory cannot be stat'ed within 5 seconds (e.g. a hung network
 filesystem). It makes one stat at a time: while one hangs, calls wait for it.
 
-server.metrics_address = "localhost:9100" serves, without authentication, /healthz,
+server.metrics_address = "localhost:9180" serves, without authentication, /healthz,
 /status (see What runs), Prometheus metrics on /metrics, and a dashboard of both at
-http://localhost:9100/: the browser reads them every 2 seconds and shows throughput,
+http://localhost:9180/: the browser reads them every 2 seconds and shows throughput,
 requests, accounts and workers, with the last 10 minutes as charts. The
 dashboard only reads. Without a configuration file, the main port serves them all
 (the dashboard at /dashboard/): its clients are local, and can already read and write
