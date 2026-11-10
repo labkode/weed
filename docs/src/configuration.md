@@ -91,7 +91,7 @@ X.509 with a grid-mapfile, WLCG tokens, macaroons and third-party copy: see [Get
     [server]
     port = 443
     dir = "/data"
-    metrics_address = "localhost:9100"
+    metrics_address = "localhost:9180"
 
     [tls]
     enabled = true

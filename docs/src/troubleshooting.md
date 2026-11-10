@@ -8,7 +8,7 @@ Ask weed first:
 
     # weed check -config /etc/weed/weed.toml       # would weed start with its file?
     # journalctl -u weed -n 50                      # or the end of server.log_file
-    # curl -s localhost:9100/status | jq .          # what runs
+    # curl -s localhost:9180/status | jq .          # what runs
     $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a client
 
 ## weed does not start {#startup}
@@ -31,6 +31,7 @@ Ask weed first:
 | `cannot read the banned users (admin.bans): open /var/lib/weed/bans.json: permission denied` | weed's user must be able to read and write `admin.bans` and its directory. |
 | `control plane: /run/weed/admin.sock is in use, by another weed?` | Another weed runs with the same `admin.socket`. Stop it, or give each weed its own. |
 | `listen tcp :443: bind: address already in use` | Something else listens on the port: `ss -ltnp 'sport = :443'`. |
+| `metrics server: listen tcp 127.0.0.1:9100: bind: address already in use` | Something else listens on the port of `server.metrics_address`: `ss -ltnp 'sport = :9100'`. On 9100, which the RPM's configuration and the examples used until weed 0.1.1, it is Prometheus's node_exporter, most often: use 9180, as they do now. |
 | `x509 needs tls`, `oidc needs tokens.issuers, ...` | An option needs another one: set it as weed says. |
 
 With systemd, a failing `weed check` in ExecStartPre stops the start, and *systemctl status weed* shows its message.

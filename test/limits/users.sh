@@ -8,7 +8,7 @@
 # second (clients) or download slowly, as jobs across a WAN (slow-download; a file of
 # 64 MiB per account). The arguments go to stress (stress -h), e.g. -clients 16384;
 # the results are in test/limits/out. weed's dashboard is on
-# http://127.0.0.1:9100/dashboard/ (METRICS_PORT) while it runs. Needs Go, and
+# http://127.0.0.1:9180/dashboard/ (METRICS_PORT) while it runs. Needs Go, and
 # Podman, which it runs as root (sudo).
 #
 #     [USERS=n] test/limits/users.sh [stress arguments]
@@ -17,7 +17,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 podman() { if [ "$(id -u)" = 0 ]; then command podman "$@"; else sudo podman "$@"; fi; }
 users=${USERS:-100}
-metrics=${METRICS_PORT:-9100}
+metrics=${METRICS_PORT:-9180}
 name=weed-find-limits-users
 out=$here/out
 
@@ -49,7 +49,7 @@ tty=
 if [ -t 0 ] && [ -t 1 ]; then tty=-t; fi
 # weed's files on a volume of its own, which removing the container removes
 podman create $tty --name $name --privileged -v /data -e USERS="$users" -e METRICS_PORT="$metrics" \
-	-p 127.0.0.1:"$metrics":9100 weed-find-limits bash /limits/run.sh \
+	-p 127.0.0.1:"$metrics":9180 weed-find-limits bash /limits/run.sh \
 	-scenarios accounts,clients,slow-download -crowd-accounts -download-size 64MiB "$@" >/dev/null
 # Copied into the container, not mounted, which SELinux would need labels for
 for b in weed stress issuer; do podman cp "$build/$b" $name:/usr/local/bin/$b; done

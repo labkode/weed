@@ -104,7 +104,7 @@ TOML
 	printf '%s\n' "${@:3}" >>weed-$1.toml
 	weed -config weed-$1.toml &
 }
-METRICS=localhost:9100 start_weed a 8443
+METRICS=localhost:9180 start_weed a 8443
 start_weed b 8444
 # C has a directory per account, and maps tokens to accounts by their groups
 mkdir -p /srv/c/interop /srv/c/robot && chown interop: /srv/c/interop && chown robot: /srv/c/robot && chmod 700 /srv/c/robot
@@ -379,15 +379,15 @@ check "revoked certificate rejected after SIGHUP" sh -c "[ \$($RCURL https://loc
 check "other users unaffected" $CURL -o /dev/null https://localhost:8443/webdav/g.bin
 
 echo "== metrics"
-curl -s localhost:9100/metrics >metrics.txt
-check "/healthz" sh -c "[ \"\$(curl -s localhost:9100/healthz)\" = ok ]"
+curl -s localhost:9180/metrics >metrics.txt
+check "/healthz" sh -c "[ \"\$(curl -s localhost:9180/healthz)\" = ok ]"
 check "TPC transfers counted" grep -qE '^weed_tpc_transfers_total\{mode="push",result="success"\} [1-9]' metrics.txt
 check "checksum mismatches counted" grep -qE '^weed_checksum_mismatches_total\{operation="tpc_push"\} [1-9]' metrics.txt
 check "CRL and certificate expiry exported" sh -c "grep -q '^weed_crl_expiry_timestamp_seconds ' metrics.txt && grep -q '^weed_tls_certificate_expiry_timestamp_seconds ' metrics.txt"
 
 echo "== what runs: build, start, configuration, pending restart"
 SHA=$(sha256sum weed-a.toml | cut -d' ' -f1)
-curl -s localhost:9100/status >status.json
+curl -s localhost:9180/status >status.json
 check "weed check: A's configuration is valid" sh -c "weed check -config weed-a.toml | grep -q 'sha256 $SHA'"
 check "weed check: C's too" weed check -config weed-c.toml
 check "/status: the configuration's SHA-256 is the file's" sh -c "[ \"\$(jq -r .config.sha256 status.json)\" = $SHA ]"
@@ -399,14 +399,14 @@ check "no restart pending" grep -qx 'weed_restart_pending{reason="config"} 0' me
 check "build and configuration exported" sh -c "grep -q '^weed_build_info{.*build=\"go:' metrics.txt && grep -q \"^weed_config_info{.*sha256=\\\"$SHA\\\"} 1\" metrics.txt && grep -q '^process_start_time_seconds ' metrics.txt"
 cp weed-a.toml weed-a.toml.orig
 sed -i 's/^marker_interval = .*/marker_interval = "5s"/' weed-a.toml
-check "edited configuration: restart pending, naming the option" sh -c "curl -s localhost:9100/metrics | grep -qx 'weed_restart_pending{reason=\"config\"} 1' &&
+check "edited configuration: restart pending, naming the option" sh -c "curl -s localhost:9180/metrics | grep -qx 'weed_restart_pending{reason=\"config\"} 1' &&
 	grep -q 'level=WARN msg=\"restart pending: the configuration file has changed: tpc.marker_interval\"' $W/weed-a.log"
 echo '[server' >>weed-a.toml
 check "broken configuration: weed check fails" sh -c "! weed check -config weed-a.toml 2>check.err && grep -q 'weed would not start' check.err"
-check "broken configuration: logged as an error now" sh -c "curl -s localhost:9100/status | jq -e '.restart_pending.config | contains(\"would not start\")' >/dev/null &&
+check "broken configuration: logged as an error now" sh -c "curl -s localhost:9180/status | jq -e '.restart_pending.config | contains(\"would not start\")' >/dev/null &&
 	grep -q 'level=ERROR msg=\"restart pending: the configuration file has changed, and weed would not start' $W/weed-a.log"
 cp weed-a.toml.orig weed-a.toml
-check "restored configuration: no restart pending" sh -c "curl -s localhost:9100/metrics | grep -qx 'weed_restart_pending{reason=\"config\"} 0'"
+check "restored configuration: no restart pending" sh -c "curl -s localhost:9180/metrics | grep -qx 'weed_restart_pending{reason=\"config\"} 0'"
 # Without a configuration file there is no metrics_address: the main port serves them
 mkdir -p /srv/q && (cd /srv/q && exec weed 2>$W/weed-q.log) &
 Q_PID=$!

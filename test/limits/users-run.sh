@@ -52,7 +52,7 @@ port = 9443
 dir = "/data"
 log_file = "/var/log/weed/weed.log"
 # published on the host's loopback only (users.sh)
-metrics_address = ":9100"
+metrics_address = ":9180"
 
 [tls]
 enabled = true
@@ -90,7 +90,7 @@ weed=$!
 done) &
 
 i=0
-until curl -sf -o /dev/null localhost:9100/healthz; do
+until curl -sf -o /dev/null localhost:9180/healthz; do
 	i=$((i + 1))
 	if ! kill -0 $weed 2>/dev/null || [ $i = 300 ]; then
 		tail -30 /var/log/weed/weed.log
@@ -105,7 +105,7 @@ and its dashboard at http://127.0.0.1:$METRICS_PORT/dashboard/. Ctrl-C stops the
 
 EOF
 stress -identities $L/identities -url 'https://localhost:9443/webdav/{user}' -ca $L/pki/ca.pem \
-	-cgroup $cg/weed -status http://localhost:9100/status -report $L/limits.txt -json $L/limits.json "$@" &
+	-cgroup $cg/weed -status http://localhost:9180/status -report $L/limits.txt -json $L/limits.json "$@" &
 stress=$!
 trap 'kill -INT $stress 2>/dev/null' INT TERM
 # wait returns at a signal, and stress, which then reports what it measured, after

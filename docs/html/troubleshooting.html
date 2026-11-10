@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for weed v0.1.1</a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -106,7 +106,7 @@
 <p>Ask weed first:</p>
 <pre><code># weed check -config /etc/weed/weed.toml       # would weed start with its file?
 # journalctl -u weed -n 50                      # or the end of server.log_file
-# curl -s localhost:9100/status | jq .          # what runs
+# curl -s localhost:9180/status | jq .          # what runs
 $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a client</code></pre>
 <h2 id="startup">weed does not start</h2>
 <table>
@@ -180,6 +180,10 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <tr>
 <td><code>listen tcp :443: bind: address already in use</code></td>
 <td>Something else listens on the port: <code>ss -ltnp 'sport = :443'</code>.</td>
+</tr>
+<tr>
+<td><code>metrics server: listen tcp 127.0.0.1:9100: bind: address already in use</code></td>
+<td>Something else listens on the port of <code>server.metrics_address</code>: <code>ss -ltnp 'sport = :9100'</code>. On 9100, which the RPM's configuration and the examples used until weed 0.1.1, it is Prometheus's node_exporter, most often: use 9180, as they do now.</td>
 </tr>
 <tr>
 <td><code>x509 needs tls</code>, <code>oidc needs tokens.issuers, ...</code></td>

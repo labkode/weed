@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for weed v0.1.1</a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -196,6 +196,7 @@ success: Created</code></pre>
 <li>The unspecified address is always refused.</li>
 </ul>
 <p>If your storage endpoints talk over a private network, set <code>tpc.allow_private</code>, and protect the services on that network otherwise. weed follows at most 10 redirects, never to http:// when that is not allowed, and never one that changes the method.</p>
+<p>EOS answers a download with a redirect to the disk server that has the file, over plain http, with a capability in the URL (http://&lt;server&gt;:8443/...). So weed pulls from EOS only with <code>tpc.allow_http</code>; without it, the copy fails with "refusing redirect to http://...: plain http is not allowed". weed sends the source's credentials (TransferHeaderAuthorization) on to the server it is redirected to only if its name is the source's, or a subdomain of it (x.eos.example.org for eos.example.org), but then also over plain http.</p>
 <p>weed verifies remote endpoints with the system's CAs, and those of <code>tpc.ca_path</code>: set it to /etc/grid-security/certificates to trust the IGTF CAs. Workers re-read it on reload (see <a href="reloading.html">Reloading</a>), so the users must be able to read it.</p>
 </div>
 <!-- end content -->

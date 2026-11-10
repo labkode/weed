@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for weed v0.1.1</a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -156,7 +156,7 @@
 </tr>
 <tr>
 <td>/etc/weed/weed.toml</td>
-<td>a configuration that serves /srv/weed on 127.0.0.1:8080 to the users of /etc/weed/.htpasswd, and the metrics on 127.0.0.1:9100; root:weed, 0640</td>
+<td>a configuration that serves /srv/weed on 127.0.0.1:8080 to the users of /etc/weed/.htpasswd, and the metrics on 127.0.0.1:9180; root:weed, 0640</td>
 </tr>
 <tr>
 <td>/etc/weed/.htpasswd, .app-tokens</td>
@@ -364,7 +364,7 @@ Description=weed WebDAV server&#39;s sockets
 
 [Socket]
 ListenStream=443
-ListenStream=127.0.0.1:9100
+ListenStream=127.0.0.1:9180
 
 [Install]
 WantedBy=sockets.target</code></pre>

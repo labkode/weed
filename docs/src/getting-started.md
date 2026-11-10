@@ -71,7 +71,7 @@ Only the certificates whose DN the grid-mapfile lists are accepted, as the accou
     [server]
     port = 443
     dir = "/data"
-    metrics_address = "localhost:9100"
+    metrics_address = "localhost:9180"
     log_file = "/var/log/weed/weed.log"
 
     [tls]
@@ -129,7 +129,7 @@ At startup weed logs what it loaded, which build runs, every option (secrets red
     level=INFO msg="third-party copy" max_transfers=32 allow_http=false allow_local=false allow_private=false
     level=INFO msg=listening address=[::]:443 scheme=https
     level=INFO msg="serving the control plane" socket=/run/weed/admin.sock
-    level=INFO msg="serving metrics" address=127.0.0.1:9100
+    level=INFO msg="serving metrics" address=127.0.0.1:9180
 
 (The time of each record is left out here.) The worker that starts and stops as nobody is weed checking, before it serves, that it can start workers.
 

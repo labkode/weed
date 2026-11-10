@@ -54,7 +54,7 @@ Between releases, the main branch is the development version, which the header o
 
 4.  Restart, when the transfers in progress allow it (see [Monitoring](monitoring.html#in-progress)):
 
-        # curl -s localhost:9100/status | jq .in_progress.total
+        # curl -s localhost:9180/status | jq .in_progress.total
         # systemctl restart weed
 
     weed gives the requests in progress 30 seconds to finish.
@@ -62,7 +62,7 @@ Between releases, the main branch is the development version, which the header o
 5.  Check what runs:
 
         # systemctl status weed
-        # curl -s localhost:9100/status | jq '.version.version, .restart_pending'
+        # curl -s localhost:9180/status | jq '.version.version, .restart_pending'
 
 ## Until the restart {#old-binary}
 

@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for weed v0.1.1</a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -146,7 +146,7 @@ $ ls -l /tmp/demo
 <pre><code>[server]
 port = 443
 dir = &quot;/data&quot;
-metrics_address = &quot;localhost:9100&quot;
+metrics_address = &quot;localhost:9180&quot;
 log_file = &quot;/var/log/weed/weed.log&quot;
 
 [tls]
@@ -195,7 +195,7 @@ level=INFO msg=macaroons location=weed-webdav max_validity=24h0m0s
 level=INFO msg=&quot;third-party copy&quot; max_transfers=32 allow_http=false allow_local=false allow_private=false
 level=INFO msg=listening address=[::]:443 scheme=https
 level=INFO msg=&quot;serving the control plane&quot; socket=/run/weed/admin.sock
-level=INFO msg=&quot;serving metrics&quot; address=127.0.0.1:9100</code></pre>
+level=INFO msg=&quot;serving metrics&quot; address=127.0.0.1:9180</code></pre>
 <p>(The time of each record is left out here.) The worker that starts and stops as nobody is weed checking, before it serves, that it can start workers.</p>
 <h3 id="trying-it">7. Trying it</h3>
 <p>/proc/whoami tells how weed sees a client: who it is, and the account it is served as.</p>

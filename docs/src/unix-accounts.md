@@ -76,7 +76,7 @@ weed has no privileges: as it starts, before it reads a request, it starts the s
 
 Landlock, seccomp and the capabilities of a process are those of a thread, and what it executes: weed executes itself again, from a thread that it confines, and refuses to start if it then is not confined, or has capabilities. It logs the rules as it does:
 
-    INFO weed confines itself with Landlock, and executes itself again confined, without privileges landlock_abi=6 rules="[read /etc read /proc ... write and make sockets in /run/weed write /var/lib/weed]" tcp="bind 443 9100, connect (token issuers, tpc.enabled)" sockets="Unix, netlink, TCP and UDP" capabilities=CAP_NET_BIND_SERVICE
+    INFO weed confines itself with Landlock, and executes itself again confined, without privileges landlock_abi=6 rules="[read /etc read /proc ... write and make sockets in /run/weed write /var/lib/weed]" tcp="bind 443 9180, connect (token issuers, tpc.enabled)" sockets="Unix, netlink, TCP and UDP" capabilities=CAP_NET_BIND_SERVICE
 
 Confined to /, weed would reach everything: it does not keep its files there.
 
