@@ -19,6 +19,14 @@ dir=$here/storage/$name
 [ -f "$dir/Containerfile" ] || { echo "no storage $name: $dir/Containerfile is missing" >&2; exit 2; }
 podman() { if [ "$(id -u)" = 0 ] || [ "${ROOTLESS:-}" = 1 ]; then command podman "$@"; else sudo podman "$@"; fi; }
 
+# annotate: stdin as an error annotation of the GitHub Actions job, which the job's
+# summary and the pull request show without the log
+annotate() {
+	[ -n "${GITHUB_ACTIONS:-}" ] || { cat >/dev/null; return; }
+	cut -c1-400 | awk '{ m = m (NR > 1 ? "\n" : "") $0 }
+		END { gsub(/%/, "%25", m); gsub(/\r/, "%0D", m); gsub(/\n/, "%0A", m); print "::error::" m }'
+}
+
 pod=weed-$name-$$
 build=$(mktemp -d)
 status=1
@@ -28,6 +36,13 @@ cleanup() {
 			echo "--- tail of the logs of $c"
 			podman logs --tail 60 $c 2>&1
 		done
+		# Each failed check with its output, and the end of the system's log
+		[ -f "$build/out" ] && awk '/^FAIL  / { n++ } /^FAIL  |^      \|/ { print > (dir "/fail." n) }' \
+			dir="$build" "$build/out"
+		for f in "$build"/fail.*; do
+			[ -f "$f" ] && annotate <"$f"
+		done
+		{ echo "the end of the log of $name"; podman logs --tail 25 $pod-$name 2>&1; } | annotate
 	fi
 	podman pod rm -f $pod >/dev/null 2>&1 || true
 	podman volume rm -f $pod-pki >/dev/null 2>&1 || true
@@ -52,7 +67,10 @@ before_storage
 podman run -d -q --pod $pod --name $pod-$name -v $pod-pki:/pki:ro weed-storage-$name >/dev/null
 
 # Copied into the container, not mounted, which SELinux would need labels for
+set +e
 tar -C "$build" -cf - weed lib.sh run.sh | podman run --rm -i --pod $pod -v $pod-pki:/pki:ro \
 	--env-file "$dir/test.env" -e STORAGE=$name weed-interop bash -c \
-	'mkdir /build && tar -x -C /build && install /build/weed /usr/local/bin/ && exec bash /build/run.sh </dev/null'
-status=$?
+	'mkdir /build && tar -x -C /build && install /build/weed /usr/local/bin/ && exec bash /build/run.sh </dev/null' |
+	tee "$build/out"
+status=${PIPESTATUS[1]}
+exit $status
