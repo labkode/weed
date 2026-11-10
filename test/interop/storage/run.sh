@@ -26,8 +26,8 @@ fi
 useradd -M -u 7001 interop
 printf '"%s" interop\n' "$USER_DN" >gridmap
 mkdir -p /srv/a && chown interop: /srv/a
-# shellcheck disable=SC2086
-ISSUERS= start_weed a 8443 ${WEED_TPC:-}
+# The pod's hostname is on a private address when Podman runs as root
+ISSUERS= start_weed a 8443 'allow_private = true' "${WEED_TPC:-}"
 
 A=davs://localhost:8443/webdav S=$STORAGE_URL
 https() { echo "${1/davs:/https:}"; }
