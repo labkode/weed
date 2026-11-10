@@ -20,35 +20,35 @@ root=$(cd "$here/../.." && pwd)
 podman() { if [ "$(id -u)" = 0 ] || [ "${ROOTLESS:-}" = 1 ]; then command podman "$@"; else sudo podman "$@"; fi; }
 
 # table results [md]: the results, a row per system (name, version, result, passed,
-# failed, skipped, seconds, failed checks, weed's version, gfal2's), as a table, or
-# with md as Markdown; then the failed checks, and what tested them
+# failed, seconds, failed checks, weed's version, gfal2's), as a table, or with md as
+# Markdown; then the failed checks, and what tested them
 table() {
 	awk -F'\t' -v md="${2:-}" '
 	{
 		n++
-		for (i = 1; i <= 8; i++) c[n, i] = $i
-		c[n, 7] = $7 == "-" ? "-" : $7 " s"
-		if ($9 != "") weed = $9
-		if ($10 != "") gfal2 = $10
+		for (i = 1; i <= 7; i++) c[n, i] = $i
+		c[n, 6] = $6 == "-" ? "-" : $6 " s"
+		if ($8 != "") weed = $8
+		if ($9 != "") gfal2 = $9
 	}
 	END {
-		split("system version result passed failed skipped time", h, " ")
-		for (i = 1; i <= 7; i++) w[i] = length(h[i])
-		for (r = 1; r <= n; r++) for (i = 1; i <= 7; i++) if (length(c[r, i]) > w[i]) w[i] = length(c[r, i])
+		split("system version result passed failed time", h, " ")
+		for (i = 1; i <= 6; i++) w[i] = length(h[i])
+		for (r = 1; r <= n; r++) for (i = 1; i <= 6; i++) if (length(c[r, i]) > w[i]) w[i] = length(c[r, i])
 		if (md) {
-			print "| system | version | result | passed | failed | skipped | time |"
-			print "|---|---|---|--:|--:|--:|--:|"
+			print "| system | version | result | passed | failed | time |"
+			print "|---|---|---|--:|--:|--:|"
 			for (r = 1; r <= n; r++)
-				printf "| %s | %s | %s | %s | %s | %s | %s |\n", c[r, 1], c[r, 2], c[r, 3], c[r, 4], c[r, 5], c[r, 6], c[r, 7]
+				printf "| %s | %s | %s | %s | %s | %s |\n", c[r, 1], c[r, 2], c[r, 3], c[r, 4], c[r, 5], c[r, 6]
 		} else {
-			f = "%-" w[1] "s  %-" w[2] "s  %-" w[3] "s  %" w[4] "s  %" w[5] "s  %" w[6] "s  %" w[7] "s\n"
-			printf f, h[1], h[2], h[3], h[4], h[5], h[6], h[7]
-			for (r = 1; r <= n; r++) printf f, c[r, 1], c[r, 2], c[r, 3], c[r, 4], c[r, 5], c[r, 6], c[r, 7]
+			f = "%-" w[1] "s  %-" w[2] "s  %-" w[3] "s  %" w[4] "s  %" w[5] "s  %" w[6] "s\n"
+			printf f, h[1], h[2], h[3], h[4], h[5], h[6]
+			for (r = 1; r <= n; r++) printf f, c[r, 1], c[r, 2], c[r, 3], c[r, 4], c[r, 5], c[r, 6]
 		}
 		for (r = 1; r <= n; r++) {
-			if (c[r, 8] == "") continue
+			if (c[r, 7] == "") continue
 			if (!failed++) print "\nFailed:\n"
-			k = split(c[r, 8], fs, "; ")
+			k = split(c[r, 7], fs, "; ")
 			for (j = 1; j <= k; j++) printf "%s%s: %s\n", (md ? "- " : "  "), c[r, 1], fs[j]
 		}
 		if (weed != "") printf "\nTested with weed %s and gfal2 %s.\n", weed, gfal2
@@ -70,7 +70,7 @@ if [ -z "${STORAGE_RESULTS:-}" ]; then
 		STORAGE_RESULTS=$results "$here/storage.sh" "$name" || true
 		# One that stopped before it could say
 		grep -q "^$name"$'\t' "$results" ||
-			printf '%s\t?\tnot ok\t-\t-\t-\t-\tno result: see its output\t\t\n' "$name" >>"$results"
+			printf '%s\t?\tnot ok\t-\t-\t-\tno result: see its output\t\t\n' "$name" >>"$results"
 	done
 	echo
 	table "$results"
@@ -115,8 +115,8 @@ cleanup() {
 	# The row of the table
 	local result=ok counts fails
 	[ $status = 0 ] || result="not ok"
-	counts=$(sed -n 's/^\([0-9]*\) passed, \([0-9]*\) failed, \([0-9]*\) skipped$/\1\t\2\t\3/p' "$build/out" 2>/dev/null | tail -1)
-	[ -n "$counts" ] || counts=$'-\t-\t-'
+	counts=$(sed -n 's/^\([0-9]*\) passed, \([0-9]*\) failed$/\1\t\2/p' "$build/out" 2>/dev/null | tail -1)
+	[ -n "$counts" ] || counts=$'-\t-'
 	fails=$(sed -n 's/^FAIL  //p' "$build/out" 2>/dev/null | awk '{ printf "%s%s", (NR > 1 ? "; " : ""), $0 }')
 	[ $status = 0 ] || [ -n "$fails" ] || fails="stopped before its checks: see its output"
 	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$version" "$result" "$counts" $SECONDS "$fails" "$weed" "$gfal2" \
