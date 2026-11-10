@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for weed v0.2.0</a>
+	<a class="version" href="changelog.html">for the development version</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -103,6 +103,12 @@
 <h1 class="title">Changelog</h1>
 </header>
 <p>The changes of each version of weed, the newest first. Versions are numbered MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number (until 1.0.0, a new MINOR number) is not compatible with the one before it, and its section begins with Incompatible changes, what to change before upgrading to it. The guide's Upgrading page says what counts as incompatible.</p>
+<h2 id="unreleased">Unreleased</h2>
+<h3 id="fixed">Fixed</h3>
+<ul>
+<li>Pushes to EOS failed with "connection reset by peer" after a few hundred KB. EOS answers the PUT with a redirect to a disk server at once, without 100 Continue and keeping the connection open. Go's HTTP client, which weed copies with, then sent the data anyway, to keep the connection, and EOS took it for the next request and reset the connection. weed now closes the connection without sending the data, as curl and davix do, and sends it to where it is redirected. After a redirect, Go even sent the data without waiting for 100 Continue: weed now waits on every request of a push.</li>
+<li>The Third-party copies page says that pushes to EOS need tpc.allow_http too, as EOS redirects uploads to its disk servers over plain http.</li>
+</ul>
 <h2 id="v0.2.0-2026-11-10">v0.2.0 (2026-11-10)</h2>
 <h3 id="incompatible-changes">Incompatible changes</h3>
 <ul>
@@ -113,7 +119,7 @@
 <li>The guide's Third-party copies page says that weed pulls from EOS only with tpc.allow_http, as EOS redirects downloads to its disk servers over plain http, and to which servers weed sends the source's credentials on with a redirect.</li>
 </ul>
 <h2 id="v0.1.1-2026-11-06">v0.1.1 (2026-11-06)</h2>
-<h3 id="fixed">Fixed</h3>
+<h3 id="fixed-1">Fixed</h3>
 <ul>
 <li>weed reads CRLs of version 1, which some IGTF CAs still publish: 14 of the 128 CRLs of ca-policy-egi-core in November 2026 (NIKHEF, NorduGrid, UK e-Science, ASGC and ArmeSFo). weed 0.1.0 refused them, and so did not start with x509.crl_path = "/etc/grid-security/certificates" where fetch-crl keeps them: "failed to load CRLs: /etc/grid-security/certificates/16da7552.r0: x509: unsupported crl version". A CRL of version 1 with extensions, which only version 2 may have, is still refused.</li>
 </ul>
@@ -153,7 +159,7 @@
 <li>The guide's Performance page: what limits each kind of request, which settings of weed, systemd and the kernel to change, and how to measure a server. The guide's systemd unit sets TasksMax=infinity: systemd's default, 15% of kernel.threads-max, is fewer than the threads that weed's workers hold when the storage stops answering, on a machine of less than about 64 GB of memory.</li>
 <li>weed limits finds what weed can serve on its machine, as its configuration sets it. It runs a weed of its own on 127.0.0.1, with credentials it makes, measures the storage, and puts that weed under a load that grows until weed or the machine gives. It then reads what the kernel and weed's cgroups dropped, and checks the settings of systemd, journald and the kernel. It writes a summary and the files of the settings it suggests: a weed.toml with each change under a comment that says why, a file of /etc/sysctl.d, one of /etc/modules-load.d, and a drop-in of weed's unit. It changes nothing on the machine. make find-limits runs it.</li>
 </ul>
-<h3 id="fixed-1">Fixed</h3>
+<h3 id="fixed-2">Fixed</h3>
 <ul>
 <li>Built with Go 1.26.0 (as go.mod allows), weed copied a directory (COPY of a collection) without what it holds, and answered 201: the os package of that Go looked up each entry of a directory by a path that is not the directory's in the file system. weed looks each up in the directory itself, as with any Go. The releases, built with the latest Go, were not affected.</li>
 <li>weed started with a password or app tokens file that it could not read, which left nobody able to log in, with a warning: it does not start, saying which file. A reload that cannot read one still keeps the entries it has.</li>

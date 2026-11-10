@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha256"
@@ -314,6 +315,62 @@ func TestTPCPushFollowsRedirects(t *testing.T) {
 	expectSuccess(t, code, body)
 	if content, _ := passive.read("/f"); content != "redirected data" {
 		t.Fatalf("content after redirect = %q", content)
+	}
+}
+
+// Like EOS's redirector, answer the PUT with a redirect at once, without 100 Continue
+// and keeping the connection open, then reset the connection when the data comes in
+// place of the next request. Go sends the body after such an answer, to keep the
+// connection, and the reset came before the redirect: the push failed with
+// "connection reset by peer". Two hops, as the redirect makes a new request.
+func TestTPCPushRedirectorKeepsConnection(t *testing.T) {
+	active := newNode(t, nil)
+	data := make([]byte, 4<<20)
+	rand.Read(data)
+	os.WriteFile(filepath.Join(active.dir, "f"), data, 0644)
+	stored := make(chan []byte, 1)
+	dst := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		stored <- b
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer dst.Close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	redirector := "http://" + ln.Addr().String()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				br := bufio.NewReader(conn)
+				req, err := http.ReadRequest(br)
+				if err != nil {
+					return
+				}
+				next := redirector + "/hop" + req.URL.Path
+				if strings.HasPrefix(req.URL.Path, "/hop/") {
+					next = dst.URL + strings.TrimPrefix(req.URL.Path, "/hop")
+				}
+				fmt.Fprintf(conn, "HTTP/1.1 307 Temporary Redirect\r\nLocation: %s\r\nContent-Length: 0\r\nConnection: Keep-Alive\r\n\r\n", next)
+				if _, err := br.Peek(1); err == nil {
+					conn.(*net.TCPConn).SetLinger(0) // data, not a request: reset
+				}
+			}()
+		}
+	}()
+
+	code, body := copyTPC(t, active, "/f", "Destination", redirector+"/f",
+		"Repr-Digest", "adler=:"+b64(adler(string(data)))+":")
+	expectSuccess(t, code, body)
+	if got := <-stored; !bytes.Equal(got, data) {
+		t.Fatalf("stored %d bytes, not the %d of the file", len(got), len(data))
 	}
 }
 
