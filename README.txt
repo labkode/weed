@@ -913,9 +913,11 @@ Testing
                        enforcing, and that SELinux denied weed nothing (test/vm/vm.sh,
                        qemu with KVM); RPM= tests that RPM
     make interop       interoperability tests (test/interop/interop.sh, Podman)
-    make interop-storage STORAGE=xrootd-cluster
-                       copies between weed and another storage system, one of
-                       test/interop/storage/ (test/interop/storage.sh, Podman)
+    make interop-storage
+                       copies between weed and each storage system of
+                       test/interop/storage/, then a table of their versions and
+                       results (test/interop/storage.sh, Podman); STORAGE="dcache eos"
+                       runs only those
     make find-limits   weed limits on this machine (sudo): CONFIG=, DATA= the storage
                        (/var/tmp), ACCOUNT= (yours); the results are in
                        test/limits/out; ARGS="..." go to weed limits
@@ -940,9 +942,10 @@ software, from EPEL: gfal2, davix and curl as clients; XRootD (with its macaroon
 SciTokens and HTTP-TPC plugins) as a second implementation; and a test token issuer.
 They cover X.509 proxies, macaroons, tokens, revocation with SIGHUP, metrics, Unix
 accounts, bans, and third-party copies in both directions between two weed servers
-and between weed and XRootD. make interop-storage runs another storage system in its
-own containers, from test/interop/storage/<name>/, next to weed, and has each of them
-pull from and push to the other, as gfal2 asks with an X.509 proxy: xrootd-cluster is
+and between weed and XRootD. make interop-storage runs other storage systems, one at a
+time, each in its own containers, from test/interop/storage/<name>/, next to weed, has
+weed and the system pull from and push to each other, as gfal2 asks with an X.509
+proxy, and ends with a table of the systems' versions and results: xrootd-cluster is
 an XRootD redirector and data server; dcache is dCache's own image, with PostgreSQL,
 whose WebDAV door sends clients to its pool; storm is StoRM WebDAV's own image, which
 gives macaroons only to VOMS proxies, so gfal2 has one there; eos is EOS 5 from its

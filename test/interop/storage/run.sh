@@ -40,7 +40,7 @@ for i in $(seq 50); do
 done
 echo "waiting for $STORAGE at $S"
 start=$SECONDS
-until [ "$($CURL -s -L -o /dev/null -w '%{http_code}' -X PROPFIND -H 'Depth: 0' "$(https $S)/")" = 207 ]; do
+until [ "$($CURL -s -L -o /dev/null -w '%{http_code}' -X PROPFIND -H 'Depth: 0' "$(https $S)/" 2>/dev/null)" = 207 ]; do
 	if [ $((SECONDS - start)) -gt "${READY_TIMEOUT:-300}" ]; then
 		echo "FAIL  $STORAGE did not answer PROPFIND $S/ with 207 within ${READY_TIMEOUT:-300} s"
 		$CURL -i -L -X PROPFIND -H 'Depth: 0' "$(https $S)/" 2>&1 | head -20 | sed 's/^/      | /'

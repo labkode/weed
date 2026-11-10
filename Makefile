@@ -34,7 +34,7 @@ test-vm: ## test-systemd's tests on an AlmaLinux 10 virtual machine, SELinux enf
 interop: ## Interoperability tests with gfal2, davix and XRootD (Podman, sudo; ROOTLESS=1 without)
 	test/interop/interop.sh
 
-interop-storage: ## Copies between weed and another storage system, STORAGE= one of test/interop/storage/ (Podman, sudo; ROOTLESS=1 without)
+interop-storage: ## Copies between weed and each storage system of test/interop/storage/, then a table of versions and results; STORAGE="dcache eos" runs those (Podman, sudo; ROOTLESS=1 without)
 	test/interop/storage.sh $(STORAGE)
 
 # weed limits reads CONFIG, /etc/weed/weed.toml if there is one; without either, it
