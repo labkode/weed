@@ -37,15 +37,19 @@ for i in $(seq 50); do
 	sleep 0.2
 done
 echo "waiting for $STORAGE at $S"
+# Ready once it stores a file: dCache and EOS answer PROPFIND some seconds before
+# they can, and the first upload failed then
+echo ready >ready.txt
 start=$SECONDS
-until [ "$($CURL -s -L -o /dev/null -w '%{http_code}' -X PROPFIND -H 'Depth: 0' "$(https $S)/" 2>/dev/null)" = 207 ]; do
+until $CURL -f -L -o /dev/null -T ready.txt "$(https $S)/ready.txt" 2>/dev/null; do
 	if [ $((SECONDS - start)) -gt "${READY_TIMEOUT:-300}" ]; then
-		echo "FAIL  $STORAGE did not answer PROPFIND $S/ with 207 within ${READY_TIMEOUT:-300} s"
-		$CURL -i -L -X PROPFIND -H 'Depth: 0' "$(https $S)/" 2>&1 | head -20 | sed 's/^/      | /'
+		echo "FAIL  $STORAGE did not store $S/ready.txt within ${READY_TIMEOUT:-300} s"
+		$CURL -i -L -T ready.txt "$(https $S)/ready.txt" 2>&1 | head -20 | sed 's/^/      | /'
 		exit 1
 	fi
 	sleep 2
 done
+gfal-rm $S/ready.txt >/dev/null 2>&1
 echo "$STORAGE is up after $((SECONDS - start)) s"
 
 # More than socket buffers hold, so that a server that stops reading is noticed
