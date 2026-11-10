@@ -31,6 +31,7 @@ Ask weed first:
 | `cannot read the banned users (admin.bans): open /var/lib/weed/bans.json: permission denied` | weed's user must be able to read and write `admin.bans` and its directory. |
 | `control plane: /run/weed/admin.sock is in use, by another weed?` | Another weed runs with the same `admin.socket`. Stop it, or give each weed its own. |
 | `listen tcp :443: bind: address already in use` | Something else listens on the port: `ss -ltnp 'sport = :443'`. |
+| `metrics server: listen tcp 127.0.0.1:9100: bind: address already in use` | Prometheus's node_exporter, most often, which listens on 9100 too: give `server.metrics_address` another port, such as 9180 (see [Monitoring](monitoring.html)). |
 | `x509 needs tls`, `oidc needs tokens.issuers, ...` | An option needs another one: set it as weed says. |
 
 With systemd, a failing `weed check` in ExecStartPre stops the start, and *systemctl status weed* shows its message.

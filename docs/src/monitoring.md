@@ -7,6 +7,8 @@ weed serves Prometheus metrics at /metrics, what runs at /status, a dashboard of
     [server]
     metrics_address = "localhost:9100"
 
+9100 is also the port of Prometheus's node_exporter: on a machine that runs it, as many do, weed does not start (`metrics server: listen tcp 127.0.0.1:9100: bind: address already in use`). Give weed another port there, such as 9180.
+
 These endpoints have no authentication. /status shows the configuration (secrets redacted) and the names of the users with requests in progress, so serve them on localhost, or on an address that only your monitoring reaches. Without a configuration file, they are on the main port, whose clients are local (the dashboard at /dashboard/).
 
 ## The dashboard {#dashboard}

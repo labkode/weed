@@ -76,4 +76,6 @@ A COPY makes weed connect wherever its client says. So that it cannot be used to
 
 If your storage endpoints talk over a private network, set `tpc.allow_private`, and protect the services on that network otherwise. weed follows at most 10 redirects, never to http:// when that is not allowed, and never one that changes the method.
 
+EOS answers a download with a redirect to the disk server that has the file, over plain http, with a capability in the URL (http://\<server\>:8443/...). So weed pulls from EOS only with `tpc.allow_http`; without it, the copy fails with "refusing redirect to http://...: plain http is not allowed". weed sends the source's credentials (TransferHeaderAuthorization) on to the server it is redirected to only if its name is the source's, or a subdomain of it (x.eos.example.org for eos.example.org), but then also over plain http.
+
 weed verifies remote endpoints with the system's CAs, and those of `tpc.ca_path`: set it to /etc/grid-security/certificates to trust the IGTF CAs. Workers re-read it on reload (see [Reloading](reloading.html)), so the users must be able to read it.

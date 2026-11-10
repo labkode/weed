@@ -182,6 +182,10 @@ $ curl -v --cert ... https://weed.example.org/proc/whoami     # how weed sees a 
 <td>Something else listens on the port: <code>ss -ltnp 'sport = :443'</code>.</td>
 </tr>
 <tr>
+<td><code>metrics server: listen tcp 127.0.0.1:9100: bind: address already in use</code></td>
+<td>Prometheus's node_exporter, most often, which listens on 9100 too: give <code>server.metrics_address</code> another port, such as 9180 (see <a href="monitoring.html">Monitoring</a>).</td>
+</tr>
+<tr>
 <td><code>x509 needs tls</code>, <code>oidc needs tokens.issuers, ...</code></td>
 <td>An option needs another one: set it as weed says.</td>
 </tr>

@@ -25,7 +25,7 @@ Each release on [GitHub](https://github.com/labkode/weed/releases) has an RPM fo
 | /usr/lib/systemd/system/weed.service | [the unit](#systemd), which runs weed as the account weed |
 | /usr/lib/sysusers.d/weed.conf | the account weed and its group, which the RPM makes |
 | /usr/lib/sysctl.d/60-weed.conf | net.core.wmem_max and rmem_max of 1 MiB, which the RPM applies (see [Performance](performance.html#socket-buffers)) |
-| /etc/weed/weed.toml | a configuration that serves /srv/weed on 127.0.0.1:8080 to the users of /etc/weed/.htpasswd, and the metrics on 127.0.0.1:9100; root:weed, 0640 |
+| /etc/weed/weed.toml | a configuration that serves /srv/weed on 127.0.0.1:8080 to the users of /etc/weed/.htpasswd, and the metrics on 127.0.0.1:9100 (node_exporter's port too: see [Monitoring](monitoring.html)); root:weed, 0640 |
 | /etc/weed/.htpasswd, .app-tokens | empty: no one logs in yet; root:weed, 0640 |
 | /etc/logrotate.d/weed | the rotation of /var/log/weed/weed.log, for `server.log_file` (see [Logging](logging.html#rotation)) |
 | /srv/weed | the exported directory |
