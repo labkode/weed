@@ -140,10 +140,12 @@ fi
 
 before_storage() { :; }
 [ -f "$dir/pod.sh" ] && . "$dir/pod.sh"
-podman pod create --name $pod --hostname storage.interop.test >/dev/null
+# On Podman's bridge network, as with root by default: the pod's hostname is then on a
+# private address, as in CI, however Podman runs
+podman pod create --name $pod --hostname storage.interop.test --network bridge >/dev/null
 podman volume create $pod-pki >/dev/null
-# The certificates, for everyone
-tar -C "$build" -cf - lib.sh | podman run --rm -i -v $pod-pki:/pki weed-interop bash -c \
+# The certificates, for everyone, made in the pod for its address (make_pki)
+tar -C "$build" -cf - lib.sh | podman run --rm -i --pod $pod -v $pod-pki:/pki weed-interop bash -c \
 	'mkdir /build && tar -x -C /build && cd /pki && . /build/lib.sh && make_pki && echo "$USER_DN" >user.dn && chmod -R a+r /pki'
 
 before_storage

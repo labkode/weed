@@ -27,12 +27,17 @@ issue() { # name subject signer-cert signer-key serial extensions
 	ssl req -newkey rsa:2048 -nodes -keyout $1.key -out $1.csr -subj "$2"
 	ssl x509 -req -in $1.csr -CA $3 -CAkey $4 -set_serial $5 -days 1 -out $1.pem -extfile <(printf "$6")
 }
-# make_pki: the CA and the certificates, in the current directory
+# make_pki: the CA and the certificates, in the current directory. In the storage tests'
+# pod the host certificate also names the pod's address, which XRootD redirects clients
+# to rather than its name, the address being a private one
 make_pki() {
+	local san="DNS:localhost,IP:127.0.0.1,IP:::1,DNS:$POD_HOST" ip
+	ip=$(getent ahostsv4 $POD_HOST 2>/dev/null | awk 'NR == 1 { print $1 }')
+	[ -z "$ip" ] || san="$san,IP:$ip"
 	ssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days 2 -subj "/DC=org/DC=weed/CN=Interop CA" \
 		-addext "basicConstraints=critical,CA:true" -addext "keyUsage=critical,keyCertSign,cRLSign"
 	issue host "/DC=org/DC=weed/CN=localhost" ca.pem ca.key 2 \
-		"subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1,DNS:$POD_HOST\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth,clientAuth\n"
+		"subjectAltName=$san\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth,clientAuth\n"
 	issue user "$USER_DN" ca.pem ca.key 3 "keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=clientAuth\n"
 	issue proxy "$USER_DN/CN=1234567" user.pem user.key 1234567 \
 		"keyUsage=critical,digitalSignature,keyEncipherment\nproxyCertInfo=critical,language:id-ppl-inheritAll\n"
