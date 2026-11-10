@@ -913,6 +913,9 @@ Testing
                        enforcing, and that SELinux denied weed nothing (test/vm/vm.sh,
                        qemu with KVM); RPM= tests that RPM
     make interop       interoperability tests (test/interop/interop.sh, Podman)
+    make interop-storage STORAGE=xrootd-cluster
+                       copies between weed and another storage system, one of
+                       test/interop/storage/ (test/interop/storage.sh, Podman)
     make find-limits   weed limits on this machine (sudo): CONFIG=, DATA= the storage
                        (/var/tmp), ACCOUNT= (yours); the results are in
                        test/limits/out; ARGS="..." go to weed limits
@@ -923,8 +926,9 @@ Testing
                        make bench run the rest; make help lists every target
 
 Everything runs on the machine, which must be Linux, but make test-systemd, make
-interop and make find-limits-users: they install units, accounts, packages and a CA,
-and so run in Podman containers (sudo podman).
+interop, make interop-storage and make find-limits-users: they install units,
+accounts, packages and a CA, and so run in Podman containers (sudo podman; the
+interoperability tests also run with your own, with ROOTLESS=1).
 make test runs every test but those that need root, which make test-root runs with
 sudo: of worker processes and Unix accounts, and TestLandlockRemount
 (internal/worker) and TestConfinedMounts (internal/landlock), which mount an ext4
@@ -936,11 +940,16 @@ software, from EPEL: gfal2, davix and curl as clients; XRootD (with its macaroon
 SciTokens and HTTP-TPC plugins) as a second implementation; and a test token issuer.
 They cover X.509 proxies, macaroons, tokens, revocation with SIGHUP, metrics, Unix
 accounts, bans, and third-party copies in both directions between two weed servers
-and between weed and XRootD. Each parser also has a fuzz test (go test -fuzz). CI
+and between weed and XRootD. make interop-storage runs another storage system in its
+own containers, from test/interop/storage/<name>/, next to weed, and has each of them
+pull from and push to the other, as gfal2 asks with an X.509 proxy: xrootd-cluster is
+an XRootD redirector and data server, which, like EOS, answers before the data comes.
+Each parser also has a fuzz test (go test -fuzz). CI
 (.github/workflows/ci.yml) runs on Linux: the tests with -race and as root, go vet,
 gofmt, govulncheck, builds for amd64 and arm64, the fuzz tests, the interoperability
-tests, make test-systemd and make test-vm, which it runs again on a release's RPM. It
-also makes the administration guide from docs/src,
+tests (those with other storage systems without holding up a release), make
+test-systemd and make test-vm, which it runs again on a release's RPM. It also makes
+the administration guide from docs/src,
 fails if docs/html is not what make docs makes, and publishes it on GitHub Pages from
 the main branch: the guide of the latest release, and main's under dev/. For a tag, it
 makes the release (see Releases).

@@ -87,6 +87,24 @@ jobs:
       - name: gfal2, davix and XRootD against weed
         run: make interop
 
+  # Copies between weed and other WLCG storage systems, each in its own containers. Not
+  # in dist's needs: a broken image of another project must not stop weed's releases.
+  interop-storage:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        storage: [xrootd-cluster]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Podman
+        run: command -v podman >/dev/null || { sudo apt-get -q update && sudo apt-get -q install -y podman; }
+      - name: weed and ${{ matrix.storage }}
+        run: make interop-storage STORAGE=${{ matrix.storage }}
+
   systemd:
     runs-on: ubuntu-latest
     steps:

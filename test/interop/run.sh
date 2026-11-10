@@ -6,49 +6,15 @@ set -uo pipefail
 W=/work
 mkdir -p $W && cd $W || exit 1
 
-pass=0 fail=0
-check() {
-	local name=$1
-	shift
-	local out
-	if out=$("$@" 2>&1); then
-		echo "PASS  $name"
-		pass=$((pass + 1))
-	else
-		echo "FAIL  $name"
-		echo "$out" | tail -15 | sed 's/^/      | /'
-		fail=$((fail + 1))
-	fi
-}
+. "$(dirname "$0")/lib.sh"
 
 # --- PKI: CA, host certificate for localhost, user certificate, RFC 3820 proxy
-CERTS=/etc/grid-security/certificates
-mkdir -p $CERTS
-ssl() { openssl "$@" 2>/dev/null; }
-ssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days 2 -subj "/DC=org/DC=weed/CN=Interop CA" \
-	-addext "basicConstraints=critical,CA:true" -addext "keyUsage=critical,keyCertSign,cRLSign"
-cp ca.pem $CERTS/$(openssl x509 -hash -noout -in ca.pem).0
-issue() { # name subject signer-cert signer-key serial extensions
-	ssl req -newkey rsa:2048 -nodes -keyout $1.key -out $1.csr -subj "$2"
-	ssl x509 -req -in $1.csr -CA $3 -CAkey $4 -set_serial $5 -days 1 -out $1.pem -extfile <(printf "$6")
-}
-issue host "/DC=org/DC=weed/CN=localhost" ca.pem ca.key 2 \
-	"subjectAltName=DNS:localhost,IP:127.0.0.1\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth,clientAuth\n"
-USER_DN="/DC=org/DC=weed/OU=Users/CN=Interop User"
-issue user "$USER_DN" ca.pem ca.key 3 "keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=clientAuth\n"
-issue proxy "$USER_DN/CN=1234567" user.pem user.key 1234567 \
-	"keyUsage=critical,digitalSignature,keyEncipherment\nproxyCertInfo=critical,language:id-ppl-inheritAll\n"
-cat proxy.pem proxy.key user.pem >/tmp/x509up_u0
-chmod 600 /tmp/x509up_u0
-export X509_USER_PROXY=/tmp/x509up_u0 X509_CERT_DIR=$CERTS
+make_pki
+use_pki
 
-# A CRL made by openssl, installed the way fetch-crl does (<hash>.r0)
+# A certificate to revoke later, which the CRL (gencrl) lists then
 REVOKED_DN="/DC=org/DC=weed/OU=Users/CN=Revoked User"
 issue revoked "$REVOKED_DN" ca.pem ca.key 4 "keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n"
-mkdir -p ca && touch ca/index.txt && echo 01 >ca/crlnumber
-printf '[ca]\ndefault_ca = d\n[d]\ndatabase = ca/index.txt\ncrlnumber = ca/crlnumber\ndefault_md = sha256\ndefault_crl_days = 1\n' >ca.cnf
-gencrl() { ssl ca -config ca.cnf -gencrl -keyfile ca.key -cert ca.pem -out $CERTS/$(openssl x509 -hash -noout -in ca.pem).r0; }
-gencrl
 
 # --- WLCG token issuer; XRootD (scitokens-cpp) fetches its keys trusting the system CAs
 cp ca.pem /etc/pki/ca-trust/source/anchors/interop-ca.pem && update-ca-trust
@@ -69,41 +35,6 @@ printf '"%s" interop\n"%s" revoked\n"%s" ghost\n' "$USER_DN" "$REVOKED_DN" "$GHO
 issue unmapped "/DC=org/DC=weed/OU=Users/CN=Unmapped User" ca.pem ca.key 5 "keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n"
 issue ghost "$GHOST_DN" ca.pem ca.key 6 "keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n"
 mkdir -p /srv/a /srv/b && chown interop: /srv/a /srv/b
-start_weed() { # name port [lines of further tables]; METRICS, ISSUERS, LOG_FORMAT
-	(umask 077 && cat >weed-$1.toml) <<TOML
-[server]
-port = $2
-dir = "/srv/$1"
-log_file = "$W/weed-$1.log"
-log_format = "${LOG_FORMAT:-text}"
-metrics_address = "${METRICS:-}"
-[admin]
-socket = "/run/weed/$1.sock"
-bans = "$W/bans-$1.json"
-[tls]
-enabled = true
-cert = "host.pem"
-key = "host.key"
-[x509]
-enabled = true
-ca = "$CERTS"
-crl_path = "$CERTS"
-gridmap = "gridmap"
-[macaroons]
-enabled = true
-secret_key = "$(openssl rand -hex 32)"
-[tokens]
-issuers = "${ISSUERS:-issuers.json}"
-ca_path = "ca.pem"
-[tpc]
-enabled = true
-ca_path = "$CERTS"
-allow_local = true
-marker_interval = "20ms"
-TOML
-	printf '%s\n' "${@:3}" >>weed-$1.toml
-	weed -config weed-$1.toml &
-}
 METRICS=localhost:9180 start_weed a 8443
 start_weed b 8444
 # C has a directory per account, and maps tokens to accounts by their groups
