@@ -1,0 +1,15 @@
+# EOS 5, from its RPMs: QuarkDB, the namespace server (MGM) and a disk server (FST) in
+# one container, run with eos daemon, with HTTPS, X.509 and HTTP-TPC through XrdHttp.
+# EL9, where CERN runs it: the EL10 build asserts as soon as a disk server is online
+FROM almalinux:9
+ARG EOS_VERSION=5.5.5
+COPY start.sh /start.sh
+RUN printf '[eos]\nname=EOS\nbaseurl=https://storage-ci.web.cern.ch/storage-ci/eos/diopside/tag/testing/el-9/x86_64/\ngpgcheck=0\n[eos-depend]\nname=EOS dependencies\nbaseurl=https://storage-ci.web.cern.ch/storage-ci/eos/diopside-depend/el-9/x86_64/\ngpgcheck=0\n' >/etc/yum.repos.d/eos.repo && \
+    for i in 1 2 3 4; do \
+        dnf install -y epel-release && \
+        dnf install -y --setopt=install_weak_deps=False \
+            eos-server-$EOS_VERSION eos-client-$EOS_VERSION eos-quarkdb openssl procps-ng && break; \
+        [ $i = 4 ] && exit 1; dnf -q clean metadata; sleep $((i * 15)); \
+    done && \
+    dnf clean all
+ENTRYPOINT ["bash", "/start.sh"]

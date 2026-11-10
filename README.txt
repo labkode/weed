@@ -943,10 +943,11 @@ accounts, bans, and third-party copies in both directions between two weed serve
 and between weed and XRootD. make interop-storage runs another storage system in its
 own containers, from test/interop/storage/<name>/, next to weed, and has each of them
 pull from and push to the other, as gfal2 asks with an X.509 proxy: xrootd-cluster is
-an XRootD redirector and data server, which, like EOS, answers before the data comes;
-dcache is dCache's own image, with PostgreSQL, whose WebDAV door sends clients to its
-pool; storm is StoRM WebDAV's own image, which gives macaroons only to VOMS proxies,
-so gfal2 has one there. Each parser also has a fuzz test (go test -fuzz). CI
+an XRootD redirector and data server; dcache is dCache's own image, with PostgreSQL,
+whose WebDAV door sends clients to its pool; storm is StoRM WebDAV's own image, which
+gives macaroons only to VOMS proxies, so gfal2 has one there; eos is EOS 5 from its
+EL9 RPMs, QuarkDB, an MGM and an FST in one container, whose MGM redirects an upload
+to the FST without waiting for its body, as CERN's EOS instances do. Each parser also has a fuzz test (go test -fuzz). CI
 (.github/workflows/ci.yml) runs on Linux: the tests with -race and as root, go vet,
 gofmt, govulncheck, builds for amd64 and arm64, the fuzz tests, the interoperability
 tests (those with other storage systems without holding up a release), make
