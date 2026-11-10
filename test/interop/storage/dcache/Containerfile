@@ -1,0 +1,11 @@
+# dCache, from its own image: one domain with ZooKeeper, the namespace (Chimera, in
+# PostgreSQL, which pod.sh starts), a pool and a WebDAV door with third-party copies
+FROM docker.io/dcache/dcache:12.1
+USER root
+COPY interop-layout.conf /opt/dcache/etc/layouts/docker-layout.conf
+COPY gplazma.conf /opt/dcache/etc/gplazma.conf
+COPY start.sh /start.sh
+RUN mkdir -p /etc/grid-security/certificates /etc/dcache-interop && \
+    chown -R dcache: /etc/grid-security /etc/dcache-interop
+USER dcache
+ENTRYPOINT ["bash", "/start.sh"]
