@@ -30,7 +30,7 @@
 <body>
 <div class="header">
 	<a href="index.html"><span>weed administration guide</span></a>
-	<a class="version" href="changelog.html">for the development version</a>
+	<a class="version" href="changelog.html">for weed v0.2.0</a>
 </div>
 <div class="sidebar">
 	<div class="nav">
@@ -103,7 +103,7 @@
 <h1 class="title">Changelog</h1>
 </header>
 <p>The changes of each version of weed, the newest first. Versions are numbered MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number (until 1.0.0, a new MINOR number) is not compatible with the one before it, and its section begins with Incompatible changes, what to change before upgrading to it. The guide's Upgrading page says what counts as incompatible.</p>
-<h2 id="unreleased">Unreleased</h2>
+<h2 id="v0.2.0-2026-11-10">v0.2.0 (2026-11-10)</h2>
 <h3 id="incompatible-changes">Incompatible changes</h3>
 <ul>
 <li>The RPM's configuration, /etc/weed/weed.toml, and the guide's examples serve the metrics, /status and the dashboard on port 9180 rather than 9100, which Prometheus's node_exporter listens on, on many machines: weed did not start there ("metrics server: listen tcp 127.0.0.1:9100: bind: address already in use"). An upgrade replaces /etc/weed/weed.toml only if it was never changed, as rpm does with configuration files, and the running weed keeps 9100 until it restarts. Then move what reads /metrics or /status, such as Prometheus, to 9180, or set server.metrics_address back to 127.0.0.1:9100.</li>
