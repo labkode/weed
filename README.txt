@@ -945,7 +945,8 @@ own containers, from test/interop/storage/<name>/, next to weed, and has each of
 pull from and push to the other, as gfal2 asks with an X.509 proxy: xrootd-cluster is
 an XRootD redirector and data server, which, like EOS, answers before the data comes;
 dcache is dCache's own image, with PostgreSQL, whose WebDAV door sends clients to its
-pool. Each parser also has a fuzz test (go test -fuzz). CI
+pool; storm is StoRM WebDAV's own image, which gives macaroons only to VOMS proxies,
+so gfal2 has one there. Each parser also has a fuzz test (go test -fuzz). CI
 (.github/workflows/ci.yml) runs on Linux: the tests with -race and as root, go vet,
 gofmt, govulncheck, builds for amd64 and arm64, the fuzz tests, the interoperability
 tests (those with other storage systems without holding up a release), make

@@ -6,7 +6,7 @@ G=/etc/grid-security
 # The CA's hash, from the name of its CRL: the image has no openssl
 crl=$(ls /pki/*.r0)
 cp /pki/ca.pem $G/certificates/$(basename $crl .r0).0
-cp $crl $G/certificates/
+cp $crl /pki/*.namespaces /pki/*.signing_policy $G/certificates/
 cp /pki/host.pem $G/hostcert.pem
 cp /pki/host.key $G/hostkey.pem
 chmod 400 $G/hostkey.pem

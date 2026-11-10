@@ -5,6 +5,7 @@
 # from the other side. test.env gives
 #   STORAGE_URL   the davs:// directory of the system that the test user may write to
 #   WEED_TPC      lines added to weed's [tpc], such as allow_http = true
+#   VOMS          a VO: gfal2 acts with a VOMS proxy of that VO rather than a plain one
 #   READY_TIMEOUT how long the system may take to start, in seconds (default 300)
 #   SKIP          an extended regular expression: the checks whose names it matches
 #                 are skipped, with the reason given in test.env
@@ -13,8 +14,14 @@ W=/work
 mkdir -p $W && cd $W || exit 1
 . "$(dirname "$0")/lib.sh"
 
-cp /pki/ca.pem /pki/*.r0 /pki/host.pem /pki/host.key /pki/proxy.pem /pki/proxy.key /pki/user.pem .
+cp /pki/ca.pem /pki/*.r0 /pki/*.namespaces /pki/*.signing_policy /pki/host.pem /pki/host.key /pki/proxy.pem /pki/proxy.key /pki/user.pem /pki/user.key .
+# /pki is readable by every container's account; the keys here are not
+chmod 600 *.key
 use_pki
+if [ -n "${VOMS:-}" ] && ! make_voms_proxy "$VOMS"; then
+	echo "FAIL  no VOMS proxy of the VO $VOMS"
+	exit 1
+fi
 useradd -M -u 7001 interop
 printf '"%s" interop\n' "$USER_DN" >gridmap
 mkdir -p /srv/a && chown interop: /srv/a
