@@ -18,7 +18,10 @@ chmod 400 /etc/xrootd/tls/host.key /etc/xrootd/macaroon-secret
 common() { # role xroot-and-https-port cmsd-port
 	cat <<CFG
 all.role $1
-all.manager localhost:3121
+# By the pod's hostname, not localhost: the redirector sends clients to the data server
+# by the name or address that it logged in with, and from localhost that is [::1] for
+# a third-party COPY, which neon, in gfal2, does not match with the certificate
+all.manager storage.interop.test:3121
 all.export /srv/x
 all.sitename interop
 # Ready as soon as the data server has logged in
