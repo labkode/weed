@@ -6,6 +6,20 @@ MAJOR.MINOR.PATCH, as in Semantic Versioning: a version with a new MAJOR number 
 begins with Incompatible changes, what to change before upgrading to it. The guide's
 Upgrading page says what counts as incompatible.
 
+## Unreleased
+
+### Fixed
+
+- Pushes to EOS failed with "connection reset by peer" after a few hundred KB. EOS
+  answers the PUT with a redirect to a disk server at once, without 100 Continue and
+  keeping the connection open. Go's HTTP client, which weed copies with, then sent the
+  data anyway, to keep the connection, and EOS took it for the next request and reset
+  the connection. weed now closes the connection without sending the data, as curl and
+  davix do, and sends it to where it is redirected. After a redirect, Go even sent the
+  data without waiting for 100 Continue: weed now waits on every request of a push.
+- The Third-party copies page says that pushes to EOS need tpc.allow_http too, as EOS
+  redirects uploads to its disk servers over plain http.
+
 ## v0.2.0 (2026-11-10)
 
 ### Incompatible changes

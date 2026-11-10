@@ -163,6 +163,12 @@ func newClient(cfg Config) *http.Client {
 			if req.URL.Scheme != "https" && !cfg.AllowHTTP {
 				return fmt.Errorf("refusing redirect to %s: plain http is not allowed", redact(req.URL))
 			}
+			// Go makes a new request for each redirect, without Close and without the
+			// HTTP version, and so sends its data at once, Expect: 100-continue or not.
+			// Each request of a push must wait for 100 Continue, and close the connection
+			// without the data if none comes (see push).
+			req.Close = via[0].Close
+			req.Proto, req.ProtoMajor, req.ProtoMinor = via[0].Proto, via[0].ProtoMajor, via[0].ProtoMinor
 			return nil
 		},
 	}
@@ -526,8 +532,14 @@ func (e *Engine) push(ctx context.Context, job *Job, p *progress) error {
 		req.Header.Set("Repr-Digest", job.ReprDigest)
 	}
 	if size > 0 {
-		// Learn about authorization failures and redirects before sending the data
+		// Learn about authorization failures and redirects before sending the data.
+		// When the destination answers without 100 Continue, as EOS's redirector does
+		// with a 307, the connection is closed and the data not sent, as curl and davix
+		// do. Otherwise Go would send the data after the answer, to keep the connection,
+		// and a redirector that does not read it takes it for the next request and
+		// resets the connection: the push failed with "connection reset by peer".
 		req.Header.Set("Expect", "100-continue")
+		req.Close = true
 	}
 
 	resp, err := e.client.Load().Do(req)
