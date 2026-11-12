@@ -1,0 +1,10 @@
+# StoRM WebDAV, from its own image, with one storage area that the test user's
+# certificate may read and write, by a fine-grained authorization policy
+FROM docker.io/italiangrid/storm-webdav:v1.14.0
+USER root
+COPY start.sh /start.sh
+RUN mkdir -p /etc/storm/webdav/sa.d /etc/storm/webdav/config /etc/grid-security/certificates \
+        /etc/grid-security/storm-webdav /etc/grid-security/vomsdir /srv/storm/interop && \
+    chown -R storm: /etc/storm /etc/grid-security /srv/storm
+USER storm
+ENTRYPOINT ["sh", "/start.sh"]

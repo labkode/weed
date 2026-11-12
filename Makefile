@@ -6,7 +6,7 @@ FUZZTIME  ?= 20s
 # Platforms that "make cross" builds for, as CI does: weed runs on Linux alone
 PLATFORMS ?= linux/amd64 linux/arm64
 
-.PHONY: test-systemd test-vm dist all build test test-root test-cgroups bench-workers interop find-limits find-limits-users check fmt vulncheck fuzz bench cross ci docs clean help
+.PHONY: test-systemd test-vm dist all build test test-root test-cgroups bench-workers interop interop-storage find-limits find-limits-users check fmt vulncheck fuzz bench cross ci docs clean help
 
 all: build
 
@@ -31,8 +31,11 @@ test-systemd: ## weed's RPM as the guide installs it, under systemd, as the acco
 test-vm: ## test-systemd's tests on an AlmaLinux 10 virtual machine, SELinux enforcing (qemu, KVM, Podman); RPM=path tests that RPM
 	RPM="$(RPM)" test/vm/vm.sh
 
-interop: ## Interoperability tests with gfal2, davix and XRootD (Podman, sudo)
+interop: ## Interoperability tests with gfal2, davix and XRootD (Podman, sudo; ROOTLESS=1 without)
 	test/interop/interop.sh
+
+interop-storage: ## Copies between weed and each storage system of test/interop/storage/, then a table of versions and results; STORAGE="dcache eos" runs those (Podman, sudo; ROOTLESS=1 without)
+	test/interop/storage.sh $(STORAGE)
 
 # weed limits reads CONFIG, /etc/weed/weed.toml if there is one; without either, it
 # measures DATA, /var/tmp by default

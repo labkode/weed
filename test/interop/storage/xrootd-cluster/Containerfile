@@ -1,0 +1,5 @@
+# XRootD as a cluster: a redirector, which sends every request to the data server with
+# a redirect, as EOS's MGM does, from the same packages as run.sh's single XRootD
+FROM localhost/weed-interop
+COPY start.sh /start.sh
+CMD ["bash", "/start.sh"]
