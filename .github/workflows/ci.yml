@@ -127,11 +127,17 @@ jobs:
           go-version-file: go.mod
       - name: Podman
         run: command -v podman >/dev/null || { sudo apt-get -q update && sudo apt-get -q install -y podman; }
+      # apt retries a mirror that fails now and then, and gives up on one that stops
+      # answering after 30 seconds. The step itself stops after 15 minutes, as when
+      # Ubuntu's DNS failed on 2026-11-11 apt tried every mirror for each package and
+      # gave up only after 35 minutes
       - name: KVM, qemu and xorriso
+        timeout-minutes: 15
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules >/dev/null
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
-          sudo apt-get -q -o Acquire::Retries=3 update && sudo apt-get -q -o Acquire::Retries=3 install -y --no-install-recommends qemu-system-x86 qemu-utils xorriso
+          apt="sudo apt-get -q -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          $apt update && $apt install -y --no-install-recommends qemu-system-x86 qemu-utils xorriso
       - name: weed's RPM on AlmaLinux 10, SELinux enforcing
         run: make test-vm
 
@@ -256,13 +262,15 @@ jobs:
         run: command -v podman >/dev/null || { sudo apt-get -q update && sudo apt-get -q install -y podman; }
       - name: The release's RPM as the guide installs it (make test-systemd)
         run: RPM=$(echo dist/weed-*.rpm) test/systemd/systemd.sh
-      # The arm64 runners have no KVM
+      # The arm64 runners have no KVM. apt and the step are bounded as in the vm job
       - if: matrix.arch == 'amd64'
         name: KVM, qemu and xorriso
+        timeout-minutes: 15
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules >/dev/null
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
-          sudo apt-get -q -o Acquire::Retries=3 update && sudo apt-get -q -o Acquire::Retries=3 install -y --no-install-recommends qemu-system-x86 qemu-utils xorriso
+          apt="sudo apt-get -q -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          $apt update && $apt install -y --no-install-recommends qemu-system-x86 qemu-utils xorriso
       - if: matrix.arch == 'amd64'
         name: The release's RPM on AlmaLinux 10, SELinux enforcing (make test-vm)
         run: RPM=$(echo dist/weed-*.rpm) test/vm/vm.sh
